@@ -6,8 +6,10 @@
 70여개 API를 검색하는 종합 MCP 서버입니다.
 """
 
+import datetime
 import io
 import os
+import re
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -188,6 +190,19 @@ def _format_date(date_str: str) -> str:
     if date_str and len(date_str) == 8 and date_str.isdigit():
         return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
     return date_str
+
+
+def _default_date_range(bgn_de: str, end_de: str) -> tuple[str, str]:
+    """
+    bgn_de/end_de 미지정 시 기본 범위(최근 약 10년 ~ 오늘)를 채웁니다.
+    주요사항보고서·증권신고서 API는 bgn_de/end_de가 필수이므로 생략 시 기본값을 적용.
+    """
+    today = datetime.date.today()
+    if not end_de:
+        end_de = today.strftime("%Y%m%d")
+    if not bgn_de:
+        bgn_de = f"{today.year - 10}0101"
+    return bgn_de, end_de
 
 
 def _format_amount(val: str) -> str:
@@ -1549,11 +1564,13 @@ async def get_major_event_report(
 
     endpoint = MAJOR_EVENT_REGISTRY[event_type]
 
-    params: dict = {"corp_code": corp_code.strip()}
-    if bgn_de:
-        params["bgn_de"] = bgn_de
-    if end_de:
-        params["end_de"] = end_de
+    # bgn_de/end_de는 DART 필수값 → 생략 시 기본 범위 적용
+    bgn_de, end_de = _default_date_range(bgn_de, end_de)
+    params: dict = {
+        "corp_code": corp_code.strip(),
+        "bgn_de": bgn_de,
+        "end_de": end_de,
+    }
 
     data = await _fetch_dart(f"{endpoint}.json", params)
     if isinstance(data, str):
@@ -1631,45 +1648,85 @@ async def _resolve_rcept_no(corp_code: str, bsns_year: str, reprt_code: str) -> 
     """
     고유번호+사업연도+보고서코드로 해당 정기보고서의 접수번호(rcept_no)를 조회합니다.
     fnlttXbrl.xml은 rcept_no를 요구하므로, 사용자 편의를 위해 list.json에서 역산합니다.
+
+    보고서명의 기간표기 "(YYYY.MM)"를 파싱해 결산월과 무관하게 매칭합니다.
+    - 사업보고서: 결산연도가 bsns_year인 보고서(12월 결산)를 우선하되, 없으면
+      차년도 상반기 결산 보고서(비12월 결산, 예: 1월 결산 REIT의 "(YYYY+1.01)")도 포함.
+    - 분기보고서: 회계연도 내 두 건(1분기/3분기)을 기간 순서로 구분(이른=1분기, 늦은=3분기).
+    동일 기간의 정정본이 있으면 최신 접수본(정정본)을 선택합니다.
     성공 시 14자리 접수번호, 오류 시 "오류:..." 문자열, 미발견 시 "" 반환.
     """
-    # 보고서코드 → (보고서명 키워드, 결산/기준월 접미사)
-    period_map = {
-        "11011": ("사업보고서", "12"),
-        "11012": ("반기보고서", "06"),
-        "11013": ("분기보고서", "03"),
-        "11014": ("분기보고서", "09"),
+    keyword_map = {
+        "11011": "사업보고서",
+        "11012": "반기보고서",
+        "11013": "분기보고서",
+        "11014": "분기보고서",
     }
-    keyword, suffix = period_map.get(reprt_code, ("보고서", ""))
+    keyword = keyword_map.get(reprt_code, "보고서")
     try:
-        next_year = str(int(bsns_year.strip()) + 1)
-    except ValueError:
-        next_year = bsns_year.strip()
+        by = int(bsns_year.strip())
+    except (ValueError, AttributeError):
+        return ""
+    next_year = by + 1
 
-    # 정기보고서는 기간 종료 후(주로 다음 해)에 제출되므로 조회 창을 넓게 잡음
-    params = {
+    # 사업보고서는 결산 후(주로 다음 해) 제출 → 조회창을 차년도까지. 분기/반기는 당해 연도.
+    if reprt_code == "11011":
+        bgn, end = f"{by}0101", f"{next_year}1231"
+    else:
+        bgn, end = f"{by}0101", f"{by}1231"
+
+    data = await _fetch_dart("list.json", {
         "corp_code": corp_code.strip(),
-        "bgn_de": f"{bsns_year.strip()}0101",
-        "end_de": f"{next_year}1231",
+        "bgn_de": bgn,
+        "end_de": end,
         "pblntf_ty": "A",
         "page_count": "100",
         "sort": "date",
         "sort_mth": "desc",
-    }
-    data = await _fetch_dart("list.json", params)
+    })
     if isinstance(data, str):
-        return data
+        # "오류:..."는 그대로 전달, "조회된 데이터 없음"류는 미발견("")으로 처리
+        return data if data.startswith("오류") else ""
 
     items = data.get("list", [])
     if isinstance(items, dict):
         items = [items]
 
-    target = f"({bsns_year.strip()}.{suffix})"
+    # (결산연도, 결산월, 접수일자, 접수번호) 후보 수집
+    cands: list[tuple[int, int, str, str]] = []
     for item in items:
         nm = item.get("report_nm", "")
-        if keyword in nm and (not suffix or target in nm):
-            return item.get("rcept_no", "")
-    return ""
+        if keyword not in nm:
+            continue
+        m = re.search(r"\((\d{4})[.\-/](\d{2})\)", nm)
+        if not m:
+            continue
+        py, pm = int(m.group(1)), int(m.group(2))
+        if reprt_code == "11011":
+            in_scope = (py == by) or (py == next_year and pm <= 6)
+        else:
+            in_scope = (py == by)
+        if in_scope:
+            cands.append((py, pm, item.get("rcept_dt", ""), item.get("rcept_no", "")))
+
+    if not cands:
+        return ""
+
+    if reprt_code in ("11011", "11012"):
+        # 결산기간이 가장 최근 + 최신 접수(정정본 우선)
+        cands.sort(key=lambda x: (x[0], x[1], x[2]))
+        return cands[-1][3]
+
+    # 분기: 기간(년,월)별로 정정본 정리 후 1분기=이른 기간 / 3분기=늦은 기간
+    by_period: dict[tuple[int, int], tuple[str, str]] = {}
+    for py, pm, dt, rno in cands:
+        key = (py, pm)
+        if key not in by_period or dt > by_period[key][0]:
+            by_period[key] = (dt, rno)
+    ordered = [by_period[k][1] for k in sorted(by_period)]
+    if reprt_code == "11013":
+        return ordered[0]
+    return ordered[-1]
 
 
 @mcp.tool()
@@ -1826,11 +1883,13 @@ async def get_securities_report(
         return f"오류: 올바른 신고서 유형을 입력해주세요.\n사용 가능한 유형: {available}"
 
     endpoint = SECURITIES_REGISTRATION_REGISTRY[report_type]
-    params: dict = {"corp_code": corp_code.strip()}
-    if bgn_de:
-        params["bgn_de"] = bgn_de
-    if end_de:
-        params["end_de"] = end_de
+    # bgn_de/end_de는 DART 필수값 → 생략 시 기본 범위 적용
+    bgn_de, end_de = _default_date_range(bgn_de, end_de)
+    params: dict = {
+        "corp_code": corp_code.strip(),
+        "bgn_de": bgn_de,
+        "end_de": end_de,
+    }
 
     data = await _fetch_dart(f"{endpoint}.json", params)
     if isinstance(data, str):
