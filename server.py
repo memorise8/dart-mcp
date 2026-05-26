@@ -148,6 +148,9 @@ async def _fetch_dart(endpoint: str, params: dict) -> dict | str:
     # DART API 상태 코드 확인
     status = data.get("status", "")
     message = data.get("message", "")
+    # status 013은 오류가 아니라 "조회된 데이터 없음" 신호
+    if status == "013":
+        return "조회된 데이터가 없습니다. (해당 조건에 맞는 공시/보고 내역이 없습니다)"
     if status and status != "000":
         return f"오류: {message} (status: {status})"
 
@@ -1024,27 +1027,31 @@ async def get_financial_indicators(
         "11011": "사업보고서",
     }
 
-    params = {
-        "corp_code": corp_code.strip(),
-        "bsns_year": bsns_year.strip(),
-        "reprt_code": reprt_code,
-    }
-    if idx_cl_code:
-        params["idx_cl_code"] = idx_cl_code
+    # idx_cl_code는 DART API 필수값. 미지정 시 4개 분류를 모두 조회하여 병합.
+    codes = [idx_cl_code] if idx_cl_code else ["M210000", "M220000", "M230000", "M240000"]
 
-    data = await _fetch_dart("fnlttSinglIndx.json", params)
-    if isinstance(data, str):
-        return data
+    items: list = []
+    last_err = None
+    for code in codes:
+        params = {
+            "corp_code": corp_code.strip(),
+            "bsns_year": bsns_year.strip(),
+            "reprt_code": reprt_code,
+            "idx_cl_code": code,
+        }
+        data = await _fetch_dart("fnlttSinglIndx.json", params)
+        if isinstance(data, str):
+            last_err = data
+            continue
+        part = data.get("list", [])
+        if isinstance(part, dict):
+            part = [part]
+        items.extend(part)
+
+    if not items:
+        return last_err or f"재무지표 데이터가 없습니다.\n고유번호: {corp_code}, 사업연도: {bsns_year}"
 
     try:
-        items = data.get("list", [])
-
-        if isinstance(items, dict):
-            items = [items]
-
-        if not items:
-            return f"재무지표 데이터가 없습니다.\n고유번호: {corp_code}, 사업연도: {bsns_year}"
-
         reprt_nm = reprt_code_map.get(reprt_code, reprt_code)
 
         lines = [
@@ -1123,27 +1130,31 @@ async def get_multi_company_indicators(
         "11011": "사업보고서",
     }
 
-    params = {
-        "corp_code": corp_code.strip(),
-        "bsns_year": bsns_year.strip(),
-        "reprt_code": reprt_code,
-    }
-    if idx_cl_code:
-        params["idx_cl_code"] = idx_cl_code
+    # idx_cl_code는 DART API 필수값. 미지정 시 4개 분류를 모두 조회하여 병합.
+    codes = [idx_cl_code] if idx_cl_code else ["M210000", "M220000", "M230000", "M240000"]
 
-    data = await _fetch_dart("fnlttCmpnyIndx.json", params)
-    if isinstance(data, str):
-        return data
+    items: list = []
+    last_err = None
+    for code in codes:
+        params = {
+            "corp_code": corp_code.strip(),
+            "bsns_year": bsns_year.strip(),
+            "reprt_code": reprt_code,
+            "idx_cl_code": code,
+        }
+        data = await _fetch_dart("fnlttCmpnyIndx.json", params)
+        if isinstance(data, str):
+            last_err = data
+            continue
+        part = data.get("list", [])
+        if isinstance(part, dict):
+            part = [part]
+        items.extend(part)
+
+    if not items:
+        return last_err or f"재무지표 데이터가 없습니다.\n고유번호: {corp_code}, 사업연도: {bsns_year}"
 
     try:
-        items = data.get("list", [])
-
-        if isinstance(items, dict):
-            items = [items]
-
-        if not items:
-            return f"재무지표 데이터가 없습니다.\n고유번호: {corp_code}, 사업연도: {bsns_year}"
-
         reprt_nm = reprt_code_map.get(reprt_code, reprt_code)
 
         lines = [
@@ -1612,37 +1623,96 @@ async def download_document(rcept_no: str, output_dir: str = ".") -> str:
 
 
 # ============================================================
-# Tool 14: XBRL 재무제표 원본파일 다운로드
+# Tool 14: XBRL 재무제표 원본파일(DSD) 다운로드
 # ============================================================
+
+
+async def _resolve_rcept_no(corp_code: str, bsns_year: str, reprt_code: str) -> str:
+    """
+    고유번호+사업연도+보고서코드로 해당 정기보고서의 접수번호(rcept_no)를 조회합니다.
+    fnlttXbrl.xml은 rcept_no를 요구하므로, 사용자 편의를 위해 list.json에서 역산합니다.
+    성공 시 14자리 접수번호, 오류 시 "오류:..." 문자열, 미발견 시 "" 반환.
+    """
+    # 보고서코드 → (보고서명 키워드, 결산/기준월 접미사)
+    period_map = {
+        "11011": ("사업보고서", "12"),
+        "11012": ("반기보고서", "06"),
+        "11013": ("분기보고서", "03"),
+        "11014": ("분기보고서", "09"),
+    }
+    keyword, suffix = period_map.get(reprt_code, ("보고서", ""))
+    try:
+        next_year = str(int(bsns_year.strip()) + 1)
+    except ValueError:
+        next_year = bsns_year.strip()
+
+    # 정기보고서는 기간 종료 후(주로 다음 해)에 제출되므로 조회 창을 넓게 잡음
+    params = {
+        "corp_code": corp_code.strip(),
+        "bgn_de": f"{bsns_year.strip()}0101",
+        "end_de": f"{next_year}1231",
+        "pblntf_ty": "A",
+        "page_count": "100",
+        "sort": "date",
+        "sort_mth": "desc",
+    }
+    data = await _fetch_dart("list.json", params)
+    if isinstance(data, str):
+        return data
+
+    items = data.get("list", [])
+    if isinstance(items, dict):
+        items = [items]
+
+    target = f"({bsns_year.strip()}.{suffix})"
+    for item in items:
+        nm = item.get("report_nm", "")
+        if keyword in nm and (not suffix or target in nm):
+            return item.get("rcept_no", "")
+    return ""
 
 
 @mcp.tool()
 async def download_xbrl(
-    corp_code: str,
-    bsns_year: str,
+    corp_code: str = "",
+    bsns_year: str = "",
     reprt_code: str = "11011",
     output_dir: str = ".",
+    rcept_no: str = "",
 ) -> str:
     """
-    XBRL 재무제표 원본파일을 다운로드합니다.
+    XBRL 재무제표 원본파일(DSD)을 다운로드합니다.
+
+    DART의 fnlttXbrl.xml API는 접수번호(rcept_no)를 필요로 합니다.
+    rcept_no를 직접 지정하거나, corp_code+bsns_year+reprt_code로 자동 조회할 수 있습니다.
 
     Parameters:
-        corp_code: DART 고유번호 (8자리)
-        bsns_year: 사업연도 (예: "2024")
+        corp_code: DART 고유번호 (8자리) — rcept_no 미지정 시 필수
+        bsns_year: 사업연도 (예: "2024") — rcept_no 미지정 시 필수
         reprt_code: 보고서코드 (11013=1분기, 11012=반기, 11014=3분기, 11011=사업보고서)
         output_dir: 저장 디렉토리 (기본값: 현재 디렉토리)
+        rcept_no: 접수번호 (14자리). 지정 시 corp_code/bsns_year 대신 직접 사용.
 
     Returns:
         다운로드 결과 메시지 (파일 경로, 포함된 파일 목록)
     """
-    if not corp_code or not corp_code.strip():
-        return "오류: 고유번호(corp_code)를 입력해주세요."
-    if not bsns_year or not bsns_year.strip():
-        return "오류: 사업연도(bsns_year)를 입력해주세요."
+    rcept_no = rcept_no.strip() if rcept_no else ""
+    if not rcept_no:
+        if not corp_code or not corp_code.strip() or not bsns_year or not bsns_year.strip():
+            return "오류: rcept_no, 또는 corp_code와 bsns_year를 입력해주세요."
+        resolved = await _resolve_rcept_no(corp_code, bsns_year, reprt_code)
+        if isinstance(resolved, str) and resolved.startswith("오류"):
+            return resolved
+        if not resolved:
+            return (
+                f"오류: 해당 보고서의 접수번호를 찾지 못했습니다 "
+                f"(corp_code={corp_code}, bsns_year={bsns_year}, reprt_code={reprt_code}).\n"
+                f"search_disclosures로 접수번호를 확인한 뒤 rcept_no로 직접 지정하세요."
+            )
+        rcept_no = resolved
 
     params = {
-        "corp_code": corp_code.strip(),
-        "bsns_year": bsns_year.strip(),
+        "rcept_no": rcept_no,
         "reprt_code": reprt_code,
     }
 
@@ -1651,7 +1721,7 @@ async def download_xbrl(
         return data
 
     os.makedirs(output_dir, exist_ok=True)
-    filename = f"{corp_code.strip()}_{bsns_year.strip()}_{reprt_code}.zip"
+    filename = f"xbrl_{rcept_no}.zip"
     filepath = os.path.join(output_dir, filename)
     with open(filepath, "wb") as f:
         f.write(data)
