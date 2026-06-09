@@ -1,0 +1,27 @@
+Final QA summary for dart-search-mcp practical usability pass
+
+Commands run:
+- uv run python scripts/qa.py
+  Result: exit 0
+  Evidence:
+  - unittest discover ran 8 tests and ended with OK
+  - compileall completed for server.py, cli.py, dart_search_mcp, tests, scripts
+  - uv run dart --help listed download-xbrl and all CLI commands
+  - diagnostics with blank DART_API_KEY/dart_api printed "DART API key: missing"
+  - diagnostics with DART_API_KEY=redacted-test-key printed "DART API key: configured" without printing the key value
+  - MCP list_tools printed 16 tools including download_xbrl and get_xbrl_taxonomy
+  - docs check passed
+
+- uv run dart financial
+  Result: exit 2
+  Evidence:
+  - Click printed "Missing argument 'CORP_CODE'"
+
+- uv lock --check
+  Result: exit 0
+
+- LSP diagnostics on dart_search_mcp, cli.py, server.py, scripts, and tests
+  Result: 0 errors in changed project files
+
+Known validation boundary:
+- No live DART API call was made. The requested practical pass keeps normal verification offline-safe and API-key independent.

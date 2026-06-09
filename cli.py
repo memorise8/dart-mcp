@@ -7,6 +7,9 @@ DART 전자공시 검색 CLI
 """
 
 import asyncio
+import importlib.metadata
+import os
+import sys
 
 import click
 from dotenv import load_dotenv
@@ -42,6 +45,28 @@ from server import (
 def cli():
     """DART 전자공시 검색 CLI - 한국 금융감독원 전자공시시스템 Open API"""
     pass
+
+
+@cli.command()
+def diagnostics():
+    """로컬 설정과 사용 가능한 명령/도구를 점검합니다."""
+    api_key_configured = bool(os.environ.get("DART_API_KEY") or os.environ.get("dart_api"))
+    try:
+        package_version = importlib.metadata.version("dart-search-mcp")
+    except importlib.metadata.PackageNotFoundError:
+        package_version = "not installed"
+
+    async def tool_count() -> int:
+        tools = await mcp.list_tools()
+        return len(tools)
+
+    click.echo("DART search MCP diagnostics")
+    click.echo(f"Python: {sys.version.split()[0]}")
+    click.echo(f"Package: dart-search-mcp {package_version}")
+    click.echo(f"DART API key: {'configured' if api_key_configured else 'missing'}")
+    click.echo("DART base URL: https://opendart.fss.or.kr/api")
+    click.echo(f"MCP tools: {asyncio.run(tool_count())}")
+    click.echo(f"CLI commands: {len(cli.commands)}")
 
 
 @cli.command()
