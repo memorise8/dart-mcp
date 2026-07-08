@@ -77,17 +77,6 @@ class AuditReportError:
     message: str
 
 
-def _stable_audit_key(record: AuditReportRecord) -> tuple[str, str, str, str]:
-    """중복 제거를 위한 안정적인 키.
-
-    운영 데이터에서 동일한 (corp_code, bsns_year, reprt_code, rcept_no) 조합에
-    대해 완전히 동일한 감사 정보 행이 중복 반환되는 사례가 관찰되었다. 이 키가
-    같은 레코드는 같은 출처(source segment)의 사실로 간주해 첫 번째 것만
-    남긴다."""
-
-    return (record.corp_code, record.bsns_year, record.reprt_code, record.rcept_no)
-
-
 def _to_audit_report_record(
     item: DartRecord, *, reprt_code: str, business_year_label: str
 ) -> AuditReportRecord:
@@ -120,8 +109,11 @@ async def get_audit_report_structured(
 
     `get_periodic_report`와 달리 report_type을 입력받지 않는다 (항상
     회계감사인 항목만 조회하는 전용 추출기). corp_code/bsns_year가 비어 있으면
-    DART를 호출하지 않고 `AuditReportError`를 반환한다. 응답에 중복 행이
-    있으면 `_stable_audit_key` 기준으로 첫 번째 항목만 남긴다.
+    DART를 호출하지 않고 `AuditReportError`를 반환한다. 응답에 완전히 동일한
+    (모든 필드가 같은) 행이 있으면 첫 번째 항목만 남긴다. `AuditReportRecord`는
+    frozen dataclass이므로 레코드 전체 동등성으로 비교한다 — 식별 필드만 보는
+    얕은 키는 연결/별도 재무제표처럼 같은 rcept_no 아래 내용이 다른
+    사실(fact)이 함께 보고되는 경우 그중 하나를 잘못 없애버릴 수 있다.
     """
     if not corp_code or not corp_code.strip():
         return AuditReportError(message="오류: 고유번호(corp_code)를 입력해주세요.")
@@ -149,16 +141,15 @@ async def get_audit_report_structured(
         reprt_nm = _REPRT_CODE_LABELS.get(reprt_code, reprt_code)
         business_year_label = f"{bsns_year.strip()}년 {reprt_nm}"
 
-        seen: set[tuple[str, str, str, str]] = set()
+        seen: set[AuditReportRecord] = set()
         deduped: list[AuditReportRecord] = []
         for item in items:
             record = _to_audit_report_record(
                 item, reprt_code=reprt_code, business_year_label=business_year_label
             )
-            key = _stable_audit_key(record)
-            if key in seen:
+            if record in seen:
                 continue
-            seen.add(key)
+            seen.add(record)
             deduped.append(record)
 
         return AuditReportResult(records=deduped)

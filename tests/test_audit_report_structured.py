@@ -110,6 +110,42 @@ class AuditReportStructuredDedupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record.business_year_label, "2023년 사업보고서")
         self.assertEqual(record.source_url, "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20240312000001")
 
+    async def test_same_key_different_content_are_both_preserved(self) -> None:
+        """동일한 (corp_code, bsns_year, reprt_code, rcept_no) 조합이라도 내용
+        필드(예: 감사의견, 감사인)가 다르면 서로 다른 사실(fact)이므로 둘 다
+        보존되어야 한다 (예: 연결/별도 재무제표를 하나의 rcept_no 아래 함께
+        보고하는 경우). 4개 필드만 보는 옛 키는 이를 하나로 뭉개버렸다."""
+
+        consolidated_row = _samsung_audit_row()
+        separate_row = {
+            **_samsung_audit_row(),
+            "adtor": "한영회계법인",
+            "adt_opinion": "한정",
+        }
+        response = {
+            "status": "000",
+            "message": "정상",
+            "list": [consolidated_row, separate_row],
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=response)
+
+        with mocked_dart_transport(handler):
+            outcome = await get_audit_report_structured(corp_code="00126380", bsns_year="2023")
+
+        self.assertIsInstance(outcome, AuditReportResult)
+        assert isinstance(outcome, AuditReportResult)
+        self.assertEqual(len(outcome.records), 2)
+        self.assertEqual(
+            {r.auditor for r in outcome.records},
+            {"삼정회계법인", "한영회계법인"},
+        )
+        self.assertEqual(
+            {r.audit_opinion for r in outcome.records},
+            {"적정", "한정"},
+        )
+
     async def test_distinct_rcept_no_are_not_collapsed(self) -> None:
         response = {
             "status": "000",
