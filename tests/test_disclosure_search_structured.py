@@ -31,6 +31,7 @@ import httpx
 # `@mcp.tool()` 등록이 이루어지는 정식 순서를 보존한다 (tests/test_public_surface.py의
 # 도구 목록 순서 검증이 깨지지 않도록).
 import server  # noqa: F401
+from dart_search_mcp.results import NO_DATA_MESSAGE
 from dart_search_mcp.tools.disclosures import (
     DisclosureAmbiguousCompanyError,
     DisclosureSearchError,
@@ -168,7 +169,7 @@ class SearchDisclosuresStructuredByCorpCodeTests(unittest.IsolatedAsyncioTestCas
         self.assertEqual(record.corp_code, "00126380")
         self.assertEqual(record.corp_name, "삼성전자")
         self.assertEqual(record.stock_code, "005930")
-        self.assertEqual(record.filing_type, "Y")
+        self.assertEqual(record.corp_cls, "Y")
         self.assertEqual(record.source_url, "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20240101000123")
 
     async def test_public_string_tool_formats_corp_code_search(self) -> None:
@@ -299,6 +300,57 @@ class SearchDisclosuresStructuredNoFilterTests(unittest.IsolatedAsyncioTestCase)
         self.assertNotIn("corp_code", query)
         self.assertNotIn("corp_name", query)
         self.assertIsInstance(result, DisclosureSearchResult)
+
+
+_STATUS_013_RESPONSE = {
+    "status": "013",
+    "message": "조회된 데이타가 없습니다.",
+}
+
+
+class SearchDisclosuresStructuredNoDataTests(unittest.IsolatedAsyncioTestCase):
+    """DART status-013(`DartNoData`) 응답에 대한 공개 도구 출력이 Task 4 이전과
+    동일하게 `NO_DATA_MESSAGE`를 반환해야 한다 (Task 1의 특정 메시지가
+    "검색 결과가 없습니다" 같은 일반 빈 목록 메시지로 뭉개지면 안 된다)."""
+
+    async def test_public_string_tool_returns_specific_no_data_message_on_status_013(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_STATUS_013_RESPONSE)
+
+        with mocked_list_json_transport(handler):
+            output = await search_disclosures(corp_code="00126380")
+
+        self.assertEqual(output, NO_DATA_MESSAGE)
+        self.assertNotIn("검색 결과가 없습니다", output)
+
+    async def test_structured_result_carries_no_data_message_distinct_from_empty_success(self) -> None:
+        def no_data_handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_STATUS_013_RESPONSE)
+
+        with mocked_list_json_transport(no_data_handler):
+            no_data_result = await search_disclosures_structured(corp_code="00126380")
+
+        self.assertIsInstance(no_data_result, DisclosureSearchResult)
+        assert isinstance(no_data_result, DisclosureSearchResult)
+        self.assertEqual(no_data_result.records, [])
+        self.assertEqual(no_data_result.no_data_message, NO_DATA_MESSAGE)
+
+        empty_success_response = {
+            **_LIST_JSON_RESPONSE,
+            "total_count": "0",
+            "list": [],
+        }
+
+        def empty_success_handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=empty_success_response)
+
+        with mocked_list_json_transport(empty_success_handler):
+            empty_success_result = await search_disclosures_structured(corp_code="00126380")
+
+        self.assertIsInstance(empty_success_result, DisclosureSearchResult)
+        assert isinstance(empty_success_result, DisclosureSearchResult)
+        self.assertEqual(empty_success_result.records, [])
+        self.assertIsNone(empty_success_result.no_data_message)
 
 
 if __name__ == "__main__":

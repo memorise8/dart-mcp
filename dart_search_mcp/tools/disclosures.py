@@ -33,7 +33,10 @@ class DisclosureRecord:
     corp_code: str
     corp_name: str
     stock_code: str
-    filing_type: str
+    # OpenDART `list.json`의 `corp_cls`(법인구분: Y/K/N/E) 값을 그대로 담는다.
+    # `list.json`은 레코드별로 공시유형(`pblntf_ty`)을 echo하지 않으므로 이
+    # 필드는 공시유형이 아니라 법인구분(corp_cls)이다.
+    corp_cls: str
     source_url: str
     flr_nm: str = ""
     remark: str = ""
@@ -41,12 +44,19 @@ class DisclosureRecord:
 
 @dataclass(frozen=True, slots=True)
 class DisclosureSearchResult:
-    """`search_disclosures_structured`가 정상 조회에 성공했을 때의 결과."""
+    """`search_disclosures_structured`가 정상 조회에 성공했을 때의 결과.
+
+    `no_data_message`는 DART가 status 013(`DartNoData`, "조회된 데이터
+    없음")으로 응답한 경우에만 채워진다. 정상 조회가 성공했지만 결과가 0건인
+    경우(`total_count == 0`)와 구분하기 위한 필드이며, 공개 문자열 도구
+    (`search_disclosures`)가 Task 4 이전과 동일하게 이 메시지를 그대로
+    반환할 수 있도록 한다."""
 
     records: list[DisclosureRecord]
     total_count: int
     total_page: int
     page_no: int
+    no_data_message: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,7 +87,7 @@ def _to_disclosure_record(item: DartRecord) -> DisclosureRecord:
         corp_code=item.get("corp_code", ""),
         corp_name=item.get("corp_name", ""),
         stock_code=item.get("stock_code", ""),
-        filing_type=item.get("corp_cls", ""),
+        corp_cls=item.get("corp_cls", ""),
         source_url=_SOURCE_URL_TEMPLATE.format(rcept_no=rcept_no) if rcept_no else "",
         flr_nm=item.get("flr_nm", ""),
         remark=item.get("rm", ""),
@@ -188,7 +198,9 @@ async def search_disclosures_structured(
         if isinstance(result, DartError):
             return DisclosureSearchError(message=result.message)
         if isinstance(result, DartNoData):
-            return DisclosureSearchResult(records=[], total_count=0, total_page=1, page_no=page_no)
+            return DisclosureSearchResult(
+                records=[], total_count=0, total_page=1, page_no=page_no, no_data_message=result.message
+            )
 
         assert isinstance(result, DartSuccess)
         data = result.data
@@ -268,6 +280,8 @@ async def search_disclosures(
     search_desc = corp_name if corp_name else "전체"
 
     if not outcome.records:
+        if outcome.no_data_message is not None:
+            return outcome.no_data_message
         return f"검색 결과가 없습니다.\n검색 조건: {search_desc}"
 
     lines = [
@@ -293,7 +307,12 @@ async def search_disclosures(
 
     lines.append("\n" + "=" * 60)
     if page_no < outcome.total_page:
-        lines.append(f"다음 페이지: search_disclosures(corp_name=\"{corp_name}\", page_no={page_no + 1})")
+        if not corp_name and corp_code:
+            # corp_name 없이 corp_code만으로 조회한 경우, 힌트에서도 corp_code를
+            # 이어서 넘겨야 다음 페이지 조회 시 회사 필터가 유지된다.
+            lines.append(f"다음 페이지: search_disclosures(corp_code=\"{corp_code}\", page_no={page_no + 1})")
+        else:
+            lines.append(f"다음 페이지: search_disclosures(corp_name=\"{corp_name}\", page_no={page_no + 1})")
 
     return "\n".join(lines)
 
