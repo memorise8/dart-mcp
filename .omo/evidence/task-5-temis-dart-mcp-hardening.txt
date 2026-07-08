@@ -1,0 +1,14 @@
+test_dart_error_status_returns_typed_error (tests.test_audit_report_structured.AuditReportFetchErrorTests.test_dart_error_status_returns_typed_error) ... ok
+test_status_013_returns_empty_records_with_no_data_message (tests.test_audit_report_structured.AuditReportNoDataTests.test_status_013_returns_empty_records_with_no_data_message) ... ok
+test_distinct_rcept_no_are_not_collapsed (tests.test_audit_report_structured.AuditReportStructuredDedupTests.test_distinct_rcept_no_are_not_collapsed) ... ok
+test_duplicate_rows_collapse_to_one_source_fact (tests.test_audit_report_structured.AuditReportStructuredDedupTests.test_duplicate_rows_collapse_to_one_source_fact) ... ok
+test_missing_bsns_year_returns_typed_validation_error_without_network_call (tests.test_audit_report_structured.AuditReportStructuredValidationTests.test_missing_bsns_year_returns_typed_validation_error_without_network_call) ... ok
+test_missing_corp_code_returns_typed_validation_error_without_network_call (tests.test_audit_report_structured.AuditReportStructuredValidationTests.test_missing_corp_code_returns_typed_validation_error_without_network_call) ... ok
+test_invalid_report_type_still_returns_existing_public_error_text (tests.test_audit_report_structured.GetPeriodicReportUnaffectedTests.test_invalid_report_type_still_returns_existing_public_error_text) ... ok
+test_string_tool_still_returns_duplicated_rows_for_audit_report_type (tests.test_audit_report_structured.GetPeriodicReportUnaffectedTests.test_string_tool_still_returns_duplicated_rows_for_audit_report_type)
+`get_periodic_report`는 여전히 얇은 래퍼로 남아 구조화 계층의 중복 ... ok
+
+----------------------------------------------------------------------
+Ran 8 tests in 0.008s
+
+OK
