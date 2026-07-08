@@ -20,6 +20,7 @@
 - `download_xbrl`: XBRL 재무제표 원본파일(DSD)을 다운로드합니다.
 - `get_xbrl_taxonomy`: XBRL 택사노미 재무제표 양식(표준계정과목체계)을 조회합니다.
 - `get_securities_report`: 증권신고서 주요정보를 유형별로 조회합니다.
+- `export_temis_topic_cases`: 감사보고서 사실(회계감사인)을 TEMIS(finov2) `DartTopicCase` JSON 배열로
 
 ## 주요 사용 흐름
 

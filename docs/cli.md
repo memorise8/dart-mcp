@@ -21,6 +21,7 @@
 - `dart download-xbrl`: XBRL 재무제표 원본파일을 다운로드합니다.
 - `dart taxonomy`: XBRL 택사노미 재무제표 양식을 조회합니다.
 - `dart securities`: 증권신고서 주요정보를 조회합니다.
+- `dart temis-topic-cases`: 감사보고서 사실(회계감사인)을 TEMIS(finov2)...
 - `dart serve`: MCP 서버를 시작합니다.
 
 ## 예시

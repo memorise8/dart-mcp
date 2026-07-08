@@ -20,8 +20,10 @@ from server import (
     MAJOR_EVENT_REGISTRY,
     PERIODIC_REPORT_REGISTRY,
     SECURITIES_REGISTRATION_REGISTRY,
+    TemisExportError,
     download_document,
     download_xbrl,
+    export_temis_topic_cases_core,
     get_company_info,
     get_executive_stock_report,
     get_financial_indicators,
@@ -260,6 +262,47 @@ def securities(corp_code, report_type, bgn_de, end_de):
     """
     result = asyncio.run(get_securities_report(corp_code, report_type, bgn_de, end_de))
     click.echo(result)
+
+
+@cli.command("temis-topic-cases")
+@click.argument("year")
+@click.option("--corp", "-c", default="", help="회사명 (--code 없을 때 사용; 여러 회사와 매치되면 오류)")
+@click.option("--code", default="", help="DART 고유번호 (--corp 대신 사용)")
+@click.option("--report", "reprt_code", default="11011", help="보고서코드 (11011=사업보고서, 11012=반기, 11013=1분기, 11014=3분기)")
+@click.option("--keywords", default="", help='기본 토픽 키워드 사전에 추가할 항목, "slug:용어,slug2:용어2" 형식 (선택)')
+@click.option("-o", "--output", "output_path", required=True, help="TEMIS DartTopicCase JSON 배열을 쓸 출력 파일 경로")
+def temis_topic_cases(year, corp, code, reprt_code, keywords, output_path):
+    """감사보고서 사실(회계감사인)을 TEMIS(finov2) DartTopicCase JSON 배열로
+    변환해 OUTPUT 경로에 씁니다 (opt-in 운영 adapter 경계 명령).
+
+    finov2는 OpenDART를 직접 호출하지 않고 이 명령이 만든 JSON 파일을
+    DART_TOPIC_CASES_PATH 환경변수로 읽습니다.
+
+    --code 또는 --corp 중 하나가 필요합니다. 둘 다 없거나, --corp가 여러
+    회사와 매치되거나(모호) 해석되지 않으면(결과 없음) 오류 메시지를 출력하고
+    0이 아닌 종료 코드를 반환하며, 출력 파일은 전혀 만들지 않습니다.
+
+    경고: OUTPUT은 항상 덮어씁니다 (기존 파일에 append하지 않습니다). Task 6
+    변환기가 보장하는 case_id 유일성은 "한 번의 변환" 범위에서만 유효하므로,
+    매 실행마다 파일 전체를 새로 쓰는 것만이 그 유일성을 파일 단위로
+    지키는 방법입니다.
+    """
+    outcome = asyncio.run(
+        export_temis_topic_cases_core(
+            bsns_year=year,
+            output_path=output_path,
+            corp_code=code,
+            corp_name=corp,
+            reprt_code=reprt_code,
+            extra_keywords=keywords,
+        )
+    )
+
+    if isinstance(outcome, TemisExportError):
+        click.echo(outcome.message, err=True)
+        raise SystemExit(1)
+
+    click.echo(outcome.message)
 
 
 @cli.command()

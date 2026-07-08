@@ -19,6 +19,7 @@ from dart_search_mcp.tools.reports import get_major_event_report, get_periodic_r
 from dart_search_mcp.tools.downloads import _resolve_rcept_no, download_document, download_xbrl
 from dart_search_mcp.tools.taxonomy import get_xbrl_taxonomy
 from dart_search_mcp.tools.securities import get_securities_report
+from dart_search_mcp.tools.temis import TemisExportError, export_temis_topic_cases, export_temis_topic_cases_core
 
 __all__ = [
     "API_KEY",
@@ -26,6 +27,7 @@ __all__ = [
     "MAJOR_EVENT_REGISTRY",
     "PERIODIC_REPORT_REGISTRY",
     "SECURITIES_REGISTRATION_REGISTRY",
+    "TemisExportError",
     "_default_date_range",
     "_fetch_dart",
     "_fetch_dart_binary",
@@ -36,6 +38,8 @@ __all__ = [
     "_resolve_rcept_no",
     "download_document",
     "download_xbrl",
+    "export_temis_topic_cases",
+    "export_temis_topic_cases_core",
     "get_company_info",
     "get_executive_stock_report",
     "get_financial_indicators",
