@@ -12,6 +12,8 @@ from dart_search_mcp.app import mcp
 
 from dart_search_mcp.config import API_KEY
 
+from dart_search_mcp.redact import redact
+
 
 
 _corp_code_cache: list[dict[str, str]] | None = None
@@ -71,7 +73,7 @@ async def search_corp_code(
     try:
         corps = await _load_corp_codes()
     except Exception as e:
-        return f"오류: 회사 코드 목록 로드 중 오류가 발생했습니다. {str(e)}"
+        return f"오류: 회사 코드 목록 로드 중 오류가 발생했습니다. {redact(str(e))}"
 
     exact: list[dict[str, str]] = []
     starts: list[dict[str, str]] = []
