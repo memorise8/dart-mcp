@@ -1,4 +1,3 @@
-import logging
 import unittest
 from contextlib import contextmanager
 from typing import Callable, Iterator
@@ -9,10 +8,9 @@ import httpx
 from dart_search_mcp import client
 from dart_search_mcp.results import DartError, DartNoData, DartResult, DartSuccess, NO_DATA_MESSAGE
 
-# httpx는 기본적으로 요청 URL(크리덴셜 쿼리 파라미터 포함)을 INFO 레벨로 로깅한다.
-# 전역 상수 규칙(“crtfc_key는 로그/예외/문서/증적 어디에도 노출되지 않아야 한다”)을
-# 테스트 실행 로그(및 그것을 캡처한 QA 증적 파일)에서도 지키기 위해 낮춰둔다.
-logging.getLogger("httpx").setLevel(logging.WARNING)
+# `dart_search_mcp.client`가 `dart_search_mcp.redact`를 import하는 부수 효과로
+# httpx 요청 로깅(크리덴셜 쿼리 파라미터가 담긴 INFO 레벨 "HTTP Request: ..." 로그)이
+# 이미 WARNING 레벨로 억제되어 있다. 별도의 테스트 전용 워크어라운드는 필요 없다.
 
 _RealAsyncClient = httpx.AsyncClient
 
@@ -148,6 +146,22 @@ class FetchDartResultTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(data, dict)
         assert isinstance(data, dict)
         self.assertEqual(data["corp_name"], "삼성전자")
+
+    async def test_unexpected_error_message_containing_request_url_is_redacted(self) -> None:
+        """QA 실패 시나리오: 요청 URL(crtfc_key 포함)을 담은 예기치 못한 예외가 발생해도
+        DartError 메시지에는 `crtfc_key=<redacted>`만 남고 실제 키 값은 노출되지 않는다."""
+        leaking_url = f"https://opendart.fss.or.kr/api/list.json?crtfc_key={_DUMMY_API_KEY}&corp_code=00126380"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise RuntimeError(f"connection reset while calling {leaking_url}")
+
+        with mocked_dart_transport(handler):
+            result = await client._fetch_dart_result("list.json", {})
+
+        self.assertIsInstance(result, DartError)
+        assert isinstance(result, DartError)
+        self.assertIn("crtfc_key=<redacted>", result.message)
+        self.assertNotIn(_DUMMY_API_KEY, result.message)
 
 
 class PublicFormatterUnaffectedByStructuredErrorTests(unittest.IsolatedAsyncioTestCase):

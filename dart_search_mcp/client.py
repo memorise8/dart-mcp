@@ -3,6 +3,7 @@ from typing import cast
 import httpx
 
 from dart_search_mcp.config import API_KEY, BASE_URL
+from dart_search_mcp.redact import redact
 from dart_search_mcp.results import DartError, DartNoData, DartResult, DartSuccess
 from dart_search_mcp.types import JsonObject, QueryParams
 
@@ -24,9 +25,9 @@ async def _fetch_dart_result(endpoint: str, params: QueryParams) -> DartResult:
     except httpx.HTTPStatusError as e:
         return DartError(message=f"오류: HTTP 오류가 발생했습니다. 상태 코드: {e.response.status_code}")
     except httpx.RequestError as e:
-        return DartError(message=f"오류: 네트워크 오류가 발생했습니다. {str(e)}")
+        return DartError(message=f"오류: 네트워크 오류가 발생했습니다. {redact(str(e))}")
     except Exception as e:
-        return DartError(message=f"오류: 예상치 못한 오류가 발생했습니다. {str(e)}")
+        return DartError(message=f"오류: 예상치 못한 오류가 발생했습니다. {redact(str(e))}")
 
     # DART API 상태 코드 확인
     status = data.get("status", "")
@@ -75,4 +76,4 @@ async def _fetch_dart_binary(endpoint: str, params: QueryParams) -> bytes | str:
     except httpx.HTTPStatusError as e:
         return f"오류: HTTP 오류 상태 코드: {e.response.status_code}"
     except Exception as e:
-        return f"오류: {str(e)}"
+        return f"오류: {redact(str(e))}"
