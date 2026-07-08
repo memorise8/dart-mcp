@@ -7,11 +7,7 @@ from dart_search_mcp.formatting import _default_date_range, _format_amount, _for
 from dart_search_mcp.registries import MAJOR_EVENT_REGISTRY, PERIODIC_REPORT_REGISTRY, SECURITIES_REGISTRATION_REGISTRY
 from dart_search_mcp.results import DartError, DartNoData, DartSuccess
 from dart_search_mcp.types import DartRecord, QueryParams, records_from
-
-# https://dart.fss.or.kr/dsaf001/main.do?rcpNo=<rcept_no> 형식의 원문 링크 템플릿.
-# `dart_search_mcp.tools.disclosures`에도 동일한 템플릿이 있으나(공시 검색용),
-# 모듈 간 결합을 늘리지 않기 위해 이 모듈에서 별도로 정의한다.
-_SOURCE_URL_TEMPLATE = "https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}"
+from dart_search_mcp.urls import SOURCE_URL_TEMPLATE
 
 # 정기보고서 유형(reprt_code) -> 사람이 읽는 라벨. `get_periodic_report`의 제목과
 # `get_audit_report_structured`의 `business_year_label` 계산에서 함께 사용한다.
@@ -95,7 +91,7 @@ def _to_audit_report_record(
         emphasis_matter=item.get("emphs_matter", ""),
         core_audit_matter=item.get("core_adt_matter", ""),
         settlement_date=item.get("stlm_dt", ""),
-        source_url=_SOURCE_URL_TEMPLATE.format(rcept_no=rcept_no) if rcept_no else "",
+        source_url=SOURCE_URL_TEMPLATE.format(rcept_no=rcept_no) if rcept_no else "",
     )
 
 

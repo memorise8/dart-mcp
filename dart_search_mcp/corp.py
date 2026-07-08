@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import io
 
 import xml.etree.ElementTree as ET
@@ -72,7 +70,6 @@ class CorpMatches:
     목록이다.
     """
 
-    query: str
     exact: list[CorpRecord] = field(default_factory=list)
     prefix: list[CorpRecord] = field(default_factory=list)
     contains: list[CorpRecord] = field(default_factory=list)
@@ -146,7 +143,62 @@ async def resolve_corp_code(corp_name: str) -> CorpResolution:
         elif query in name:
             contains.append(_to_corp_record(item))
 
-    return CorpMatches(query=corp_name, exact=exact, prefix=prefix, contains=contains)
+    return CorpMatches(exact=exact, prefix=prefix, contains=contains)
+
+
+@dataclass(frozen=True, slots=True)
+class CorpNameNotFound:
+    """`resolve_single_corp_code`에서 corp_name과 매치되는 회사가 하나도 없는 경우."""
+
+    corp_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class CorpNameAmbiguous:
+    """`resolve_single_corp_code`에서 corp_name이 둘 이상의 회사와 매치되는 경우.
+
+    `list.json` 등 후속 API는 전혀 호출하지 않고 후보 목록만 담아 반환한다."""
+
+    corp_name: str
+    candidates: list[CorpRecord]
+
+
+type SingleCorpResolution = str | CorpNameNotFound | CorpNameAmbiguous | CorpValidationError | CorpLoadError
+
+
+async def resolve_single_corp_code(corp_name: str) -> SingleCorpResolution:
+    """회사명을 정확히 하나의 corp_code로 해석하는 공유 헬퍼.
+
+    `dart_search_mcp.tools.disclosures._resolve_single_corp_code`와
+    `dart_search_mcp.tools.temis._resolve_export_corp_code`가 공통으로 쓰는
+    corp_name -> corp_code 단일 해석 로직이다. exact 매치가 정확히 하나면
+    그것을 사용한다. exact 매치가 없고 prefix+contains를 합친 후보가 정확히
+    하나면 그것을 사용한다. 그 외(후보가 여럿이거나 exact가 여럿인 경우)에는
+    `CorpNameAmbiguous`를, 후보가 하나도 없으면 `CorpNameNotFound`를
+    반환한다 — 둘 다 `list.json` 등 후속 API를 호출하지 않는다.
+
+    이 헬퍼는 호출자별 오류 타입/메시지를 만들지 않는다(neutral). 각 호출자는
+    반환값을 자신의 오류 타입으로 매핑해야 한다.
+    """
+    resolution = await resolve_corp_code(corp_name)
+
+    if isinstance(resolution, (CorpValidationError, CorpLoadError)):
+        return resolution
+
+    assert isinstance(resolution, CorpMatches)
+
+    if len(resolution.exact) == 1:
+        return resolution.exact[0].corp_code
+
+    candidates = resolution.exact if resolution.exact else [*resolution.prefix, *resolution.contains]
+
+    if not candidates:
+        return CorpNameNotFound(corp_name=corp_name)
+
+    if len(candidates) == 1:
+        return candidates[0].corp_code
+
+    return CorpNameAmbiguous(corp_name=corp_name, candidates=candidates)
 
 
 @mcp.tool()

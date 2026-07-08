@@ -10,6 +10,7 @@ from dart_search_mcp.client import _fetch_dart, _fetch_dart_result
 from dart_search_mcp.formatting import _format_date
 from dart_search_mcp.results import DartError, DartNoData, DartSuccess
 from dart_search_mcp.types import DartRecord, QueryParams, records_from
+from dart_search_mcp.urls import SOURCE_URL_TEMPLATE
 
 if TYPE_CHECKING:
     # `dart_search_mcp.corp`는 여기서 런타임에 import하지 않는다 (아래 함수
@@ -19,8 +20,6 @@ if TYPE_CHECKING:
     # `search_disclosures`/`get_company_info`보다 먼저 등록되어
     # tests/test_public_surface.py의 MCP 도구 등록 순서 검증이 깨진다.
     from dart_search_mcp.corp import CorpRecord
-
-_SOURCE_URL_TEMPLATE = "https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,7 +87,7 @@ def _to_disclosure_record(item: DartRecord) -> DisclosureRecord:
         corp_name=item.get("corp_name", ""),
         stock_code=item.get("stock_code", ""),
         corp_cls=item.get("corp_cls", ""),
-        source_url=_SOURCE_URL_TEMPLATE.format(rcept_no=rcept_no) if rcept_no else "",
+        source_url=SOURCE_URL_TEMPLATE.format(rcept_no=rcept_no) if rcept_no else "",
         flr_nm=item.get("flr_nm", ""),
         remark=item.get("rm", ""),
     )
@@ -108,34 +107,35 @@ async def _resolve_single_corp_code(
     # 지연 import: 모듈 최상단에서 import하면 `dart_search_mcp.corp`의
     # `@mcp.tool()` 등록이 이 모듈보다 먼저 실행되어 MCP 도구 등록 순서가
     # 바뀐다 (파일 상단 TYPE_CHECKING 블록의 설명 참고).
-    from dart_search_mcp.corp import CorpLoadError, CorpMatches, CorpValidationError, resolve_corp_code
+    from dart_search_mcp.corp import (
+        CorpLoadError,
+        CorpNameAmbiguous,
+        CorpNameNotFound,
+        CorpValidationError,
+        resolve_single_corp_code,
+    )
 
-    resolution = await resolve_corp_code(corp_name)
+    resolution = await resolve_single_corp_code(corp_name)
+
+    if isinstance(resolution, str):
+        return resolution
 
     if isinstance(resolution, (CorpValidationError, CorpLoadError)):
         return DisclosureSearchError(message=resolution.message)
 
-    assert isinstance(resolution, CorpMatches)
+    if isinstance(resolution, CorpNameNotFound):
+        return DisclosureSearchError(message=f"검색 결과가 없습니다.\n검색어: {resolution.corp_name}")
 
-    if len(resolution.exact) == 1:
-        return resolution.exact[0].corp_code
-
-    candidates = resolution.exact if resolution.exact else [*resolution.prefix, *resolution.contains]
-
-    if not candidates:
-        return DisclosureSearchError(message=f"검색 결과가 없습니다.\n검색어: {corp_name}")
-
-    if len(candidates) == 1:
-        return candidates[0].corp_code
+    assert isinstance(resolution, CorpNameAmbiguous)
 
     lines = [
-        f'오류: 회사명 "{corp_name}"에 해당하는 회사가 여러 건입니다. '
+        f'오류: 회사명 "{resolution.corp_name}"에 해당하는 회사가 여러 건입니다. '
         "corp_code를 지정해 다시 조회해주세요.",
     ]
-    for candidate in candidates:
+    for candidate in resolution.candidates:
         lines.append(f"  - {candidate.corp_name} (corp_code={candidate.corp_code})")
 
-    return DisclosureAmbiguousCompanyError(message="\n".join(lines), candidates=candidates)
+    return DisclosureAmbiguousCompanyError(message="\n".join(lines), candidates=resolution.candidates)
 
 
 async def search_disclosures_structured(

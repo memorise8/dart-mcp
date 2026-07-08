@@ -37,7 +37,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from dart_search_mcp.app import mcp
-from dart_search_mcp.corp import CorpLoadError, CorpMatches, CorpValidationError, resolve_corp_code
+from dart_search_mcp.corp import (
+    CorpLoadError,
+    CorpNameAmbiguous,
+    CorpNameNotFound,
+    CorpValidationError,
+    resolve_single_corp_code,
+)
 from dart_search_mcp.temis_export import TOPIC_KEYWORDS, convert_audit_reports_to_topic_cases, topic_cases_to_json
 from dart_search_mcp.tools.reports import AuditReportError, get_audit_report_structured
 
@@ -119,29 +125,24 @@ async def _resolve_export_corp_code(corp_code: str, corp_name: str) -> str | Tem
     if not corp_name:
         return TemisExportError(message="오류: corp_code 또는 회사명(corp_name/--corp)을 입력해주세요.")
 
-    resolution = await resolve_corp_code(corp_name)
+    resolution = await resolve_single_corp_code(corp_name)
+
+    if isinstance(resolution, str):
+        return resolution
 
     if isinstance(resolution, (CorpValidationError, CorpLoadError)):
         return TemisExportError(message=resolution.message)
 
-    assert isinstance(resolution, CorpMatches)
+    if isinstance(resolution, CorpNameNotFound):
+        return TemisExportError(message=f"오류: 검색 결과가 없습니다.\n검색어: {resolution.corp_name}")
 
-    if len(resolution.exact) == 1:
-        return resolution.exact[0].corp_code
-
-    candidates = resolution.exact if resolution.exact else [*resolution.prefix, *resolution.contains]
-
-    if not candidates:
-        return TemisExportError(message=f"오류: 검색 결과가 없습니다.\n검색어: {corp_name}")
-
-    if len(candidates) == 1:
-        return candidates[0].corp_code
+    assert isinstance(resolution, CorpNameAmbiguous)
 
     lines = [
-        f'오류: 회사명 "{corp_name}"에 해당하는 회사가 여러 건입니다. '
+        f'오류: 회사명 "{resolution.corp_name}"에 해당하는 회사가 여러 건입니다. '
         "corp_code(--code)를 지정해 다시 시도해주세요.",
     ]
-    for candidate in candidates:
+    for candidate in resolution.candidates:
         lines.append(f"  - {candidate.corp_name} (corp_code={candidate.corp_code})")
 
     return TemisExportError(message="\n".join(lines))

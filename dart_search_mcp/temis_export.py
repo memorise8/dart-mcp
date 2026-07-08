@@ -20,12 +20,6 @@ JSON 배열로 변환한다.
     `case_id`는 `general` slug를 쓴다).
   - `extraction_confidence`는 매칭된 태그 개수에 기반한 단순 휴리스틱이다.
     실제 모델 기반 신뢰도 점수가 아니다.
-  - `dart_search_mcp.document_extraction.extract_snippets`(Task 7)는 ZIP
-    바이트에서 스니펫을 뽑는 별도 책임(원문 파일 처리)을 갖는다. 이 모듈이
-    다루는 `AuditReportRecord`는 이미 구조화된 문자열 필드이므로 ZIP을 열
-    필요가 없어 그 함수를 재사용하지 않지만, 동일한 주의사항을 따른다:
-    키워드는 앞뒤 공백이 없어야 substring 매칭이 정확하다
-    (`TOPIC_KEYWORDS`의 모든 한국어 용어는 리터럴이라 이미 그렇다).
 
 접수번호(`rcept_no`)가 비어 있으면 `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=`
 같은 가짜 원문 링크를 만들 수 있으므로 해당 사실(fact)은 건너뛴다
@@ -40,8 +34,7 @@ import json
 from dataclasses import asdict, dataclass
 
 from dart_search_mcp.tools.reports import AuditReportRecord
-
-_SOURCE_URL_TEMPLATE = "https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}"
+from dart_search_mcp.urls import SOURCE_URL_TEMPLATE
 
 # (topic slug, 한국어 키워드) 순서쌍의 튜플. 순서가 두 가지를 결정한다:
 #   1. `case_id`에 쓰이는 slug — 텍스트에서 매칭된 항목 중 사전 순서상 가장
@@ -226,7 +219,7 @@ def convert_audit_reports_to_topic_cases(
                 auditor=fact.auditor,
                 topic_tags=topic_tags,
                 disclosure_snippet=disclosure_snippet,
-                source_url=_SOURCE_URL_TEMPLATE.format(rcept_no=rcept_no),
+                source_url=SOURCE_URL_TEMPLATE.format(rcept_no=rcept_no),
                 document_id=rcept_no,
                 extraction_confidence=_confidence_for(matched),
                 freshness_timestamp=freshness_timestamp,
