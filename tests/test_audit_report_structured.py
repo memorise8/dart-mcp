@@ -171,6 +171,57 @@ class AuditReportStructuredDedupTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class AuditReportStructuredBsnsYearSourceTests(unittest.IsolatedAsyncioTestCase):
+    """`AuditReportRecord.bsns_year`(및 이를 그대로 쓰는 TEMIS export의
+    `fiscal_year`)는 OpenDART 응답 항목이 아니라 호출자의 입력 파라미터에서
+    와야 한다 (회귀 방지, 커밋 c531a0f).
+
+    실제 OpenDART `accnutAdtorNmNdAdtOpinion` 응답의 `bsns_year` 필드는
+    숫자가 아니라 "제56기(당기)"류의 한국어 서수 라벨이다. 과거에는 이 라벨을
+    그대로 `AuditReportRecord.bsns_year`로 흘려보냈고, 그 결과
+    `int(bsns_year)`로 fiscal_year를 계산하는 TEMIS export 단계가 실제
+    데이터에서는 전부 실패해 레코드가 전량 누락되었다 (0건 export).
+    이 테스트는 입력 `bsns_year`("2024")가 레코드에 그대로 남고, 응답의
+    서수 라벨이 새어나오지 않는지를 검증한다."""
+
+    async def test_bsns_year_sourced_from_input_not_response_ordinal_label(self) -> None:
+        input_bsns_year = "2024"
+        response_ordinal_label = "제56기(당기)"
+
+        row = _samsung_audit_row(rcept_no="20250312000001")
+        row["bsns_year"] = response_ordinal_label
+
+        response = {
+            "status": "000",
+            "message": "정상",
+            "list": [row],
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=response)
+
+        with mocked_dart_transport(handler):
+            outcome = await get_audit_report_structured(corp_code="00126380", bsns_year=input_bsns_year)
+
+        self.assertIsInstance(outcome, AuditReportResult)
+        assert isinstance(outcome, AuditReportResult)
+        self.assertEqual(len(outcome.records), 1)
+
+        record = outcome.records[0]
+        # 회귀 확인: 레코드의 bsns_year는 입력 파라미터여야지, 응답의 서수
+        # 라벨("제56기(당기)")이어서는 안 된다. 옛(버그) 코드였다면 여기서
+        # record.bsns_year == "제56기(당기)"가 되어 이 단언이 실패했을 것이다.
+        self.assertEqual(record.bsns_year, input_bsns_year)
+        self.assertNotEqual(record.bsns_year, response_ordinal_label)
+
+        # TEMIS export의 fiscal_year는 int(bsns_year)로 파싱되므로 반드시
+        # 숫자 문자열이어야 한다. 응답의 서수 라벨은 애초에 int()로 파싱할 수
+        # 없어 옛 코드에서는 이 지점 자체가 ValueError로 죽었을 것이다.
+        self.assertEqual(int(record.bsns_year), 2024)
+        with self.assertRaises(ValueError):
+            int(response_ordinal_label)
+
+
 class AuditReportStructuredValidationTests(unittest.IsolatedAsyncioTestCase):
     async def test_missing_corp_code_returns_typed_validation_error_without_network_call(self) -> None:
         called = False
