@@ -224,6 +224,34 @@ class CoreExportSuccessTests(unittest.IsolatedAsyncioTestCase):
         case_ids = [r["case_id"] for r in parsed]
         self.assertEqual(len(case_ids), len(set(case_ids)))
 
+    async def test_no_data_status_013_writes_empty_json_array(self) -> None:
+        """DART가 status 013(조회된 데이터 없음)으로 응답하면 유효한 쿼리에
+        결과가 없는 것뿐이므로(= corp_code를 찾지 못한 것과는 다르다)
+        `TemisExportError`가 아니라 성공(레코드 0건, 빈 JSON 배열 파일)이어야
+        한다."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"status": "013", "message": "조회된 데이터가 없습니다."})
+
+        with mocked_dart_transport(handler):
+            with self._temp_path() as output_path:
+                outcome = await export_temis_topic_cases_core(
+                    corp_code="00126380",
+                    bsns_year="2023",
+                    output_path=output_path,
+                )
+
+                self.assertIsInstance(outcome, TemisExportOutcome)
+                assert isinstance(outcome, TemisExportOutcome)
+                self.assertEqual(outcome.record_count, 0)
+
+                self.assertTrue(os.path.exists(output_path))
+                with open(output_path, encoding="utf-8") as f:
+                    raw = f.read()
+
+        parsed = json.loads(raw)
+        self.assertEqual(parsed, [])
+
     async def test_corp_name_resolves_to_unique_exact_match(self) -> None:
         zip_bytes = _build_corp_code_zip(_CORP_FIXTURE)
 
