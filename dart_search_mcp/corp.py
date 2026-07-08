@@ -6,8 +6,6 @@ import zipfile
 
 from dataclasses import dataclass, field
 
-
-
 import httpx
 
 from dart_search_mcp.app import mcp
