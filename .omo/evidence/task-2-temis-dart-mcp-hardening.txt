@@ -12,7 +12,7 @@ Ran 7 tests in 0.215s
 
 OK
 
-=== DART_API_KEY=secret-test-key uv run dart diagnostics ===
+=== DART_API_KEY=<dummy-key> uv run dart diagnostics ===
 DART search MCP diagnostics
 Python: 3.12.0
 Package: dart-search-mcp 0.1.0
@@ -21,7 +21,7 @@ DART base URL: https://opendart.fss.or.kr/api
 MCP tools: 16
 CLI commands: 18
 
-=== grep for leaked secret-test-key in above output (should be empty) ===
+=== grep for leaked dummy key in above output (should be empty) ===
 no leak found
 
 === QA failure scenario: forced exception containing request URL is redacted ===
