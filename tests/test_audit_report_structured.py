@@ -171,6 +171,68 @@ class AuditReportStructuredDedupTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class AuditReportStructuredTextNormalizationTests(unittest.IsolatedAsyncioTestCase):
+    """상류(OpenDART) 응답 값에 개행/중복 공백 등 텍스트 잡음이 섞여 오는 사례가
+    실제 스모크 테스트에서 발견되었다 (예: 감사인명이 "한영\n회계법인"으로 응답).
+    이런 잡음이 그대로 구조화 레코드에 흘러들어가면 TEMIS가 소비하는
+    DartTopicCase JSON에도 개행/중복 공백이 섞인다. 구조화 레코드 생성 시점에
+    내부 공백을 단일 공백으로 정규화한다 (multi-word 내용의 단일 공백은 보존)."""
+
+    async def test_embedded_newline_and_doubled_space_collapse_to_single_space(self) -> None:
+        row = {
+            **_samsung_audit_row(),
+            "adtor": "한영\n회계법인",
+            "adt_reprt_spcmnt_matter": "해당사항  없음",  # doubled space
+            "stlm_dt": "2023-12-31 ",  # trailing space
+        }
+        response = {
+            "status": "000",
+            "message": "정상",
+            "list": [row],
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=response)
+
+        with mocked_dart_transport(handler):
+            outcome = await get_audit_report_structured(corp_code="00126380", bsns_year="2023")
+
+        self.assertIsInstance(outcome, AuditReportResult)
+        assert isinstance(outcome, AuditReportResult)
+        self.assertEqual(len(outcome.records), 1)
+
+        record = outcome.records[0]
+        self.assertEqual(record.auditor, "한영 회계법인")
+        self.assertEqual(record.special_matter, "해당사항 없음")
+        self.assertEqual(record.settlement_date, "2023-12-31")
+
+    async def test_multi_word_opinion_phrase_keeps_internal_single_spaces(self) -> None:
+        row = {
+            **_samsung_audit_row(),
+            "adt_opinion": "한정 의견 (감사범위 제한)",
+            "core_adt_matter": "재고자산 평가의 적정성에 대한 감사",
+        }
+        response = {
+            "status": "000",
+            "message": "정상",
+            "list": [row],
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=response)
+
+        with mocked_dart_transport(handler):
+            outcome = await get_audit_report_structured(corp_code="00126380", bsns_year="2023")
+
+        self.assertIsInstance(outcome, AuditReportResult)
+        assert isinstance(outcome, AuditReportResult)
+        self.assertEqual(len(outcome.records), 1)
+
+        record = outcome.records[0]
+        self.assertEqual(record.audit_opinion, "한정 의견 (감사범위 제한)")
+        self.assertEqual(record.core_audit_matter, "재고자산 평가의 적정성에 대한 감사")
+
+
 class AuditReportStructuredBsnsYearSourceTests(unittest.IsolatedAsyncioTestCase):
     """`AuditReportRecord.bsns_year`(및 이를 그대로 쓰는 TEMIS export의
     `fiscal_year`)는 OpenDART 응답 항목이 아니라 호출자의 입력 파라미터에서

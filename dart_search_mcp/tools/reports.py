@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 from typing import Final
 
@@ -73,6 +74,17 @@ class AuditReportError:
     message: str
 
 
+def _normalize_text(value: str) -> str:
+    """OpenDART 응답 자유서술형 텍스트 값에 섞여 들어오는 개행/탭/중복 공백
+    잡음을 단일 공백으로 정리한다 (예: "한영\n회계법인" -> "한영 회계법인").
+
+    내부 공백을 전부 지우는 것이 아니라 하나의 공백으로 축약(collapse)하므로
+    감사의견/핵심감사사항처럼 여러 단어로 구성된 문장의 단어 사이 공백은 그대로
+    보존된다. 앞뒤 공백은 제거한다."""
+
+    return re.sub(r"\s+", " ", value).strip()
+
+
 def _to_audit_report_record(
     item: DartRecord, *, bsns_year: str, reprt_code: str, business_year_label: str
 ) -> AuditReportRecord:
@@ -85,12 +97,12 @@ def _to_audit_report_record(
         reprt_code=reprt_code,
         business_year_label=business_year_label,
         rcept_no=rcept_no,
-        auditor=item.get("adtor", ""),
-        audit_opinion=item.get("adt_opinion", ""),
-        special_matter=item.get("adt_reprt_spcmnt_matter", ""),
-        emphasis_matter=item.get("emphs_matter", ""),
-        core_audit_matter=item.get("core_adt_matter", ""),
-        settlement_date=item.get("stlm_dt", ""),
+        auditor=_normalize_text(item.get("adtor", "")),
+        audit_opinion=_normalize_text(item.get("adt_opinion", "")),
+        special_matter=_normalize_text(item.get("adt_reprt_spcmnt_matter", "")),
+        emphasis_matter=_normalize_text(item.get("emphs_matter", "")),
+        core_audit_matter=_normalize_text(item.get("core_adt_matter", "")),
+        settlement_date=_normalize_text(item.get("stlm_dt", "")),
         source_url=SOURCE_URL_TEMPLATE.format(rcept_no=rcept_no) if rcept_no else "",
     )
 
