@@ -78,14 +78,14 @@ class AuditReportError:
 
 
 def _to_audit_report_record(
-    item: DartRecord, *, reprt_code: str, business_year_label: str
+    item: DartRecord, *, bsns_year: str, reprt_code: str, business_year_label: str
 ) -> AuditReportRecord:
     rcept_no = item.get("rcept_no", "")
     return AuditReportRecord(
         corp_code=item.get("corp_code", ""),
         corp_name=item.get("corp_name", ""),
         corp_cls=item.get("corp_cls", ""),
-        bsns_year=item.get("bsns_year", ""),
+        bsns_year=bsns_year,
         reprt_code=reprt_code,
         business_year_label=business_year_label,
         rcept_no=rcept_no,
@@ -145,7 +145,10 @@ async def get_audit_report_structured(
         deduped: list[AuditReportRecord] = []
         for item in items:
             record = _to_audit_report_record(
-                item, reprt_code=reprt_code, business_year_label=business_year_label
+                item,
+                bsns_year=bsns_year.strip(),
+                reprt_code=reprt_code,
+                business_year_label=business_year_label,
             )
             if record in seen:
                 continue
