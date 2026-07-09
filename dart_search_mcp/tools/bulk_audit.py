@@ -17,7 +17,10 @@ Step 2b(`dart_search_mcp.tools.audit_docs.extract_audit_documents_core`)가
   corp_name 해석 실패류는 bulk에서 절대 발생하지 않으므로 `failed`로
   귀속된다) - `AuditDocsError.kind`라는 구조화된 판별자를 보고 분류하며,
   `AuditDocsError.message`의 한국어 문구를 문자열 매칭하지 않는다(문구가
-  바뀌어도 분류는 바뀌지 않는다).
+  바뀌어도 분류는 바뀌지 않는다). `skipped_no_consolidated`는 오직
+  `--require-consolidated`(`AuditDocsError(kind="no_consolidated")`)에서만
+  나온다 - `--require-consolidated` 없이 연결감사보고서만 없는 성공 outcome은
+  감사보고서가 수집됐다면 `succeeded`다(단일 필링 도구와 동일한 판정).
 - **체크포인트/재개:** 완료된 필링별 상태를 체크포인트 경로에 저장해,
   `--resume` 시 이미 `succeeded`인 필링은 다시 처리하지 않는다.
   `dart_search_mcp.collect`의 체크포인트/원자적 쓰기/run-params 가드 패턴을
@@ -174,19 +177,21 @@ def _classify_error_kind(kind: str) -> str:
     return _ERROR_KIND_TO_STATUS.get(kind, _DEFAULT_ERROR_STATUS)
 
 
-def _classify_success_outcome(outcome: AuditDocsOutcome, *, include: str, require_consolidated: bool) -> str:
-    """성공적으로 추출됐지만(오류 없음) 요청한 문서가 ZIP 안에 실재하지 않았던
-    경우를 `succeeded`와 구분해 분류한다. `require_consolidated=True`인데
+def _classify_success_outcome(outcome: AuditDocsOutcome) -> str:
+    """성공 outcome(오류 없이 완료됨)을 분류한다. `require_consolidated=True`인데
     연결감사보고서가 없는 경우는 이미 `AuditDocsError(kind="no_consolidated")`로
-    걸러지므로 여기 도달했을 때는 항상 만족된 상태다."""
-    want_audit = include in ("audit", "both")
-    want_consolidated = include in ("consolidated", "both") or require_consolidated
+    걸러지므로, 여기 도달했다는 것은 require_consolidated가 요청되지
+    않았거나 이미 만족됐다는 뜻이다 - 따라서 이 함수는 절대
+    `skipped_no_consolidated`를 반환하지 않는다(그 상태는 오직
+    `_ERROR_KIND_TO_STATUS`의 오류 경로에서만 나온다).
 
-    if want_audit and not outcome.audit_found:
-        return "skipped_no_audit"
-    if want_consolidated and not outcome.consolidated_found:
-        return "skipped_no_consolidated"
-    return "succeeded"
+    `--require-consolidated` 없이 연결감사보고서가 없는 것은 정상적인
+    "찾지 못함" 결과일 뿐이다 - 감사보고서(또는 연결감사보고서)가 실제로
+    하나라도 추출/기록됐으면 `succeeded`다. 요청한 것이 ZIP 안에 전혀
+    실재하지 않아 아무것도 쓰지 못했을 때만 `skipped_no_audit`이다."""
+    if outcome.audit_found or outcome.consolidated_found:
+        return "succeeded"
+    return "skipped_no_audit"
 
 
 async def _process_filing(
@@ -217,7 +222,7 @@ async def _process_filing(
         )
 
     if isinstance(outcome, AuditDocsOutcome):
-        status = _classify_success_outcome(outcome, include=include, require_consolidated=require_consolidated)
+        status = _classify_success_outcome(outcome)
         return FilingResult(
             rcept_no=filing.rcept_no,
             corp_code=outcome.corp_code or filing.corp_code,

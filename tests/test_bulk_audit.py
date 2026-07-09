@@ -251,6 +251,30 @@ class KindClassificationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(manifest.results[0].status, "skipped_no_consolidated")
 
+    async def test_include_both_without_require_consolidated_audit_only_zip_succeeds(self) -> None:
+        """실사용 시나리오(live smoke로 확인된 버그): `--require-consolidated`
+        없이 include=both로 감사보고서만 있고 연결감사보고서가 없는(한국
+        상장사 대부분에 해당하는 정상 케이스) 필링을 처리하면, 감사보고서
+        XML은 실제로 추출/기록됐으므로 `succeeded`여야 한다(단일 필링 도구
+        `extract_audit_documents_core`가 이 경우를 성공으로 취급하는 것과
+        일치) - `skipped_no_consolidated`로 잘못 분류되면 안 된다."""
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = os.path.join(tmp, "out")
+            with patch(
+                "dart_search_mcp.tools.audit_docs._fetch_dart_binary", new_callable=AsyncMock
+            ) as mock_fetch:
+                mock_fetch.return_value = _AUDIT_ONLY_ZIP
+                manifest = await bulk_extract_audit_documents(
+                    filings=[FilingInput(rcept_no=_RCEPT_NO)],
+                    output_dir=output_dir,
+                    sleep_seconds=0,
+                )
+
+            self.assertEqual(manifest.results[0].status, "succeeded")
+            self.assertEqual(manifest.counts_by_status, {"succeeded": 1})
+            written_path = os.path.join(output_dir, _RCEPT_NO, f"{_RCEPT_NO}_00760.xml")
+            self.assertTrue(os.path.isfile(written_path))
+
     async def test_raised_exception_from_fetch_is_failed_and_run_continues(self) -> None:
         """`_fetch_dart_binary`가 (오류 문자열이 아니라) 실제로 예외를 던지는
         경우도 `_process_filing`이 잡아 `failed`로 격리하고, 다른 필링 처리를
