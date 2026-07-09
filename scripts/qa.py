@@ -19,7 +19,7 @@ async def main():
     tools = await mcp.list_tools()
     names = [tool.name for tool in tools]
     print("\\n".join(names))
-    assert len(names) == 17, len(names)
+    assert len(names) == 18, len(names)
 
 asyncio.run(main())
 """

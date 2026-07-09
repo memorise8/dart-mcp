@@ -24,10 +24,12 @@ from server import (
     MAJOR_EVENT_REGISTRY,
     PERIODIC_REPORT_REGISTRY,
     SECURITIES_REGISTRATION_REGISTRY,
+    AuditDocsError,
     TemisExportError,
     download_document,
     download_xbrl,
     export_temis_topic_cases_core,
+    extract_audit_documents_core,
     get_company_info,
     get_executive_stock_report,
     get_financial_indicators,
@@ -379,6 +381,46 @@ def temis_topic_cases(year, corp, code, reprt_code, keywords, output_path):
     )
 
     if isinstance(outcome, TemisExportError):
+        click.echo(outcome.message, err=True)
+        raise SystemExit(1)
+
+    click.echo(outcome.message)
+
+
+@cli.command("audit-documents")
+@click.option("--rcept-no", "rcept_no", default="", help="접수번호 (14자리). 지정 시 다른 조회 파라미터 대신 직접 사용")
+@click.option("--code", "corp_code", default="", help="DART 고유번호 (rcept_no 미지정 시 --year와 함께 사용)")
+@click.option("--corp", "corp_name", default="", help="회사명 (--code 대신 사용; 여러 회사와 매치되면 오류)")
+@click.option("--year", "bsns_year", default="", help="사업연도 (rcept_no 미지정 시 필수)")
+@click.option("--report", "reprt_code", default="11011", help="보고서코드 (11011=사업보고서, 11012=반기, 11013=1분기, 11014=3분기)")
+@click.option("-o", "--output", "output_dir", required=True, help="저장 디렉토리 (실제 파일은 <output>/<rcept_no>/에 저장)")
+@click.option("--include", default="both", help='추출 대상: "audit", "consolidated", "both" 중 하나 (기본값: both)')
+@click.option("--require-consolidated", is_flag=True, default=False, help="연결감사보고서가 없으면 오류로 처리 (기본값: 없음을 매니페스트에만 기록)")
+def audit_documents(rcept_no, corp_code, corp_name, bsns_year, reprt_code, output_dir, include, require_consolidated):
+    """공시서류 원본 ZIP에서 감사보고서/연결감사보고서 XML을 추출합니다.
+
+    접수번호(--rcept-no)를 직접 지정하거나, --code 또는 --corp를 --year와
+    함께 지정해 자동 조회할 수 있습니다. --corp는 정확히 하나의 회사로
+    해석되어야 하며(모호하면 오류), OpenDART에 직접 전달되지 않습니다.
+
+    실패 시(입력 검증, 회사명 해석 실패, 접수번호 미해결, 다운로드 오류, 손상된
+    ZIP, --require-consolidated인데 연결감사보고서가 없음) 0이 아닌 종료
+    코드를 반환하며 출력 디렉토리는 전혀 만들지 않습니다(부분 파일 없음).
+    """
+    outcome = asyncio.run(
+        extract_audit_documents_core(
+            rcept_no=rcept_no,
+            corp_code=corp_code,
+            corp_name=corp_name,
+            bsns_year=bsns_year,
+            reprt_code=reprt_code,
+            output_dir=output_dir,
+            include=include,
+            require_consolidated=require_consolidated,
+        )
+    )
+
+    if isinstance(outcome, AuditDocsError):
         click.echo(outcome.message, err=True)
         raise SystemExit(1)
 
