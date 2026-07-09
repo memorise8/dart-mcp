@@ -109,7 +109,7 @@ uv run dart taxonomy BS1
 
 ## MCP 도구
 
-현재 MCP 서버는 17개 도구를 제공합니다.
+현재 MCP 서버는 18개 도구를 제공합니다.
 
 - 공시/기업: `search_disclosures`, `search_corp_code`, `get_company_info`
 - 재무: `get_financial_statements`, `get_financial_statements_full`, `get_multi_company_financials`
@@ -117,9 +117,130 @@ uv run dart taxonomy BS1
 - 지분공시: `get_major_shareholders_report`, `get_executive_stock_report`
 - 보고서 주요정보: `get_periodic_report`, `get_major_event_report`, `get_securities_report`
 - 다운로드/XBRL: `download_document`, `download_xbrl`, `get_xbrl_taxonomy`
+- 감사서류 추출: `extract_audit_documents` (아래 "대량 공시 수집과 감사서류 추출" 참고)
 - TEMIS 내보내기: `export_temis_topic_cases` (opt-in, 아래 "TEMIS(finov2) 연동" 참고)
 
 전체 MCP 도구 목록은 `docs/tools.md`에 생성되어 있습니다.
+
+## 대량 공시 수집과 감사서류 추출
+
+전자공시 원문(ZIP)에서 감사보고서/연결감사보고서 XML을 대량으로 뽑아내는 3단계
+CLI 흐름입니다. 전체 흐름은 OpenDART `list.json`(공시목록)과
+`document.xml`(원문 ZIP) API만 사용합니다 — DART 뷰어 HTML을 스크래핑하지
+않습니다.
+
+### Step A: 공시 목록 수집 (`dart collect-disclosures`)
+
+```bash
+uv run dart collect-disclosures --from 20240101 --to 20241231 -o manifest.json
+```
+
+- 기본 대상(`--targets` 생략 시)은 공시유형 `F`(외부감사) 중 `report_name`에
+  "감사보고서"가 포함된 건(부분일치이므로 "연결감사보고서"도 함께 포함) +
+  공시유형 `A`(정기공시) 중 `report_name`에 "사업보고서"가 포함된 건입니다.
+  다른 조합은 `--targets "F:감사보고서,A:사업보고서"` 형식(`PBLNTF_TY:키워드`를
+  쉼표로 구분)으로 지정합니다.
+- OpenDART는 `corp_code` 없는 `list.json` 조회에 검색기간 3개월 제한(status
+  100)을 강제합니다. `--from`/`--to` 구간은 자동으로 3 **달력월(calendar
+  month)** 이하의 연속된 창으로 나눠 순회하므로(고정 일수가 아니라 달력월
+  단위라, 11~2월에 시작하는 창에서도 실제 3개월을 넘지 않습니다), 몇 년치
+  구간을 한 번에 넘겨도 안전합니다.
+- 각 (대상, 창) 조합마다 전체 페이지를 순회합니다. 페이지 조회가 예외로
+  실패하거나 예외 없이 오류가 "반환"되는 경우 모두 `--max-retries`(기본
+  4)까지 재시도하며, 그래도 실패한 페이지는 매니페스트의 `failed_pages`에
+  남고 전체 실행은 중단되지 않습니다.
+- `rcept_no` 기준으로 전체 창/대상에 걸쳐 중복을 제거하고, `report_name`으로
+  연결감사보고서/감사보고서/사업보고서/기타로 분류합니다(`counts_by_category`).
+- `--exclude-corrections`를 주면 `[기재정정]`/`[첨부추가]` 정정 공시를
+  제외합니다.
+- `--resume`을 주면 체크포인트(`<output>.checkpoint.json`, output 파일과 같은
+  디렉터리)를 이어서 사용해 이미 완료된 (대상, 창, 페이지)는 다시 조회하지
+  않습니다. `--resume` 없이 실행하면 기존 체크포인트를 버리고 새로
+  시작합니다. 체크포인트에 기록된 이전 실행의 `bgn_de`/`end_de`/`targets`가
+  이번 호출과 다르면 오류로 중단합니다(다른 기간의 진행 상황이 섞이는 것을
+  방지).
+
+출력 매니페스트(`manifest.json`)에는 `records[]`(레코드별
+`category`/`report_name`/`rcept_no`/`rcept_dt`/`corp_code`/`corp_name` 등),
+`counts_by_category`, `total_records`, `windows`, `targets`, `failed_pages`,
+`generated_at`이 담깁니다. 이 매니페스트가 Step C의 입력입니다.
+
+### Step B: 단일 필링 감사서류 추출 (`dart audit-documents`)
+
+```bash
+uv run dart audit-documents --rcept-no <14자리 접수번호> -o outdir --include both
+```
+
+- 지정한 필링의 원문 ZIP(`document.xml`)을 내려받아 감사보고서(ACODE
+  `00760`)/연결감사보고서(ACODE `00761`) XML 엔트리를 분류한 뒤
+  (`dart_search_mcp/document_zip.py`) `outdir/<rcept_no>/`에 추출하고, 같은
+  디렉터리에 `manifest.json`을 씁니다.
+- `--rcept-no` 대신 `--code <corp_code> --year <bsns_year>` 또는
+  `--corp <회사명> --year <bsns_year>`로 접수번호를 자동 조회할 수도
+  있습니다(`--corp`는 정확히 하나의 회사로 해석되어야 하며, 모호하거나
+  매치가 없으면 OpenDART를 호출하지 않고 오류를 반환합니다).
+- `--include`는 `audit`(감사보고서만), `consolidated`(연결감사보고서만),
+  `both`(기본값) 중 하나입니다.
+- `--require-consolidated`를 주면 연결감사보고서가 없을 때 오류로 처리하고
+  아무 파일도 쓰지 않습니다. 옵션이 없는 기본값에서는 없음을 매니페스트에만
+  기록하는 정상 결과입니다.
+- 실패 시(입력 검증, 회사명 해석 실패, 접수번호 미해결, 다운로드 오류, 손상된
+  ZIP, `--require-consolidated`인데 연결감사보고서가 없음) 0이 아닌 종료
+  코드를 반환하며 출력 디렉터리는 전혀 만들지 않습니다(부분 파일 없음).
+- 동일한 기능이 MCP 도구 `extract_audit_documents`로도 제공됩니다.
+
+### Step C: 매니페스트 전체 일괄 추출 (`dart bulk-audit-documents`)
+
+```bash
+uv run dart bulk-audit-documents --manifest manifest.json -o outdir
+```
+
+- Step A의 매니페스트(`records[].rcept_no` 사용) 또는 접수번호 문자열 배열
+  JSON(`--rcept-json`) 중 정확히 하나를 입력으로 받아, 필링마다 Step B와
+  동일한 추출을 반복합니다. 대량(bulk) 처리는 이 CLI 명령을 통해서만
+  제공합니다 — 필링 한 건만 추출할 때는 계속 `audit-documents`를
+  사용하세요.
+- 필링 한 건에서 발생하는 어떤 오류/예외든(손상·암호화된 ZIP 포함) 그
+  필링만 실패로 기록하고 전체 실행을 중단시키지 않습니다.
+- 필링별 결과는 다음 4가지 상태 중 하나로 기록됩니다.
+  - `succeeded`: 요청한 문서(`--include`)를 모두 찾아 추출함
+  - `skipped_no_audit`: 감사보고서를 요청했지만 이 필링의 ZIP에 별도 감사
+    보고서 엔트리가 없음 (오류 아님 — 아래 "ZIP 구조 현실" 참고)
+  - `skipped_no_consolidated`: 연결감사보고서를 요청(`--include
+    consolidated`/`both` 또는 `--require-consolidated`)했지만 없음
+  - `failed`: 그 밖의 모든 오류(다운로드 실패, 손상된 ZIP 등)
+- `--limit N`으로 처리 대상을 앞에서부터 N건으로 제한합니다. `--resume`을
+  주면 체크포인트(`<output>/bulk-manifest.json.checkpoint.json`)를 이어서
+  사용해 이미 `succeeded`인 필링은 재처리하지 않습니다(`failed`/`skipped_*`/
+  미처리 필링은 재시도). `--manifest` 입력에는 `--exclude-corrections`도
+  적용됩니다(`--rcept-json` 입력에는 적용되지 않습니다).
+- 결과는 `<output>/bulk-manifest.json`에 `results[]`(필링별
+  `rcept_no`/`status`/`output_path`/`message`)와 `counts_by_status`로
+  남습니다.
+
+### ZIP 구조 현실
+
+- 감사보고서/연결감사보고서 단독(공시유형 F) 필링의 ZIP은 엔트리 하나
+  (`<rcept_no>_00760.xml` 또는 `_00761.xml`)만 있습니다.
+- 사업보고서(공시유형 A) 필링의 ZIP은 본문 엔트리(`<rcept_no>.xml`)만 있을
+  수도 있고, 별도의 `_00760.xml`/`_00761.xml` 감사보고서 엔트리가 함께
+  포함될 수도 있습니다. 별도 엔트리가 없으면 감사보고서 내용은 본문 XML에
+  **인라인**으로 포함되어 있으며, 이 저장소는 그 인라인 내용을 추출하지
+  않습니다 — 이 경우는 오류가 아니라 `skipped_no_audit`(Step C) 또는
+  "없음"(Step B 매니페스트)으로 정상 기록됩니다.
+
+### 정직성 노트 (이 저장소가 하지 않는 것)
+
+- DART 뷰어 HTML을 스크래핑하지 않습니다 — OpenDART `list.json`/
+  `document.xml` API만 사용합니다.
+- 대량(bulk) 수집/추출(`collect-disclosures`, `bulk-audit-documents`)은
+  **CLI 전용**입니다 — 장시간 실행되는 블로킹 MCP 도구는 두지 않습니다.
+  단일 항목 조회/추출은 계속 `search_disclosures`/`extract_audit_documents`
+  MCP 도구를 사용합니다.
+- 이 저장소는 finov2 DB에 아무것도 쓰지 않습니다. `manifest.json`/
+  `bulk-manifest.json`은 로컬 파일일 뿐이며, finov2로의 import는(있다면)
+  finov2 쪽에서 별도로 진행하는 작업입니다(이 저장소는 구현하지 않으며
+  완료를 주장하지 않습니다).
 
 ## TEMIS(finov2) 연동: 안전한 내보내기 흐름
 
