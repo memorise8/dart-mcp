@@ -219,14 +219,17 @@ async def extract_audit_documents_core(
         return AuditDocsError(message=contents.message)
 
     want_audit = include in ("audit", "both")
-    want_consolidated = include in ("consolidated", "both")
+    # require_consolidated는 필링 자체에 연결감사보고서가 실재해야 한다는 전제조건이다.
+    # 이 전제조건을 강제할 때는 include가 "audit"만 요청했더라도 연결감사보고서를
+    # 실제 ZIP 내용과 대조해 확인하고 함께 추출한다.
+    want_consolidated = include in ("consolidated", "both") or require_consolidated
 
     audit_entry = contents.audit_entries[0] if want_audit and contents.audit_entries else None
     consolidated_entry = (
         contents.consolidated_audit_entries[0] if want_consolidated and contents.consolidated_audit_entries else None
     )
 
-    if require_consolidated and consolidated_entry is None:
+    if require_consolidated and not contents.consolidated_audit_entries:
         return AuditDocsError(
             message=f"오류: 연결감사보고서를 찾을 수 없습니다 (rcept_no={target_rcept_no})."
         )

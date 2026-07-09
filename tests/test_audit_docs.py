@@ -86,6 +86,12 @@ class RceptNoDirectTests(_TempDirMixin, unittest.IsolatedAsyncioTestCase):
         written_file = os.path.join(target_dir, f"{_RCEPT_NO}_00760.xml")
         self.assertTrue(os.path.isfile(written_file))
 
+        with open(written_file, "rb") as f:
+            written_bytes = f.read()
+        with zipfile.ZipFile(BytesIO(_AUDIT_ONLY_ZIP)) as zf:
+            source_bytes = zf.read(f"{_RCEPT_NO}_00760.xml")
+        self.assertEqual(written_bytes, source_bytes, "쓴 파일 바이트는 ZIP 엔트리 원본과 동일해야 한다")
+
         manifest_path = os.path.join(target_dir, "manifest.json")
         self.assertTrue(os.path.isfile(manifest_path))
         with open(manifest_path, encoding="utf-8") as f:
@@ -174,6 +180,63 @@ class RequireConsolidatedTests(_TempDirMixin, unittest.IsolatedAsyncioTestCase):
             manifest = json.load(f)
         self.assertFalse(manifest["consolidated_audit"]["found"])
         self.assertEqual(len(manifest["files"]), 0)
+
+    async def test_include_audit_require_consolidated_both_present_succeeds_and_writes_consolidated(
+        self,
+    ) -> None:
+        """include="audit"만 요청해도 require_consolidated=True면 ZIP에 실재하는
+        연결감사보고서를 검증하고 함께 써야 한다 (Finding 1)."""
+        output_dir = self._make_output_dir()
+
+        with patch(
+            "dart_search_mcp.tools.audit_docs._fetch_dart_binary", new_callable=AsyncMock
+        ) as mock_fetch:
+            mock_fetch.return_value = _BOTH_ZIP
+            outcome = await extract_audit_documents_core(
+                rcept_no=_RCEPT_NO,
+                output_dir=output_dir,
+                include="audit",
+                require_consolidated=True,
+            )
+
+        self.assertIsInstance(outcome, AuditDocsOutcome)
+        assert isinstance(outcome, AuditDocsOutcome)
+        self.assertTrue(outcome.audit_found)
+        self.assertTrue(outcome.consolidated_found)
+
+        target_dir = os.path.join(output_dir, _RCEPT_NO)
+        self.assertTrue(os.path.isfile(os.path.join(target_dir, f"{_RCEPT_NO}_00760.xml")))
+        self.assertTrue(os.path.isfile(os.path.join(target_dir, f"{_RCEPT_NO}_00761.xml")))
+
+        with open(os.path.join(target_dir, "manifest.json"), encoding="utf-8") as f:
+            manifest = json.load(f)
+        self.assertTrue(manifest["consolidated_audit"]["found"])
+        self.assertEqual(len(manifest["files"]), 2)
+
+    async def test_include_audit_require_consolidated_missing_errors_and_leaves_no_partial_output(
+        self,
+    ) -> None:
+        """include="audit"이고 ZIP에 연결감사보고서가 실제로 없으면 여전히
+        오류이며 부분 출력도 없어야 한다 (Finding 1의 반대 경로)."""
+        output_dir = self._make_output_dir()
+
+        with patch(
+            "dart_search_mcp.tools.audit_docs._fetch_dart_binary", new_callable=AsyncMock
+        ) as mock_fetch:
+            mock_fetch.return_value = _AUDIT_ONLY_ZIP
+            outcome = await extract_audit_documents_core(
+                rcept_no=_RCEPT_NO,
+                output_dir=output_dir,
+                include="audit",
+                require_consolidated=True,
+            )
+
+        self.assertIsInstance(outcome, AuditDocsError)
+        assert isinstance(outcome, AuditDocsError)
+        self.assertTrue(outcome.message)
+
+        target_dir = os.path.join(output_dir, _RCEPT_NO)
+        self.assertFalse(os.path.exists(target_dir), "실패 시 대상 디렉토리가 전혀 생성되면 안 된다")
 
 
 class CorpNameResolutionTests(_TempDirMixin, unittest.IsolatedAsyncioTestCase):
@@ -283,6 +346,25 @@ class CliAndToolSurfaceTests(unittest.TestCase):
         names = asyncio.run(list_tool_names())
         self.assertIn("extract_audit_documents", names)
         self.assertEqual(len(names), 18)
+
+
+class CliIntegrationTests(unittest.TestCase):
+    def test_cli_download_error_exits_nonzero_without_writing_output(self) -> None:
+        output_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(output_dir.cleanup)
+
+        with patch(
+            "dart_search_mcp.tools.audit_docs._fetch_dart_binary", new_callable=AsyncMock
+        ) as mock_fetch:
+            mock_fetch.return_value = "오류: 요청 시간이 초과되었습니다."
+            runner = CliRunner()
+            result = runner.invoke(
+                cli.cli,
+                ["audit-documents", "--rcept-no", _RCEPT_NO, "-o", output_dir.name],
+            )
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertEqual(os.listdir(output_dir.name), [], "실패 시 출력 디렉토리에 아무 파일도 없어야 한다")
 
 
 if __name__ == "__main__":
