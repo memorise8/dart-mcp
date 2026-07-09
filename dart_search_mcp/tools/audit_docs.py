@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
+from typing import Literal
 
 from dart_search_mcp.app import mcp
 from dart_search_mcp.client import _fetch_dart_binary
@@ -41,14 +42,41 @@ _VALID_INCLUDES = frozenset({"audit", "consolidated", "both"})
 
 _MANIFEST_FILENAME = "manifest.json"
 
+# 실패 종류를 나타내는 구조화된 판별자. 호출자(특히 `bulk_audit`)가 `message`의
+# 한국어 문구를 문자열 매칭하지 않고도 실패를 분류할 수 있게 한다 - 이
+# 모듈에서 `message` 문구를 리워딩해도 `kind`만 그대로면 분류는 바뀌지 않는다.
+#
+#   validation        입력 검증 실패 (필수 파라미터 누락, include 값 오류 등)
+#   ambiguous_corp     corp_name이 둘 이상의 회사와 매치됨
+#   corp_not_found     corp_name에 해당하는 회사가 없음
+#   rcept_not_found    corp_code+bsns_year로 접수번호 조회에는 성공했지만 결과가 없음
+#   download_error     OpenDART 호출(문서 ZIP 또는 접수번호 조회용 목록 조회) 자체가 실패
+#   corrupt_zip        ZIP을 열거나 그 안의 엔트리를 읽을 수 없음(손상/유효하지 않음)
+#   no_consolidated    require_consolidated=True인데 연결감사보고서 엔트리가 없음
+#   error              그 밖의 모든 경우(기본값) - 절대 skip으로 취급되지 않는다
+AuditDocsErrorKind = Literal[
+    "validation",
+    "ambiguous_corp",
+    "corp_not_found",
+    "rcept_not_found",
+    "download_error",
+    "corrupt_zip",
+    "no_consolidated",
+    "error",
+]
+
 
 @dataclass(frozen=True, slots=True)
 class AuditDocsError:
     """입력 검증 실패, corp_name 해석 실패, 접수번호 미해결, 다운로드 오류,
     손상된 ZIP, 또는 `require_consolidated=True`인데 연결감사보고서가 없는
-    경우. 이 경우 출력 디렉토리는 전혀 만들지 않는다(부분 파일 없음)."""
+    경우. 이 경우 출력 디렉토리는 전혀 만들지 않는다(부분 파일 없음).
+
+    `message`는 사람이 읽을 한국어 문구(단일 회사 도구의 사용자 노출 문구,
+    변경하지 않음)이고, `kind`는 그 실패를 분류하는 안정적인 판별자다."""
 
     message: str
+    kind: AuditDocsErrorKind = "error"
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,7 +127,8 @@ async def _resolve_target_rcept_no(
     if not corp_code:
         if not corp_name:
             return AuditDocsError(
-                message="오류: rcept_no, 또는 (corp_code나 corp_name)과 bsns_year를 입력해주세요."
+                message="오류: rcept_no, 또는 (corp_code나 corp_name)과 bsns_year를 입력해주세요.",
+                kind="validation",
             )
 
         resolution = await resolve_single_corp_code(corp_name)
@@ -107,9 +136,12 @@ async def _resolve_target_rcept_no(
         if isinstance(resolution, str):
             corp_code = resolution
         elif isinstance(resolution, (CorpValidationError, CorpLoadError)):
-            return AuditDocsError(message=resolution.message)
+            return AuditDocsError(message=resolution.message, kind="validation")
         elif isinstance(resolution, CorpNameNotFound):
-            return AuditDocsError(message=f"오류: 검색 결과가 없습니다.\n검색어: {resolution.corp_name}")
+            return AuditDocsError(
+                message=f"오류: 검색 결과가 없습니다.\n검색어: {resolution.corp_name}",
+                kind="corp_not_found",
+            )
         else:
             assert isinstance(resolution, CorpNameAmbiguous)
             lines = [
@@ -118,20 +150,21 @@ async def _resolve_target_rcept_no(
             ]
             for candidate in resolution.candidates:
                 lines.append(f"  - {candidate.corp_name} (corp_code={candidate.corp_code})")
-            return AuditDocsError(message="\n".join(lines))
+            return AuditDocsError(message="\n".join(lines), kind="ambiguous_corp")
 
     if not bsns_year:
-        return AuditDocsError(message="오류: 사업연도(bsns_year)를 입력해주세요.")
+        return AuditDocsError(message="오류: 사업연도(bsns_year)를 입력해주세요.", kind="validation")
 
     resolved = await _resolve_rcept_no(corp_code, bsns_year, reprt_code)
     if isinstance(resolved, str) and resolved.startswith("오류"):
-        return AuditDocsError(message=resolved)
+        return AuditDocsError(message=resolved, kind="download_error")
     if not resolved:
         return AuditDocsError(
             message=(
                 "오류: 해당 보고서의 접수번호를 찾지 못했습니다 "
                 f"(corp_code={corp_code}, bsns_year={bsns_year}, reprt_code={reprt_code})."
-            )
+            ),
+            kind="rcept_not_found",
         )
     return resolved, corp_code
 
@@ -139,7 +172,7 @@ async def _resolve_target_rcept_no(
 def _write_entry_to_dir(data: bytes, entry: DocumentEntry, target_dir: str) -> WrittenAuditDocument | AuditDocsError:
     entry_bytes = read_entry(data, entry.filename)
     if isinstance(entry_bytes, DocumentZipError):
-        return AuditDocsError(message=entry_bytes.message)
+        return AuditDocsError(message=entry_bytes.message, kind="corrupt_zip")
 
     os.makedirs(target_dir, exist_ok=True)
     # 실제 DART ZIP 엔트리 이름에는 경로 구분자가 없지만, 방어적으로 basename만 사용한다.
@@ -193,11 +226,12 @@ async def extract_audit_documents_core(
     include = (include or "").strip().lower()
     if include not in _VALID_INCLUDES:
         return AuditDocsError(
-            message=f'오류: include는 "audit", "consolidated", "both" 중 하나여야 합니다: {include!r}'
+            message=f'오류: include는 "audit", "consolidated", "both" 중 하나여야 합니다: {include!r}',
+            kind="validation",
         )
 
     if not output_dir or not output_dir.strip():
-        return AuditDocsError(message="오류: 출력 디렉토리(output_dir)를 입력해주세요.")
+        return AuditDocsError(message="오류: 출력 디렉토리(output_dir)를 입력해주세요.", kind="validation")
 
     resolved = await _resolve_target_rcept_no(
         rcept_no=rcept_no,
@@ -212,11 +246,11 @@ async def extract_audit_documents_core(
 
     data = await _fetch_dart_binary("document.xml", {"rcept_no": target_rcept_no})
     if isinstance(data, str):
-        return AuditDocsError(message=data)
+        return AuditDocsError(message=data, kind="download_error")
 
     contents = inspect_document_zip(data)
     if isinstance(contents, DocumentZipError):
-        return AuditDocsError(message=contents.message)
+        return AuditDocsError(message=contents.message, kind="corrupt_zip")
 
     want_audit = include in ("audit", "both")
     # require_consolidated는 필링 자체에 연결감사보고서가 실재해야 한다는 전제조건이다.
@@ -231,7 +265,8 @@ async def extract_audit_documents_core(
 
     if require_consolidated and not contents.consolidated_audit_entries:
         return AuditDocsError(
-            message=f"오류: 연결감사보고서를 찾을 수 없습니다 (rcept_no={target_rcept_no})."
+            message=f"오류: 연결감사보고서를 찾을 수 없습니다 (rcept_no={target_rcept_no}).",
+            kind="no_consolidated",
         )
 
     target_dir = os.path.join(output_dir, target_rcept_no)

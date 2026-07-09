@@ -327,6 +327,180 @@ class CorruptZipTests(_TempDirMixin, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(os.listdir(output_dir), [])
 
 
+class ErrorKindTests(_TempDirMixin, unittest.IsolatedAsyncioTestCase):
+    """`AuditDocsError.kind`가 각 실패 경로에서 기대한 값으로 설정되는지
+    확인한다. `bulk_audit`은 이 `kind`로만 상태를 분류하므로, 이 테스트가
+    깨지면 bulk 분류도 함께 깨진다는 뜻이다(메시지 문구 변경과 무관)."""
+
+    def setUp(self) -> None:
+        corp._corp_code_cache = None
+
+    def tearDown(self) -> None:
+        corp._corp_code_cache = None
+
+    async def test_all_params_missing_is_validation(self) -> None:
+        output_dir = self._make_output_dir()
+        outcome = await extract_audit_documents_core(output_dir=output_dir)
+        self.assertIsInstance(outcome, AuditDocsError)
+        assert isinstance(outcome, AuditDocsError)
+        self.assertEqual(outcome.kind, "validation")
+
+    async def test_bsns_year_missing_is_validation(self) -> None:
+        output_dir = self._make_output_dir()
+        outcome = await extract_audit_documents_core(corp_code="00126380", output_dir=output_dir)
+        self.assertIsInstance(outcome, AuditDocsError)
+        assert isinstance(outcome, AuditDocsError)
+        self.assertEqual(outcome.kind, "validation")
+
+    async def test_invalid_include_is_validation(self) -> None:
+        output_dir = self._make_output_dir()
+        outcome = await extract_audit_documents_core(
+            rcept_no=_RCEPT_NO, output_dir=output_dir, include="invalid"
+        )
+        self.assertIsInstance(outcome, AuditDocsError)
+        assert isinstance(outcome, AuditDocsError)
+        self.assertEqual(outcome.kind, "validation")
+
+    async def test_missing_output_dir_is_validation(self) -> None:
+        outcome = await extract_audit_documents_core(rcept_no=_RCEPT_NO, output_dir="")
+        self.assertIsInstance(outcome, AuditDocsError)
+        assert isinstance(outcome, AuditDocsError)
+        self.assertEqual(outcome.kind, "validation")
+
+    async def test_corp_code_resolution_validation_error_is_validation(self) -> None:
+        from dart_search_mcp.corp import CorpValidationError
+
+        output_dir = self._make_output_dir()
+        with patch(
+            "dart_search_mcp.tools.audit_docs.resolve_single_corp_code", new_callable=AsyncMock
+        ) as mock_resolve_single:
+            mock_resolve_single.return_value = CorpValidationError(message="오류: 검증 실패")
+            outcome = await extract_audit_documents_core(
+                corp_name="삼성전자", bsns_year="2024", output_dir=output_dir
+            )
+        self.assertIsInstance(outcome, AuditDocsError)
+        assert isinstance(outcome, AuditDocsError)
+        self.assertEqual(outcome.kind, "validation")
+
+    async def test_ambiguous_corp_name_is_ambiguous_corp(self) -> None:
+        output_dir = self._make_output_dir()
+        candidates = [
+            CorpRecord(corp_code="00126380", corp_name="삼성전자A", stock_code="", modify_date=""),
+            CorpRecord(corp_code="00999999", corp_name="삼성전자B", stock_code="", modify_date=""),
+        ]
+        with patch(
+            "dart_search_mcp.tools.audit_docs.resolve_single_corp_code", new_callable=AsyncMock
+        ) as mock_resolve_single:
+            mock_resolve_single.return_value = CorpNameAmbiguous(corp_name="삼성전자", candidates=candidates)
+            outcome = await extract_audit_documents_core(
+                corp_name="삼성전자", bsns_year="2024", output_dir=output_dir
+            )
+        self.assertIsInstance(outcome, AuditDocsError)
+        assert isinstance(outcome, AuditDocsError)
+        self.assertEqual(outcome.kind, "ambiguous_corp")
+
+    async def test_corp_name_not_found_is_corp_not_found(self) -> None:
+        from dart_search_mcp.corp import CorpNameNotFound
+
+        output_dir = self._make_output_dir()
+        with patch(
+            "dart_search_mcp.tools.audit_docs.resolve_single_corp_code", new_callable=AsyncMock
+        ) as mock_resolve_single:
+            mock_resolve_single.return_value = CorpNameNotFound(corp_name="존재하지않는회사")
+            outcome = await extract_audit_documents_core(
+                corp_name="존재하지않는회사", bsns_year="2024", output_dir=output_dir
+            )
+        self.assertIsInstance(outcome, AuditDocsError)
+        assert isinstance(outcome, AuditDocsError)
+        self.assertEqual(outcome.kind, "corp_not_found")
+
+    async def test_rcept_no_lookup_empty_result_is_rcept_not_found(self) -> None:
+        output_dir = self._make_output_dir()
+        with patch(
+            "dart_search_mcp.tools.audit_docs._resolve_rcept_no", new_callable=AsyncMock
+        ) as mock_resolve_rcept:
+            mock_resolve_rcept.return_value = ""
+            outcome = await extract_audit_documents_core(
+                corp_code="00126380", bsns_year="2024", output_dir=output_dir
+            )
+        self.assertIsInstance(outcome, AuditDocsError)
+        assert isinstance(outcome, AuditDocsError)
+        self.assertEqual(outcome.kind, "rcept_not_found")
+
+    async def test_rcept_no_lookup_error_string_is_download_error(self) -> None:
+        output_dir = self._make_output_dir()
+        with patch(
+            "dart_search_mcp.tools.audit_docs._resolve_rcept_no", new_callable=AsyncMock
+        ) as mock_resolve_rcept:
+            mock_resolve_rcept.return_value = "오류: 요청 시간이 초과되었습니다."
+            outcome = await extract_audit_documents_core(
+                corp_code="00126380", bsns_year="2024", output_dir=output_dir
+            )
+        self.assertIsInstance(outcome, AuditDocsError)
+        assert isinstance(outcome, AuditDocsError)
+        self.assertEqual(outcome.kind, "download_error")
+
+    async def test_document_fetch_error_is_download_error(self) -> None:
+        output_dir = self._make_output_dir()
+        with patch(
+            "dart_search_mcp.tools.audit_docs._fetch_dart_binary", new_callable=AsyncMock
+        ) as mock_fetch:
+            mock_fetch.return_value = "오류: 요청 시간이 초과되었습니다."
+            outcome = await extract_audit_documents_core(rcept_no=_RCEPT_NO, output_dir=output_dir)
+        self.assertIsInstance(outcome, AuditDocsError)
+        assert isinstance(outcome, AuditDocsError)
+        self.assertEqual(outcome.kind, "download_error")
+
+    async def test_corrupt_zip_is_corrupt_zip(self) -> None:
+        output_dir = self._make_output_dir()
+        with patch(
+            "dart_search_mcp.tools.audit_docs._fetch_dart_binary", new_callable=AsyncMock
+        ) as mock_fetch:
+            mock_fetch.return_value = b"this is definitely not a zip file"
+            outcome = await extract_audit_documents_core(rcept_no=_RCEPT_NO, output_dir=output_dir)
+        self.assertIsInstance(outcome, AuditDocsError)
+        assert isinstance(outcome, AuditDocsError)
+        self.assertEqual(outcome.kind, "corrupt_zip")
+
+    async def test_entry_read_failure_is_corrupt_zip(self) -> None:
+        from dart_search_mcp.document_zip import DocumentZipError
+
+        output_dir = self._make_output_dir()
+        with patch(
+            "dart_search_mcp.tools.audit_docs._fetch_dart_binary", new_callable=AsyncMock
+        ) as mock_fetch, patch(
+            "dart_search_mcp.tools.audit_docs.read_entry"
+        ) as mock_read_entry:
+            mock_fetch.return_value = _AUDIT_ONLY_ZIP
+            mock_read_entry.return_value = DocumentZipError(message="ZIP 엔트리를 읽을 수 없습니다")
+            outcome = await extract_audit_documents_core(rcept_no=_RCEPT_NO, output_dir=output_dir)
+        self.assertIsInstance(outcome, AuditDocsError)
+        assert isinstance(outcome, AuditDocsError)
+        self.assertEqual(outcome.kind, "corrupt_zip")
+
+    async def test_require_consolidated_missing_is_no_consolidated(self) -> None:
+        output_dir = self._make_output_dir()
+        with patch(
+            "dart_search_mcp.tools.audit_docs._fetch_dart_binary", new_callable=AsyncMock
+        ) as mock_fetch:
+            mock_fetch.return_value = _AUDIT_ONLY_ZIP
+            outcome = await extract_audit_documents_core(
+                rcept_no=_RCEPT_NO,
+                output_dir=output_dir,
+                include="consolidated",
+                require_consolidated=True,
+            )
+        self.assertIsInstance(outcome, AuditDocsError)
+        assert isinstance(outcome, AuditDocsError)
+        self.assertEqual(outcome.kind, "no_consolidated")
+
+    async def test_success_outcome_has_no_error_kind_default(self) -> None:
+        """성공 경로는 `AuditDocsError`를 전혀 만들지 않는다 - 기본 kind
+        (`"error"`)는 실패 경로에만 쓰이며 skip으로 오분류될 수 없다는 계약을
+        문서화한다."""
+        self.assertEqual(AuditDocsError(message="오류: 무언가 실패했습니다").kind, "error")
+
+
 class CliAndToolSurfaceTests(unittest.TestCase):
     def test_audit_documents_help_exits_zero(self) -> None:
         runner = CliRunner()

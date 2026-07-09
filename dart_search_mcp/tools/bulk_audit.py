@@ -10,8 +10,14 @@ Step 2b(`dart_search_mcp.tools.audit_docs.extract_audit_documents_core`)가
   읽어 대상 필링 목록을 만든다.
 - **예외 격리:** 필링 한 건에서 어떤 예외가 나든(파손/암호화된 ZIP 등 포함)
   그 필링만 `failed`로 기록하고 전체 실행은 계속한다 - 절대 중단하지 않는다.
-- **상태 분류:** 각 필링을 `succeeded`/`skipped_no_report`/
-  `skipped_no_consolidated`/`failed` 중 하나로 분류한다.
+- **상태 분류:** 각 필링을 `succeeded`/`skipped_no_audit`/
+  `skipped_no_consolidated`/`failed` 중 하나로 분류한다. 분류는
+  `extract_audit_documents_core`가 항상 `rcept_no`를 직접 받아 호출되는
+  bulk 경로에서 실제로 나올 수 있는 결과만 반영한다(예:
+  corp_name 해석 실패류는 bulk에서 절대 발생하지 않으므로 `failed`로
+  귀속된다) - `AuditDocsError.kind`라는 구조화된 판별자를 보고 분류하며,
+  `AuditDocsError.message`의 한국어 문구를 문자열 매칭하지 않는다(문구가
+  바뀌어도 분류는 바뀌지 않는다).
 - **체크포인트/재개:** 완료된 필링별 상태를 체크포인트 경로에 저장해,
   `--resume` 시 이미 `succeeded`인 필링은 다시 처리하지 않는다.
   `dart_search_mcp.collect`의 체크포인트/원자적 쓰기/run-params 가드 패턴을
@@ -43,17 +49,14 @@ from dart_search_mcp.tools.audit_docs import (
 
 _BULK_MANIFEST_FILENAME = "bulk-manifest.json"
 
-# `AuditDocsError.message`를 상태로 분류하기 위한 문자열 마커.
-# `_resolve_target_rcept_no`(corp_name 해석/접수번호 조회 실패)가 만드는
-# 메시지에 등장하는 패턴이다.
-_NO_REPORT_MARKERS: tuple[str, ...] = (
-    "접수번호를 찾지 못했습니다",
-    "검색 결과가 없습니다",
-    "회사가 여러 건입니다",
-    "corp_code나 corp_name",
-)
-# `require_consolidated=True`인데 연결감사보고서가 없을 때의 메시지 마커.
-_NO_CONSOLIDATED_MARKER = "연결감사보고서를 찾을 수 없습니다"
+# `AuditDocsError.kind` -> bulk 상태. bulk는 항상 `rcept_no`를 직접 지정해
+# `extract_audit_documents_core`를 호출하므로 corp_name 해석 관련 kind
+# (validation/ambiguous_corp/corp_not_found 등)는 이 경로에서 실제로 발생하지
+# 않지만, 안전하게 `failed`로 귀속해둔다. `no_consolidated`만 skip이다.
+_ERROR_KIND_TO_STATUS: dict[str, str] = {
+    "no_consolidated": "skipped_no_consolidated",
+}
+_DEFAULT_ERROR_STATUS = "failed"
 
 
 class BulkAuditSourceError(Exception):
@@ -164,12 +167,26 @@ def load_filings_from_rcept_json(path: str | Path) -> list[FilingInput]:
     return [FilingInput(rcept_no=str(item).strip()) for item in data if str(item).strip()]
 
 
-def _classify_error_message(message: str, *, require_consolidated: bool) -> str:
-    if require_consolidated and _NO_CONSOLIDATED_MARKER in message:
+def _classify_error_kind(kind: str) -> str:
+    """`AuditDocsError.kind`를 bulk 상태로 매핑한다. `message`의 한국어
+    문구는 전혀 보지 않는다 - 이 모듈이 그 문구를 리워딩해도 분류는
+    바뀌지 않는다."""
+    return _ERROR_KIND_TO_STATUS.get(kind, _DEFAULT_ERROR_STATUS)
+
+
+def _classify_success_outcome(outcome: AuditDocsOutcome, *, include: str, require_consolidated: bool) -> str:
+    """성공적으로 추출됐지만(오류 없음) 요청한 문서가 ZIP 안에 실재하지 않았던
+    경우를 `succeeded`와 구분해 분류한다. `require_consolidated=True`인데
+    연결감사보고서가 없는 경우는 이미 `AuditDocsError(kind="no_consolidated")`로
+    걸러지므로 여기 도달했을 때는 항상 만족된 상태다."""
+    want_audit = include in ("audit", "both")
+    want_consolidated = include in ("consolidated", "both") or require_consolidated
+
+    if want_audit and not outcome.audit_found:
+        return "skipped_no_audit"
+    if want_consolidated and not outcome.consolidated_found:
         return "skipped_no_consolidated"
-    if any(marker in message for marker in _NO_REPORT_MARKERS):
-        return "skipped_no_report"
-    return "failed"
+    return "succeeded"
 
 
 async def _process_filing(
@@ -200,17 +217,18 @@ async def _process_filing(
         )
 
     if isinstance(outcome, AuditDocsOutcome):
+        status = _classify_success_outcome(outcome, include=include, require_consolidated=require_consolidated)
         return FilingResult(
             rcept_no=filing.rcept_no,
             corp_code=outcome.corp_code or filing.corp_code,
             corp_name=filing.corp_name,
-            status="succeeded",
+            status=status,
             output_path=outcome.output_dir,
             message=None,
         )
 
     if isinstance(outcome, AuditDocsError):
-        status = _classify_error_message(outcome.message, require_consolidated=require_consolidated)
+        status = _classify_error_kind(outcome.kind)
         return FilingResult(
             rcept_no=filing.rcept_no,
             corp_code=filing.corp_code,
