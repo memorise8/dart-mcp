@@ -15,3 +15,4 @@ build/
 # Local tooling artifacts (oh-my-claudecode)
 .omc/
 .claude/
+.superpowers/

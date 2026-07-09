@@ -4,13 +4,15 @@ import xml.etree.ElementTree as ET
 
 import zipfile
 
-
+from dataclasses import dataclass, field
 
 import httpx
 
 from dart_search_mcp.app import mcp
 
 from dart_search_mcp.config import API_KEY
+
+from dart_search_mcp.redact import redact
 
 
 
@@ -46,6 +48,157 @@ async def _load_corp_codes() -> list[dict[str, str]]:
     _corp_code_cache = corps
     return corps
 
+
+@dataclass(frozen=True, slots=True)
+class CorpRecord:
+    """corpCode.xml의 회사 한 건에 대응하는 구조화된 레코드."""
+
+    corp_code: str
+    corp_name: str
+    stock_code: str
+    modify_date: str
+
+
+@dataclass(frozen=True, slots=True)
+class CorpMatches:
+    """회사명 검색의 구조화된 결과.
+
+    `exact`(완전 일치), `prefix`(접두 일치), `contains`(부분 일치) 세 버킷으로
+    나뉘며, `all`은 이 우선순위(exact -> prefix -> contains) 그대로 이어붙인
+    목록이다.
+    """
+
+    exact: list[CorpRecord] = field(default_factory=list)
+    prefix: list[CorpRecord] = field(default_factory=list)
+    contains: list[CorpRecord] = field(default_factory=list)
+
+    @property
+    def all(self) -> list[CorpRecord]:
+        return [*self.exact, *self.prefix, *self.contains]
+
+
+@dataclass(frozen=True, slots=True)
+class CorpValidationError:
+    """회사명 입력값 검증에 실패한 경우. `_load_corp_codes()`를 호출하지 않는다."""
+
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class CorpLoadError:
+    """corpCode.xml 로드(다운로드/파싱) 중 오류가 발생한 경우."""
+
+    message: str
+
+
+type CorpResolution = CorpMatches | CorpValidationError | CorpLoadError
+
+
+def _to_corp_record(item: dict[str, str]) -> CorpRecord:
+    return CorpRecord(
+        corp_code=item.get("corp_code", ""),
+        corp_name=item.get("corp_name", ""),
+        stock_code=item.get("stock_code", ""),
+        modify_date=item.get("modify_date", ""),
+    )
+
+
+async def resolve_corp_code(corp_name: str) -> CorpResolution:
+    """회사명으로 corpCode.xml 목록을 검색해 구조화된 결과를 반환합니다.
+
+    `search_corp_code`(공개 MCP 도구)가 사람이 읽는 문자열로 포매팅하기 전
+    단계로, exact/prefix/contains 매치를 각각 `CorpRecord` 목록으로 구분해
+    돌려준다. 입력 검증 실패 시에는 `_load_corp_codes()`를 호출하지 않는다
+    (네트워크 호출 없이 즉시 `CorpValidationError`를 반환).
+
+    Parameters:
+        corp_name: 검색할 회사명 (예: "삼성전자", "카카오", "네이버")
+
+    Returns:
+        `CorpMatches`(정상), `CorpValidationError`(입력값 오류) 또는
+        `CorpLoadError`(corpCode.xml 로드 실패) 중 하나.
+    """
+    if not corp_name or not corp_name.strip():
+        return CorpValidationError("오류: 회사명(corp_name)을 입력해주세요.")
+
+    query = corp_name.strip().lower()
+
+    try:
+        corps = await _load_corp_codes()
+    except Exception as e:
+        return CorpLoadError(f"오류: 회사 코드 목록 로드 중 오류가 발생했습니다. {redact(str(e))}")
+
+    exact: list[CorpRecord] = []
+    prefix: list[CorpRecord] = []
+    contains: list[CorpRecord] = []
+
+    for item in corps:
+        name = item.get("corp_name", "").lower()
+        if name == query:
+            exact.append(_to_corp_record(item))
+        elif name.startswith(query):
+            prefix.append(_to_corp_record(item))
+        elif query in name:
+            contains.append(_to_corp_record(item))
+
+    return CorpMatches(exact=exact, prefix=prefix, contains=contains)
+
+
+@dataclass(frozen=True, slots=True)
+class CorpNameNotFound:
+    """`resolve_single_corp_code`에서 corp_name과 매치되는 회사가 하나도 없는 경우."""
+
+    corp_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class CorpNameAmbiguous:
+    """`resolve_single_corp_code`에서 corp_name이 둘 이상의 회사와 매치되는 경우.
+
+    `list.json` 등 후속 API는 전혀 호출하지 않고 후보 목록만 담아 반환한다."""
+
+    corp_name: str
+    candidates: list[CorpRecord]
+
+
+type SingleCorpResolution = str | CorpNameNotFound | CorpNameAmbiguous | CorpValidationError | CorpLoadError
+
+
+async def resolve_single_corp_code(corp_name: str) -> SingleCorpResolution:
+    """회사명을 정확히 하나의 corp_code로 해석하는 공유 헬퍼.
+
+    `dart_search_mcp.tools.disclosures._resolve_single_corp_code`와
+    `dart_search_mcp.tools.temis._resolve_export_corp_code`가 공통으로 쓰는
+    corp_name -> corp_code 단일 해석 로직이다. exact 매치가 정확히 하나면
+    그것을 사용한다. exact 매치가 없고 prefix+contains를 합친 후보가 정확히
+    하나면 그것을 사용한다. 그 외(후보가 여럿이거나 exact가 여럿인 경우)에는
+    `CorpNameAmbiguous`를, 후보가 하나도 없으면 `CorpNameNotFound`를
+    반환한다 — 둘 다 `list.json` 등 후속 API를 호출하지 않는다.
+
+    이 헬퍼는 호출자별 오류 타입/메시지를 만들지 않는다(neutral). 각 호출자는
+    반환값을 자신의 오류 타입으로 매핑해야 한다.
+    """
+    resolution = await resolve_corp_code(corp_name)
+
+    if isinstance(resolution, (CorpValidationError, CorpLoadError)):
+        return resolution
+
+    assert isinstance(resolution, CorpMatches)
+
+    if len(resolution.exact) == 1:
+        return resolution.exact[0].corp_code
+
+    candidates = resolution.exact if resolution.exact else [*resolution.prefix, *resolution.contains]
+
+    if not candidates:
+        return CorpNameNotFound(corp_name=corp_name)
+
+    if len(candidates) == 1:
+        return candidates[0].corp_code
+
+    return CorpNameAmbiguous(corp_name=corp_name, candidates=candidates)
+
+
 @mcp.tool()
 async def search_corp_code(
     corp_name: str,
@@ -63,30 +216,12 @@ async def search_corp_code(
     Returns:
         검색된 회사 목록과 각 회사의 고유번호(corp_code)
     """
-    if not corp_name or not corp_name.strip():
-        return "오류: 회사명(corp_name)을 입력해주세요."
+    result = await resolve_corp_code(corp_name)
 
-    query = corp_name.strip().lower()
+    if isinstance(result, (CorpValidationError, CorpLoadError)):
+        return result.message
 
-    try:
-        corps = await _load_corp_codes()
-    except Exception as e:
-        return f"오류: 회사 코드 목록 로드 중 오류가 발생했습니다. {str(e)}"
-
-    exact: list[dict[str, str]] = []
-    starts: list[dict[str, str]] = []
-    contains: list[dict[str, str]] = []
-
-    for item in corps:
-        name = item.get("corp_name", "").lower()
-        if name == query:
-            exact.append(item)
-        elif name.startswith(query):
-            starts.append(item)
-        elif query in name:
-            contains.append(item)
-
-    matches = exact + starts + contains
+    matches = result.all
 
     if not matches:
         return f"검색 결과가 없습니다.\n검색어: {corp_name}"
@@ -97,9 +232,9 @@ async def search_corp_code(
     ]
 
     for i, item in enumerate(matches[:20], start=1):
-        corp_nm = item.get("corp_name", "")
-        c_code = item.get("corp_code", "")
-        stock_code = item.get("stock_code", "").strip()
+        corp_nm = item.corp_name
+        c_code = item.corp_code
+        stock_code = item.stock_code.strip()
 
         lines.append(f"\n{i}. {corp_nm}")
         if stock_code:

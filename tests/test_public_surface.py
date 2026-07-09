@@ -24,6 +24,7 @@ EXPECTED_TOOL_NAMES = [
     "download_xbrl",
     "get_xbrl_taxonomy",
     "get_securities_report",
+    "export_temis_topic_cases",
 ]
 
 EXPECTED_COMMAND_NAMES = [
@@ -44,6 +45,7 @@ EXPECTED_COMMAND_NAMES = [
     "serve",
     "shareholders",
     "taxonomy",
+    "temis-topic-cases",
 ]
 
 

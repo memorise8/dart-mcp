@@ -1,0 +1,34 @@
+test_empty_rcept_no_is_skipped_and_cannot_produce_fake_url (tests.test_temis_topic_case_export.ConvertAuditReportsToTopicCasesTests.test_empty_rcept_no_is_skipped_and_cannot_produce_fake_url) ... ok
+test_missing_corp_code_is_skipped (tests.test_temis_topic_case_export.ConvertAuditReportsToTopicCasesTests.test_missing_corp_code_is_skipped) ... ok
+test_mixed_valid_and_invalid_facts_preserve_order_for_valid_ones (tests.test_temis_topic_case_export.ConvertAuditReportsToTopicCasesTests.test_mixed_valid_and_invalid_facts_preserve_order_for_valid_ones) ... ok
+test_multiple_facts_same_topic_and_year_get_unique_sequential_case_ids (tests.test_temis_topic_case_export.ConvertAuditReportsToTopicCasesTests.test_multiple_facts_same_topic_and_year_get_unique_sequential_case_ids) ... ok
+test_no_keyword_match_uses_general_slug_and_empty_tags (tests.test_temis_topic_case_export.ConvertAuditReportsToTopicCasesTests.test_no_keyword_match_uses_general_slug_and_empty_tags) ... ok
+test_non_numeric_bsns_year_is_skipped (tests.test_temis_topic_case_export.ConvertAuditReportsToTopicCasesTests.test_non_numeric_bsns_year_is_skipped) ... ok
+test_put_option_case_maps_all_fields_with_strict_types (tests.test_temis_topic_case_export.ConvertAuditReportsToTopicCasesTests.test_put_option_case_maps_all_fields_with_strict_types) ... ok
+test_revenue_case_matches_fixture_style_ordering (tests.test_temis_topic_case_export.ConvertAuditReportsToTopicCasesTests.test_revenue_case_matches_fixture_style_ordering) ... ok
+test_topic_keywords_dictionary_is_a_small_deterministic_tuple (tests.test_temis_topic_case_export.ConvertAuditReportsToTopicCasesTests.test_topic_keywords_dictionary_is_a_small_deterministic_tuple) ... ok
+test_whitespace_only_rcept_no_is_skipped (tests.test_temis_topic_case_export.ConvertAuditReportsToTopicCasesTests.test_whitespace_only_rcept_no_is_skipped) ... ok
+test_json_is_deterministic_for_same_input (tests.test_temis_topic_case_export.TopicCasesToJsonTests.test_json_is_deterministic_for_same_input) ... ok
+test_serializes_empty_list_to_empty_json_array (tests.test_temis_topic_case_export.TopicCasesToJsonTests.test_serializes_empty_list_to_empty_json_array) ... ok
+test_serializes_to_json_array_matching_finov2_schema_shape (tests.test_temis_topic_case_export.TopicCasesToJsonTests.test_serializes_to_json_array_matching_finov2_schema_shape) ... ok
+
+----------------------------------------------------------------------
+Ran 13 tests in 0.001s
+
+OK
+
+---
+Note: dart_search_mcp/temis_export.py is a pure/deterministic converter
+(dart_search_mcp.tools.reports.AuditReportRecord -> DartTopicCaseRecord ->
+JSON array string). It does not write files itself; the JSON array produced
+by topic_cases_to_json() is exactly what finov2's DART_TOPIC_CASES_PATH env
+var should point a file at (see .omo/evidence/task-6-temis-dart-mcp-hardening.json
+for a sample, produced with `python -m json.tool`-validated output). Task 8
+wires this into the CLI/MCP surface (real freshness_timestamp injection,
+file writing, corp_code/bsns_year/reprt_code input).
+
+Ad hoc cross-check (not part of the committed test suite, to avoid a
+cross-repo import dependency in CI): loading finov2's real pydantic schema
+from ../../finov2/fino-backend/app/schemas/dart_topic_search.py and running
+TypeAdapter(list[DartTopicCase]).validate_python() against the JSON produced
+by this module succeeds with no validation errors.
