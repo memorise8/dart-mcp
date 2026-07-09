@@ -14,9 +14,11 @@ OpenDART로는 어떤 요청도 나가지 않는다.
 
 from __future__ import annotations
 
+import calendar
 import json
 import tempfile
 import unittest
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -51,45 +53,89 @@ def _record(
     )
 
 
+def _calendar_month_oracle_window_end(bgn_de: str) -> str:
+    """운영 코드(`collect._add_months`)와 독립적으로 구현한 오라클.
+
+    "시작일로부터 3 달력월 후 -1일"을 모듈로 트릭이 아니라 단순 반복으로
+    계산해, 운영 코드의 버그를 우연히 상쇄하지 않도록 한다."""
+    start = datetime.strptime(bgn_de, "%Y%m%d").date()
+    year = start.year
+    month = start.month + 3
+    while month > 12:
+        month -= 12
+        year += 1
+    last_day_of_target_month = calendar.monthrange(year, month)[1]
+    day = min(start.day, last_day_of_target_month)
+    limit = date(year, month, day) - timedelta(days=1)
+    return limit.strftime("%Y%m%d")
+
+
 class SplitWindowsTests(unittest.TestCase):
-    def test_range_within_max_days_stays_one_window(self) -> None:
+    def test_range_within_one_calendar_quarter_stays_one_window(self) -> None:
         windows = split_windows("20260101", "20260201")
         self.assertEqual(windows, [DateWindow(bgn_de="20260101", end_de="20260201")])
-
-    def test_range_over_max_days_splits_deterministically(self) -> None:
-        # 2026-01-01 ~ 2026-12-31 = 365일 -> 92일씩 4개 창 (92,92,92,89)
-        windows = split_windows("20260101", "20261231")
-        self.assertEqual(
-            windows,
-            [
-                DateWindow(bgn_de="20260101", end_de="20260402"),
-                DateWindow(bgn_de="20260403", end_de="20260703"),
-                DateWindow(bgn_de="20260704", end_de="20261003"),
-                DateWindow(bgn_de="20261004", end_de="20261231"),
-            ],
-        )
-        # 창들이 연속적이고 빠짐/중복이 없어야 한다.
-        for prev, nxt in zip(windows, windows[1:]):
-            prev_end = int(prev.end_de)
-            next_bgn = int(nxt.bgn_de)
-            self.assertLess(prev_end, next_bgn)
-
-    def test_exact_boundary_stays_one_window_one_day_over_splits_into_two(self) -> None:
-        # 92일 정확히 -> 창 1개
-        windows_exact = split_windows("20260101", "20260402", max_days=92)
-        self.assertEqual(len(windows_exact), 1)
-
-        # 93일 -> 창 2개
-        windows_over = split_windows("20260101", "20260403", max_days=92)
-        self.assertEqual(len(windows_over), 2)
-        self.assertEqual(windows_over[0], DateWindow(bgn_de="20260101", end_de="20260402"))
-        self.assertEqual(windows_over[1], DateWindow(bgn_de="20260403", end_de="20260403"))
 
     def test_single_day_range_is_deterministic(self) -> None:
         self.assertEqual(
             split_windows("20260315", "20260315"),
             [DateWindow(bgn_de="20260315", end_de="20260315")],
         )
+
+    def test_starts_that_overshot_under_the_old_fixed_92_day_window(self) -> None:
+        # 이 시작일들은 예전 고정 92일 창에서 "3개월"을 2~3일 초과했다
+        # (예: 20260101 -> 20260402, 캘린더 마감은 20260331). 독립 오라클로
+        # 검증해 각 창의 끝이 정확히 "3 달력월 후 -1일"과 같아야 한다.
+        cases = ["20260101", "20260201", "20251201", "20240101", "20240201"]
+        for bgn_de in cases:
+            with self.subTest(bgn_de=bgn_de):
+                windows = split_windows(bgn_de, "20291231")
+                first_window = windows[0]
+                oracle_end = _calendar_month_oracle_window_end(bgn_de)
+                self.assertLessEqual(
+                    int(first_window.end_de),
+                    int(oracle_end),
+                    f"{bgn_de}에서 시작한 창이 3 달력월({oracle_end})을 초과했습니다: "
+                    f"{first_window.end_de}",
+                )
+                self.assertEqual(
+                    first_window.end_de,
+                    oracle_end,
+                    f"{bgn_de}에서 시작한 창의 끝({first_window.end_de})이 "
+                    f"3 달력월 경계({oracle_end})와 일치하지 않습니다.",
+                )
+
+    def test_full_year_range_splits_into_four_windows_none_over_three_calendar_months(
+        self,
+    ) -> None:
+        windows = split_windows("20250701", "20260630")
+        self.assertEqual(len(windows), 4)
+        for window in windows:
+            oracle_end = _calendar_month_oracle_window_end(window.bgn_de)
+            self.assertLessEqual(int(window.end_de), int(oracle_end))
+
+    def test_windows_are_contiguous_no_gaps_or_overlaps_and_cover_full_range(self) -> None:
+        bgn_de, end_de = "20250701", "20260630"
+        windows = split_windows(bgn_de, end_de)
+        self.assertEqual(windows[0].bgn_de, bgn_de)
+        self.assertEqual(windows[-1].end_de, end_de)
+        for prev, nxt in zip(windows, windows[1:]):
+            prev_end = datetime.strptime(prev.end_de, "%Y%m%d").date()
+            next_bgn = datetime.strptime(nxt.bgn_de, "%Y%m%d").date()
+            self.assertEqual(
+                next_bgn,
+                prev_end + timedelta(days=1),
+                "창 사이에 빠짐(gap) 또는 중복(overlap)이 있습니다.",
+            )
+
+    def test_deterministic_same_input_produces_same_output(self) -> None:
+        self.assertEqual(
+            split_windows("20250701", "20260630"),
+            split_windows("20250701", "20260630"),
+        )
+
+    def test_start_after_end_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            split_windows("20260201", "20260101")
 
 
 class ClassifyCategoryTests(unittest.TestCase):
@@ -389,6 +435,93 @@ class CheckpointResumeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(page1_calls_before_resume, 1)
             self.assertEqual({r.rcept_no for r in second_manifest.records}, {"1", "2"})
             self.assertEqual(second_manifest.failed_pages, [])
+
+
+class CheckpointRunParamsGuardTests(unittest.IsolatedAsyncioTestCase):
+    async def test_resume_with_different_end_de_raises_clear_error(self) -> None:
+        async def fake(**kwargs):
+            return DisclosureSearchResult(
+                records=[_record("1")], total_count=1, total_page=1, page_no=1
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint_path = Path(tmp) / "run.checkpoint.json"
+
+            with patch("dart_search_mcp.collect.search_disclosures_structured", fake):
+                await collect_disclosures(
+                    targets=[("F", "감사보고서")],
+                    bgn_de="20260101",
+                    end_de="20260201",
+                    pace_seconds=0,
+                    checkpoint=checkpoint_path,
+                )
+
+                with self.assertRaises(ValueError) as ctx:
+                    await collect_disclosures(
+                        targets=[("F", "감사보고서")],
+                        bgn_de="20260101",
+                        end_de="20260301",  # 이전 실행과 다른 end_de
+                        pace_seconds=0,
+                        checkpoint=checkpoint_path,
+                    )
+
+        message = str(ctx.exception)
+        self.assertIn("체크포인트", message)
+
+    async def test_resume_with_different_targets_raises_clear_error(self) -> None:
+        async def fake(**kwargs):
+            return DisclosureSearchResult(
+                records=[_record("1")], total_count=1, total_page=1, page_no=1
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint_path = Path(tmp) / "run.checkpoint.json"
+
+            with patch("dart_search_mcp.collect.search_disclosures_structured", fake):
+                await collect_disclosures(
+                    targets=[("F", "감사보고서")],
+                    bgn_de="20260101",
+                    end_de="20260201",
+                    pace_seconds=0,
+                    checkpoint=checkpoint_path,
+                )
+
+                with self.assertRaises(ValueError):
+                    await collect_disclosures(
+                        targets=[("A", "사업보고서")],  # 이전 실행과 다른 targets
+                        bgn_de="20260101",
+                        end_de="20260201",
+                        pace_seconds=0,
+                        checkpoint=checkpoint_path,
+                    )
+
+    async def test_resume_with_same_params_does_not_raise(self) -> None:
+        async def fake(**kwargs):
+            return DisclosureSearchResult(
+                records=[_record("1")], total_count=1, total_page=1, page_no=1
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint_path = Path(tmp) / "run.checkpoint.json"
+
+            with patch("dart_search_mcp.collect.search_disclosures_structured", fake):
+                await collect_disclosures(
+                    targets=[("F", "감사보고서")],
+                    bgn_de="20260101",
+                    end_de="20260201",
+                    pace_seconds=0,
+                    checkpoint=checkpoint_path,
+                )
+                # 같은 파라미터로 재개하면 오류 없이 정상 진행되어야 한다.
+                manifest = await collect_disclosures(
+                    targets=[("F", "감사보고서")],
+                    bgn_de="20260101",
+                    end_de="20260201",
+                    pace_seconds=0,
+                    checkpoint=checkpoint_path,
+                )
+
+        self.assertEqual({r.rcept_no for r in manifest.records}, {"1"})
 
 
 class ManifestSerializationTests(unittest.TestCase):

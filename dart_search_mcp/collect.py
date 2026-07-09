@@ -5,7 +5,10 @@
 
 - **창 분할(windowing):** `corp_code` 없이 `list.json`을 조회하면 OpenDART가
   검색기간을 3개월로 제한한다(`status 100`). 임의의 `[bgn_de, end_de]` 구간을
-  ``MAX_WINDOW_DAYS``(92일) 이하의 연속된 창으로 결정적으로 분할한다.
+  최대 3 "달력월"(calendar month) 이하의 연속된 창으로 결정적으로 분할한다
+  (예: 시작일이 2026-01-01이면 창은 2026-03-31에서 끝난다). 고정 일수(예:
+  92일)를 쓰면 11~2월에 시작하는 창이 진짜 3개월을 2~3일 초과해, 이 수집기가
+  막으려는 `status 100` 오류를 감사철(1~2분기)에 오히려 유발할 수 있다.
 - **완전 페이지네이션:** 각 (대상, 창) 조합마다 1페이지를 조회해 `total_page`를
   얻은 뒤 전체 페이지를 순회한다.
 - **재시도:** 예외로 실패하는 경우와, `search_disclosures_structured`가
@@ -30,9 +33,10 @@ MCP 도구 호출로 적합하지 않으므로, 대량 수집은 `cli.py`의
 from __future__ import annotations
 
 import asyncio
+import calendar
 import json
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterable
 
@@ -41,9 +45,10 @@ from dart_search_mcp.tools.disclosures import (
     search_disclosures_structured,
 )
 
-# OpenDART가 `corp_code` 없는 `list.json` 조회에 강제하는 "3개월" 제한을
-# 안전하게 지키기 위한 창 길이(일). 91~92일이 3개월에 해당한다.
-MAX_WINDOW_DAYS = 92
+# OpenDART가 `corp_code` 없는 `list.json` 조회에 강제하는 "검색기간은 3개월만
+# 가능합니다"(status 100) 제한. 고정 일수 대신 달력월(calendar month) 개수로
+# 다뤄야 11~2월에 시작하는 창에서 진짜 3개월을 초과하지 않는다.
+WINDOW_MONTHS = 3
 
 # 재사용 가능한 프리셋: 감사보고서(+연결감사보고서) + 사업보고서.
 # "감사보고서" 키워드는 "연결감사보고서"도 부분일치로 포함한다.
@@ -141,8 +146,24 @@ class CollectionManifest:
         }
 
 
-def split_windows(bgn_de: str, end_de: str, max_days: int = MAX_WINDOW_DAYS) -> list[DateWindow]:
-    """`[bgn_de, end_de]`(YYYYMMDD)를 `max_days`일 이하의 연속된 창으로 나눈다.
+def _add_months(d: date, months: int) -> date:
+    """`d`에 달력월 `months`개를 더한다. 목표 월의 일수보다 `d.day`가 크면
+    (예: 1/31 + 1개월) 목표 월의 마지막 날로 클램프한다(월/일 롤오버, 윤년
+    포함)."""
+    month_index = d.month - 1 + months
+    year = d.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(d.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def split_windows(bgn_de: str, end_de: str) -> list[DateWindow]:
+    """`[bgn_de, end_de]`(YYYYMMDD)를 최대 `WINDOW_MONTHS`(3) 달력월 이하의
+    연속된 창으로 나눈다.
+
+    각 창은 시작일로부터 "3 달력월 후 -1일"에서 끝난다(예: 2026-01-01 ->
+    2026-03-31). 고정 일수 창과 달리 OpenDART의 "3개월" 제한을 어느 쪽으로
+    해석하든(고정 일수/달력월) 안전하다.
 
     입력에서만 결정적으로 계산한다(`datetime.now()`를 호출하지 않는다).
     """
@@ -154,7 +175,8 @@ def split_windows(bgn_de: str, end_de: str, max_days: int = MAX_WINDOW_DAYS) -> 
     windows: list[DateWindow] = []
     current = start
     while current <= end:
-        window_end = min(current + timedelta(days=max_days - 1), end)
+        calendar_limit = _add_months(current, WINDOW_MONTHS) - timedelta(days=1)
+        window_end = min(calendar_limit, end)
         windows.append(
             DateWindow(bgn_de=current.strftime("%Y%m%d"), end_de=window_end.strftime("%Y%m%d"))
         )
@@ -248,7 +270,7 @@ def _task_key(pblntf_ty: str, name_keyword: str, window: DateWindow) -> str:
 
 
 def _empty_state() -> dict:
-    return {"tasks": {}, "records": {}}
+    return {"tasks": {}, "records": {}, "run_params": None}
 
 
 def _load_checkpoint(path: Path | None) -> dict:
@@ -262,7 +284,36 @@ def _load_checkpoint(path: Path | None) -> dict:
         return _empty_state()
     data.setdefault("tasks", {})
     data.setdefault("records", {})
+    data.setdefault("run_params", None)
     return data
+
+
+def _run_params_header(bgn_de: str, end_de: str, targets: list[tuple[str, str]]) -> dict:
+    """체크포인트 헤더에 저장할, JSON 직렬화 가능한 실행 파라미터 스냅샷."""
+    return {
+        "bgn_de": bgn_de,
+        "end_de": end_de,
+        "targets": [[pblntf_ty, keyword] for pblntf_ty, keyword in targets],
+    }
+
+
+def _ensure_run_params_match_checkpoint(state: dict, run_params: dict) -> None:
+    """`--resume`으로 체크포인트를 이어 쓸 때, 이번 호출의 `bgn_de`/`end_de`/
+    `targets`가 체크포인트에 기록된 이전 실행과 다르면 명확한 오류를 낸다.
+
+    다르면 체크포인트의 (대상, 창, 페이지) task 키가 이번 실행과 맞지 않아
+    조용히 잘못된 결과를 만들 수 있다(예: 이전 실행의 다른 기간 진행 상황을
+    이번 기간의 것으로 오인)."""
+    existing = state.get("run_params")
+    if existing is not None and existing != run_params:
+        raise ValueError(
+            "체크포인트의 실행 파라미터가 현재 호출과 다릅니다 - 다른 "
+            "bgn_de/end_de/targets로 같은 체크포인트를 재사용하면 이전 실행의 "
+            "진행 상황(task 키)이 이번 실행과 맞지 않아 결과가 뒤섞일 수 있습니다. "
+            f"체크포인트: {existing}, 현재 호출: {run_params}. "
+            "--resume 없이 새로 시작하거나 다른 체크포인트 경로를 사용하세요."
+        )
+    state["run_params"] = run_params
 
 
 def _save_checkpoint(path: Path | None, state: dict) -> None:
@@ -370,6 +421,10 @@ async def collect_disclosures(
     windows = split_windows(bgn_de, end_de)
     checkpoint_path = Path(checkpoint) if checkpoint else None
     state = _load_checkpoint(checkpoint_path)
+
+    run_params = _run_params_header(bgn_de, end_de, targets_list)
+    _ensure_run_params_match_checkpoint(state, run_params)
+    _save_checkpoint(checkpoint_path, state)
 
     failed_pages: list[FailedPage] = []
 
