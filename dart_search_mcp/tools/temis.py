@@ -227,8 +227,17 @@ async def export_temis_topic_cases(
     """
     감사보고서 사실(회계감사인)을 TEMIS(finov2) `DartTopicCase` JSON 배열로 변환해 output_path 파일에 씁니다.
 
-    opt-in 운영 adapter 경계입니다. finov2는 OpenDART를 직접 호출하지 않고,
-    이 도구가 만든 JSON 파일을 `DART_TOPIC_CASES_PATH` 환경변수로 읽습니다.
+    opt-in 운영 adapter 경계입니다. finov2는 OpenDART를 직접 호출하지 않습니다.
+
+    이 도구의 산출물은 항상 **회사 1건** 단위입니다. finov2 쪽 소비 방식은
+    두 단계입니다: (1) 현재는 `DART_TOPIC_CASES_PATH` 환경변수로 이 파일을
+    직접 읽는 파일 기반 모드이며, 파일 하나에는 회사 1건만 담깁니다. (2)
+    finov2 쪽에서 별도로 진행 중인 목표 모드는 각 회사별 산출물을
+    `case_id`(corp_code/rcept_no를 포함해 전역 고유·결정적인 upsert 키)로
+    DB에 import해 여러 회사를 누적하는 방식이며, 이 경우
+    `DART_TOPIC_CASES_PATH`는 finov2가 읽는 런타임 파일이 아니라 import
+    배치의 입력 파일이 됩니다 — 이 DB import는 finov2 쪽 작업으로, 이
+    도구는 구현하거나 완료를 보장하지 않습니다.
 
     ⚠️ output_path는 항상 덮어씁니다(overwrite) — 기존 파일에 append하지
     않습니다. 실패 시(corp_code/corp_name 둘 다 없음, corp_name이 여러 회사와

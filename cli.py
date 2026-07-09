@@ -275,8 +275,10 @@ def temis_topic_cases(year, corp, code, reprt_code, keywords, output_path):
     """감사보고서 사실(회계감사인)을 TEMIS(finov2) DartTopicCase JSON 배열로
     변환해 OUTPUT 경로에 씁니다 (opt-in 운영 adapter 경계 명령).
 
-    finov2는 OpenDART를 직접 호출하지 않고 이 명령이 만든 JSON 파일을
-    DART_TOPIC_CASES_PATH 환경변수로 읽습니다.
+    finov2는 OpenDART를 직접 호출하지 않습니다. 이 명령의 산출물은 항상 회사
+    1건 단위이며, finov2는 현재 DART_TOPIC_CASES_PATH로 이 파일을 직접
+    읽습니다(파일 하나에 회사 1건). 여러 회사를 누적하는 DB import(case_id를
+    upsert 키로 사용) 모드는 finov2 쪽에서 별도로 진행 중입니다.
 
     --code 또는 --corp 중 하나가 필요합니다. 둘 다 없거나, --corp가 여러
     회사와 매치되거나(모호) 해석되지 않으면(결과 없음) 오류 메시지를 출력하고
