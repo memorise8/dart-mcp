@@ -8,14 +8,18 @@ DART 전자공시 검색 CLI
 
 import asyncio
 import importlib.metadata
+import json
 import os
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 import click
 from dotenv import load_dotenv
 
 load_dotenv()
 
+from dart_search_mcp.collect import AUDIT_AND_BUSINESS_REPORT_TARGETS, collect_disclosures
 from server import (
     MAJOR_EVENT_REGISTRY,
     PERIODIC_REPORT_REGISTRY,
@@ -102,6 +106,80 @@ def disclosures(corp, code, bgn_de, end_de, pblntf_ty, page, count):
         pblntf_ty=pblntf_ty, page_no=page, page_count=count
     ))
     click.echo(result)
+
+
+def _parse_collect_targets(raw: str) -> list[tuple[str, str]]:
+    """`"F:감사보고서,A:사업보고서"` 형식의 문자열을 (공시유형, 키워드) 쌍
+    목록으로 해석한다. 빈 문자열이면 기본 프리셋을 사용한다."""
+    if not raw.strip():
+        return list(AUDIT_AND_BUSINESS_REPORT_TARGETS)
+
+    targets: list[tuple[str, str]] = []
+    for chunk in raw.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if ":" not in chunk:
+            raise click.BadParameter(f'"{chunk}"는 PBLNTF_TY:키워드 형식이 아닙니다 (예: "F:감사보고서")')
+        pblntf_ty, keyword = chunk.split(":", 1)
+        pblntf_ty = pblntf_ty.strip()
+        keyword = keyword.strip()
+        if not pblntf_ty or not keyword:
+            raise click.BadParameter(f'"{chunk}"는 PBLNTF_TY:키워드 형식이 아닙니다 (예: "F:감사보고서")')
+        targets.append((pblntf_ty, keyword))
+    return targets
+
+
+@cli.command("collect-disclosures")
+@click.option("--from", "bgn_de", required=True, help="검색 시작일 (YYYYMMDD)")
+@click.option("--to", "end_de", required=True, help="검색 종료일 (YYYYMMDD)")
+@click.option(
+    "--targets",
+    default="",
+    help='공시유형:키워드 쌍을 쉼표로 구분 (예: "F:감사보고서,A:사업보고서"). '
+    "기본값: 감사보고서(+연결감사보고서)+사업보고서 프리셋",
+)
+@click.option("-o", "--output", "output_path", required=True, help="수집 결과 매니페스트 JSON을 쓸 파일 경로")
+@click.option("--exclude-corrections", is_flag=True, default=False, help="[기재정정]/[첨부추가] 정정 공시를 제외")
+@click.option("--resume", is_flag=True, default=False, help="기존 체크포인트가 있으면 이어서 수집 (없으면 새로 시작)")
+@click.option("--max-retries", default=4, show_default=True, help="페이지별 최대 재시도 횟수")
+@click.option("--sleep", "pace_seconds", default=0.15, show_default=True, help="API 호출 사이 대기 시간(초)")
+def collect_disclosures_cmd(bgn_de, end_de, targets, output_path, exclude_corrections, resume, max_retries, pace_seconds):
+    """지정한 기간의 공시를 3개월 이하 창으로 나눠 전체 페이지를 순회하며
+    대량으로 수집하고, 체크포인트 가능한 매니페스트 JSON으로 저장합니다.
+
+    대량(bulk) 수집은 이 CLI 명령을 통해서만 제공합니다(장시간 실행되는 MCP
+    도구는 두지 않습니다). 단일 회사 공시 조회는 계속 search_disclosures /
+    search_disclosures_structured를 사용하세요.
+
+    --resume 없이 실행하면 기존 체크포인트(OUTPUT과 같은 디렉터리의
+    "<output>.checkpoint.json")를 버리고 새로 시작합니다.
+    """
+    parsed_targets = _parse_collect_targets(targets)
+    checkpoint_path = Path(f"{output_path}.checkpoint.json")
+    if not resume:
+        checkpoint_path.unlink(missing_ok=True)
+
+    manifest = asyncio.run(
+        collect_disclosures(
+            targets=parsed_targets,
+            bgn_de=bgn_de,
+            end_de=end_de,
+            max_retries=max_retries,
+            exclude_corrections=exclude_corrections,
+            pace_seconds=pace_seconds,
+            checkpoint=checkpoint_path,
+            generated_at=datetime.now(timezone.utc).isoformat(),
+        )
+    )
+
+    Path(output_path).write_text(
+        json.dumps(manifest.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    click.echo(
+        f"수집 완료: {manifest.total_records}건 (분류별: {manifest.counts_by_category}), "
+        f"실패 페이지 {len(manifest.failed_pages)}건 -> {output_path}"
+    )
 
 
 @cli.command()

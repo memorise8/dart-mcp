@@ -8,6 +8,7 @@
 - `dart search`: 회사명으로 DART 고유번호를 검색합니다.
 - `dart company`: DART 고유번호로 기업 개황 정보를 조회합니다.
 - `dart disclosures`: DART 공시 목록을 검색합니다.
+- `dart collect-disclosures`: 지정한 기간의 공시를 3개월 이하 창으로 나눠 전체 페이지를 순회하며...
 - `dart financial`: 단일회사 주요계정 재무제표를 조회합니다.
 - `dart financial-full`: 단일회사 전체 재무제표를 조회합니다.
 - `dart indicators`: 단일회사 주요 재무지표를 조회합니다.
