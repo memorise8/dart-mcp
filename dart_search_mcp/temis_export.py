@@ -15,11 +15,26 @@ JSON 배열로 변환한다.
     필드명·타입을 정확히 미러링하고, 테스트가 엄격한 타입으로 그 계약을
     검증한다.
   - 토픽 태그는 작은 결정적 한국어 키워드 사전(`TOPIC_KEYWORDS`)에서 텍스트에
-    나타나는 용어를 찾아 부여한다. 전수적인(exhaustive) 회계 토픽 커버리지를
-    주장하지 않으며, 사전에 없는 주제는 태그가 비게 된다(`topic_tags == []`,
-    `case_id`는 `general` slug를 쓴다).
-  - `extraction_confidence`는 매칭된 태그 개수에 기반한 단순 휴리스틱이다.
-    실제 모델 기반 신뢰도 점수가 아니다.
+    나타나는 용어를 찾아 부여한다. 짧은 키워드가 더 긴 다른 용어의 일부로만
+    나타나는 경우(예: "리스크" 안의 "리스", "보증금" 안의 "보증")는 오탐으로
+    간주해 매칭하지 않는다 — `_TOPIC_KEYWORD_EXCLUSIONS`에 등록된 예외 목록이
+    이를 판정한다(`_term_matches` 참고). 전수적인(exhaustive) 회계 토픽
+    커버리지를 주장하지 않으며, 사전에 없는 주제는 태그가 비게 된다
+    (`topic_tags == []`, `case_id`는 `general` slug를 쓴다).
+  - `extraction_confidence`는 핵심 감사 필드(auditor, audit_opinion,
+    core_audit_matter, emphasis_matter) 중 값이 채워진 필드의 비율이다
+    (`_confidence_for` 참고). 빈 문자열과 "-"(값 없음 표시)는 "없음"으로
+    취급한다. 이 값은 사실(fact)이 얼마나 완전하게 추출되었는지(필드
+    완전성)를 나타낼 뿐, 실제 모델 기반 신뢰도나 태그 매칭 확신도가 아니다.
+  - `case_id`는 오직 소스 값에서만 계산되는 결정적 문자열이다:
+    `dart-<corp_code>-<fiscal_year>-<rcept_no>-<topic_slug>-<discriminator>`.
+    `corp_code`와 `rcept_no`를 그대로 포함하므로 회사가 달라지면 같은
+    토픽/연도라도 절대 충돌하지 않고(전역 고유), 배치 내 다른 사실이나
+    입력 순서에 의존하지 않는다(순서 무관, 재생성해도 항상 동일). 같은
+    보고서에서 같은 토픽으로 매칭되는 사실이 둘 이상일 수 있으므로,
+    그 사실의 구별 내용(auditor/audit_opinion/special_matter/
+    emphasis_matter/core_audit_matter)에 대한 sha256 해시 앞 8 hex 문자를
+    `discriminator`로 덧붙여 여전히 고유하게 만든다(`_case_id_for` 참고).
 
 접수번호(`rcept_no`)가 비어 있으면 `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=`
 같은 가짜 원문 링크를 만들 수 있으므로 해당 사실(fact)은 건너뛴다
@@ -30,6 +45,7 @@ JSON 배열로 변환한다.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict, dataclass
 
@@ -63,6 +79,18 @@ TOPIC_KEYWORDS: tuple[tuple[str, str], ...] = (
 _DEFAULT_TOPIC_SLUG = "general"
 _SNIPPET_RADIUS = 80
 _FALLBACK_SNIPPET_LENGTH = 240
+
+# 짧은 키워드가 실제로는 더 긴 다른 용어의 일부로만 나타날 때의 오탐(false
+# positive)을 막기 위한 예외 목록. 키: 짧은 키워드, 값: 그 키워드가 접두어로
+# 나타나는 더 긴 용어들의 튜플. 텍스트 안에서 짧은 키워드가 나타난 위치에
+# 이 더 긴 용어 중 하나가 같은 위치에서 시작하면, 그 등장은 "포함된 것"으로
+# 간주해 매칭에서 제외한다 — 짧은 키워드가 텍스트의 다른 위치에서 독립적으로
+# 나타나면 그 등장은 여전히 매칭된다. 일반적인 가드 메커니즘이며, 재현된
+# 두 쌍(리스/리스크, 보증/보증금) 외에도 항목을 추가할 수 있다.
+_TOPIC_KEYWORD_EXCLUSIONS: dict[str, tuple[str, ...]] = {
+    "리스": ("리스크",),
+    "보증": ("보증금",),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,11 +126,43 @@ class TopicCaseSkipped:
     reason: str
 
 
+def _term_occurrence_indices(text: str, term: str) -> list[int]:
+    """텍스트에서 `term`이 나타나는 모든 시작 인덱스(왼쪽에서 오른쪽 스캔,
+    겹치는 등장도 각각 포함)."""
+    indices: list[int] = []
+    start = 0
+    while True:
+        idx = text.find(term, start)
+        if idx == -1:
+            break
+        indices.append(idx)
+        start = idx + 1
+    return indices
+
+
+def _term_matches(text: str, term: str) -> bool:
+    """`term`이 텍스트에 "독립적으로" 나타나는지 판정한다(longest-match 가드).
+
+    `term`의 모든 등장 위치를 훑어, `_TOPIC_KEYWORD_EXCLUSIONS`에 등록된 더 긴
+    용어가 같은 위치에서 시작해 `term`을 포함하는 경우는 그 등장을 "더 긴
+    용어의 일부"로 간주해 무시한다(예: "리스크" 안의 "리스", "보증금" 안의
+    "보증"). 무시되지 않는 등장이 하나라도 있으면 매칭으로 판단한다."""
+    excluding_terms = _TOPIC_KEYWORD_EXCLUSIONS.get(term, ())
+    if not excluding_terms:
+        return term in text
+    for idx in _term_occurrence_indices(text, term):
+        if not any(text.startswith(longer, idx) for longer in excluding_terms):
+            return True
+    return False
+
+
 def _matched_topics(
     text: str, topic_keywords: tuple[tuple[str, str], ...]
 ) -> list[tuple[str, str]]:
-    """텍스트에 나타나는 (slug, 한국어 키워드) 쌍을 사전 순서 그대로 반환한다."""
-    return [(slug, term) for slug, term in topic_keywords if term in text]
+    """텍스트에 독립적으로 나타나는 (slug, 한국어 키워드) 쌍을 사전 순서
+    그대로 반환한다. 더 긴 용어의 일부로만 나타나는 경우는 `_term_matches`가
+    걸러낸다."""
+    return [(slug, term) for slug, term in topic_keywords if _term_matches(text, term)]
 
 
 def _bounded_snippet(text: str, keyword: str | None, *, radius: int = _SNIPPET_RADIUS) -> str:
@@ -115,14 +175,58 @@ def _bounded_snippet(text: str, keyword: str | None, *, radius: int = _SNIPPET_R
     return text[:_FALLBACK_SNIPPET_LENGTH].strip()
 
 
-def _confidence_for(matched: list[tuple[str, str]]) -> float:
-    """매칭된 태그 개수에 기반한 단순/결정적 휴리스틱.
+def _is_field_present(value: str) -> bool:
+    """빈 문자열과 "-"(값 없음을 뜻하는 자리표시자)를 "없음"으로 취급한다."""
+    stripped = value.strip()
+    return stripped != "" and stripped != "-"
 
-    실제 모델 기반 신뢰도가 아니다 — 매칭이 많을수록 신뢰도를 높게 두되
-    1.0을 넘지 않는다. 매칭이 하나도 없으면 낮은 고정값을 반환한다."""
-    if not matched:
-        return 0.3
-    return min(1.0, 0.5 + 0.15 * len(matched))
+
+def _confidence_for(fact: AuditReportRecord) -> float:
+    """핵심 감사 필드 중 값이 채워진 필드의 비율을 반환한다.
+
+    확인하는 필드는 `auditor`, `audit_opinion`, `core_audit_matter`,
+    `emphasis_matter` 4개다. 각 필드는 빈 문자열이거나 "-"(값 없음 표시)면
+    "없음"으로 취급된다(`_is_field_present`). 반환값은 채워진 필드 수를
+    전체 필드 수로 나눈 비율이며, 항상 [0.0, 1.0] 범위다(4개 모두 채워지면
+    1.0, 하나도 채워지지 않으면 0.0). 이 값이 나타내는 것은 오직
+    "이 사실(fact)이 얼마나 완전하게 추출되었는가"(필드 완전성)이며, 매칭된
+    토픽 키워드 개수나 실제 모델 기반 신뢰도와는 무관하다."""
+    fields = (fact.auditor, fact.audit_opinion, fact.core_audit_matter, fact.emphasis_matter)
+    present = sum(1 for value in fields if _is_field_present(value))
+    return present / len(fields)
+
+
+def _case_id_discriminator(fact: AuditReportRecord) -> str:
+    """fact의 구별 내용에 대한 sha256 해시의 앞 8 hex 문자.
+
+    해시 입력은 `auditor|audit_opinion|special_matter|emphasis_matter|
+    core_audit_matter`를 그 순서로 이어붙인 문자열이다. 같은 보고서
+    (`rcept_no`)에서 같은 토픽으로 매칭되는 사실이 둘 이상일 때도 `case_id`가
+    여전히 고유하도록 만드는 역할이다. 오직 이 fact 자신의 필드값에서만
+    계산되므로 배치 내 다른 fact나 처리 순서와 무관하다(순서 무관,
+    재생성해도 항상 동일)."""
+    source = "|".join(
+        (
+            fact.auditor,
+            fact.audit_opinion,
+            fact.special_matter,
+            fact.emphasis_matter,
+            fact.core_audit_matter,
+        )
+    )
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()[:8]
+
+
+def _case_id_for(corp_code: str, fiscal_year: int, rcept_no: str, topic_slug: str, fact: AuditReportRecord) -> str:
+    """`dart-<corp_code>-<fiscal_year>-<rcept_no>-<topic_slug>-<discriminator>`.
+
+    회사(`corp_code`)와 원본 보고서(`rcept_no`)를 그대로 포함하므로 다른
+    회사가 같은 토픽/연도를 가져도 절대 충돌하지 않는다(전역 고유). 오직
+    소스 값에서만 계산되므로 배치 내 처리 순서와 무관하며, 같은 입력으로
+    재생성해도 항상 동일한 값을 낸다. `discriminator`는
+    `_case_id_discriminator`가 계산한다."""
+    discriminator = _case_id_discriminator(fact)
+    return f"dart-{corp_code}-{fiscal_year}-{rcept_no}-{topic_slug}-{discriminator}"
 
 
 def _fact_text(fact: AuditReportRecord) -> str:
@@ -171,9 +275,10 @@ def convert_audit_reports_to_topic_cases(
 ) -> tuple[list[DartTopicCaseRecord], list[TopicCaseSkipped]]:
     """감사보고서 사실(fact) 목록을 `DartTopicCaseRecord` 목록으로 일괄 변환한다.
 
-    `case_id`의 채번(sequence)은 (topic slug, fiscal_year) 조합별로 1부터
-    독립적으로 매겨져, 반환된 배열 전체에서 `case_id`가 항상 고유하도록
-    보장한다. 반환되는 `records`는 유효한 사실만 담고 입력 순서를 보존한다.
+    `case_id`는 오직 각 사실의 소스 값에서만 계산된다(`_case_id_for` 참고)
+    — `corp_code`/`rcept_no`를 포함해 전역적으로 고유하고, 배치 내 다른
+    사실이나 처리 순서에 의존하지 않으며, 재생성해도 항상 동일하다.
+    반환되는 `records`는 유효한 사실만 담고 입력 순서를 보존한다.
     유효하지 않은 사실(빈 접수번호/고유번호, 정수로 해석되지 않는 사업연도)은
     `skipped`에 사유와 함께 담기고 `records`에는 나타나지 않는다.
 
@@ -185,7 +290,6 @@ def convert_audit_reports_to_topic_cases(
     해주는 선택적 파라미터다 — 호출자가 추가/커스텀 토픽 키워드를 쓰고 싶을
     때를 위한 것이며, 기본 동작은 바뀌지 않는다.
     """
-    sequence_counters: dict[tuple[str, int], int] = {}
     records: list[DartTopicCaseRecord] = []
     skipped: list[TopicCaseSkipped] = []
 
@@ -202,16 +306,12 @@ def convert_audit_reports_to_topic_cases(
         topic_slug = matched[0][0] if matched else _DEFAULT_TOPIC_SLUG
         topic_tags = [term for _, term in matched]
 
-        counter_key = (topic_slug, fiscal_year)
-        sequence_counters[counter_key] = sequence_counters.get(counter_key, 0) + 1
-        sequence = sequence_counters[counter_key]
-
         primary_keyword = matched[0][1] if matched else None
         disclosure_snippet = _bounded_snippet(text, primary_keyword)
 
         records.append(
             DartTopicCaseRecord(
-                case_id=f"dart-{topic_slug}-{fiscal_year}-{sequence:03d}",
+                case_id=_case_id_for(corp_code, fiscal_year, rcept_no, topic_slug, fact),
                 company_identifier=corp_code,
                 company_name=fact.corp_name,
                 fiscal_year=fiscal_year,
@@ -221,7 +321,7 @@ def convert_audit_reports_to_topic_cases(
                 disclosure_snippet=disclosure_snippet,
                 source_url=SOURCE_URL_TEMPLATE.format(rcept_no=rcept_no),
                 document_id=rcept_no,
-                extraction_confidence=_confidence_for(matched),
+                extraction_confidence=_confidence_for(fact),
                 freshness_timestamp=freshness_timestamp,
             )
         )
