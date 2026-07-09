@@ -47,6 +47,17 @@ from server import (
     search_disclosures,
 )
 
+# `server` 임포트(위) 이후에 임포트해야 한다: `bulk_audit`은 `audit_docs`/
+# `downloads` 모듈을 다시 임포트하는데, 이 모듈들이 `server`의 고정된
+# 임포트 순서보다 먼저 로드되면 MCP 도구 등록 순서(list_tools 결과)가
+# 바뀌어 `tests/test_public_surface.py`의 순서 검증이 깨진다.
+from dart_search_mcp.tools.bulk_audit import (
+    BulkAuditSourceError,
+    bulk_extract_audit_documents,
+    load_filings_from_manifest,
+    load_filings_from_rcept_json,
+)
+
 
 @click.group()
 @click.version_option(version="0.1.0")
@@ -425,6 +436,83 @@ def audit_documents(rcept_no, corp_code, corp_name, bsns_year, reprt_code, outpu
         raise SystemExit(1)
 
     click.echo(outcome.message)
+
+
+@cli.command("bulk-audit-documents")
+@click.option("--manifest", "manifest_path", default="", help="Step-1 수집 매니페스트 JSON 경로 (records[].rcept_no 사용)")
+@click.option("--rcept-json", "rcept_json_path", default="", help="접수번호 문자열 배열 JSON 경로")
+@click.option("-o", "--output", "output_dir", required=True, help="추출 결과와 bulk-manifest.json을 쓸 디렉토리")
+@click.option("--include", default="both", help='추출 대상: "audit", "consolidated", "both" 중 하나 (기본값: both)')
+@click.option("--require-consolidated", is_flag=True, default=False, help="연결감사보고서가 없으면 skipped_no_consolidated로 기록 (기본값: 없음을 매니페스트에만 기록)")
+@click.option("--limit", "limit", type=int, default=None, help="처리할 최대 필링 수 (기본값: 전체)")
+@click.option("--resume", is_flag=True, default=False, help="기존 체크포인트가 있으면 이어서 처리 (없으면 새로 시작)")
+@click.option("--sleep-seconds", "sleep_seconds", default=0.2, show_default=True, help="필링 사이 대기 시간(초)")
+@click.option("--exclude-corrections", is_flag=True, default=False, help="[기재정정]/[첨부추가] 정정 공시를 제외 (--manifest 소스에만 적용)")
+def bulk_audit_documents(
+    manifest_path,
+    rcept_json_path,
+    output_dir,
+    include,
+    require_consolidated,
+    limit,
+    resume,
+    sleep_seconds,
+    exclude_corrections,
+):
+    """여러 필링의 감사보고서/연결감사보고서 XML을 일괄 추출하고, 필링별
+    상태를 담은 체크포인트 가능한 실행 매니페스트(<output>/bulk-manifest.json)를
+    남깁니다.
+
+    입력은 --manifest(Step-1 dart collect-disclosures 매니페스트) 또는
+    --rcept-json(접수번호 문자열 배열 JSON) 중 정확히 하나가 필요합니다.
+
+    필링 한 건에서 발생하는 어떤 오류나 예외도(손상/암호화된 ZIP 포함) 그
+    필링만 failed로 기록하고 전체 실행을 중단시키지 않습니다. 대량(bulk)
+    처리는 이 CLI 명령을 통해서만 제공합니다(장시간 실행되는 MCP 도구는 두지
+    않습니다) - 필링 한 건만 추출할 때는 계속 audit-documents /
+    extract_audit_documents를 사용하세요.
+    """
+    if bool(manifest_path) == bool(rcept_json_path):
+        click.echo("오류: --manifest 또는 --rcept-json 중 정확히 하나를 지정해주세요.", err=True)
+        raise SystemExit(1)
+
+    try:
+        if manifest_path:
+            filings = load_filings_from_manifest(manifest_path, exclude_corrections=exclude_corrections)
+            source = f"manifest:{manifest_path}"
+        else:
+            filings = load_filings_from_rcept_json(rcept_json_path)
+            source = f"rcept-json:{rcept_json_path}"
+    except BulkAuditSourceError as exc:
+        click.echo(f"오류: {exc}", err=True)
+        raise SystemExit(1)
+
+    checkpoint_path = Path(output_dir) / "bulk-manifest.json.checkpoint.json"
+    if not resume:
+        checkpoint_path.unlink(missing_ok=True)
+
+    try:
+        manifest = asyncio.run(
+            bulk_extract_audit_documents(
+                filings=filings,
+                output_dir=output_dir,
+                include=include,
+                require_consolidated=require_consolidated,
+                limit=limit,
+                sleep_seconds=sleep_seconds,
+                checkpoint=checkpoint_path,
+                generated_at=datetime.now(timezone.utc).isoformat(),
+                source=source,
+            )
+        )
+    except ValueError as exc:
+        click.echo(f"오류: {exc}", err=True)
+        raise SystemExit(1)
+
+    manifest_path_out = os.path.join(output_dir, "bulk-manifest.json")
+    click.echo(
+        f"일괄 추출 완료: {manifest.total}건 (상태별: {manifest.counts_by_status}) -> {manifest_path_out}"
+    )
 
 
 @cli.command()

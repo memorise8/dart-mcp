@@ -24,6 +24,7 @@
 - `dart securities`: 증권신고서 주요정보를 조회합니다.
 - `dart temis-topic-cases`: 감사보고서 사실(회계감사인)을 TEMIS(finov2)...
 - `dart audit-documents`: 공시서류 원본 ZIP에서 감사보고서/연결감사보고서 XML을 추출합니다.
+- `dart bulk-audit-documents`: 여러 필링의 감사보고서/연결감사보고서 XML을 일괄 추출하고, 필링별 상태를...
 - `dart serve`: MCP 서버를 시작합니다.
 
 ## 예시
