@@ -8,6 +8,7 @@
 - `dart search`: 회사명으로 DART 고유번호를 검색합니다.
 - `dart company`: DART 고유번호로 기업 개황 정보를 조회합니다.
 - `dart disclosures`: DART 공시 목록을 검색합니다.
+- `dart collect-disclosures`: 지정한 기간의 공시를 3개월 이하 창으로 나눠 전체 페이지를 순회하며...
 - `dart financial`: 단일회사 주요계정 재무제표를 조회합니다.
 - `dart financial-full`: 단일회사 전체 재무제표를 조회합니다.
 - `dart indicators`: 단일회사 주요 재무지표를 조회합니다.
@@ -22,6 +23,8 @@
 - `dart taxonomy`: XBRL 택사노미 재무제표 양식을 조회합니다.
 - `dart securities`: 증권신고서 주요정보를 조회합니다.
 - `dart temis-topic-cases`: 감사보고서 사실(회계감사인)을 TEMIS(finov2)...
+- `dart audit-documents`: 공시서류 원본 ZIP에서 감사보고서/연결감사보고서 XML을 추출합니다.
+- `dart bulk-audit-documents`: 여러 필링의 감사보고서/연결감사보고서 XML을 일괄 추출하고, 필링별 상태를...
 - `dart serve`: MCP 서버를 시작합니다.
 
 ## 예시

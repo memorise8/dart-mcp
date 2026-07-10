@@ -25,9 +25,11 @@ EXPECTED_TOOL_NAMES = [
     "get_xbrl_taxonomy",
     "get_securities_report",
     "export_temis_topic_cases",
+    "extract_audit_documents",
 ]
 
 EXPECTED_COMMAND_NAMES = [
+    "audit-documents",
     "company",
     "disclosures",
     "download",

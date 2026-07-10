@@ -8,22 +8,28 @@ DART 전자공시 검색 CLI
 
 import asyncio
 import importlib.metadata
+import json
 import os
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 import click
 from dotenv import load_dotenv
 
 load_dotenv()
 
+from dart_search_mcp.collect import AUDIT_AND_BUSINESS_REPORT_TARGETS, collect_disclosures
 from server import (
     MAJOR_EVENT_REGISTRY,
     PERIODIC_REPORT_REGISTRY,
     SECURITIES_REGISTRATION_REGISTRY,
+    AuditDocsError,
     TemisExportError,
     download_document,
     download_xbrl,
     export_temis_topic_cases_core,
+    extract_audit_documents_core,
     get_company_info,
     get_executive_stock_report,
     get_financial_indicators,
@@ -39,6 +45,17 @@ from server import (
     mcp,
     search_corp_code,
     search_disclosures,
+)
+
+# `server` 임포트(위) 이후에 임포트해야 한다: `bulk_audit`은 `audit_docs`/
+# `downloads` 모듈을 다시 임포트하는데, 이 모듈들이 `server`의 고정된
+# 임포트 순서보다 먼저 로드되면 MCP 도구 등록 순서(list_tools 결과)가
+# 바뀌어 `tests/test_public_surface.py`의 순서 검증이 깨진다.
+from dart_search_mcp.tools.bulk_audit import (
+    BulkAuditSourceError,
+    bulk_extract_audit_documents,
+    load_filings_from_manifest,
+    load_filings_from_rcept_json,
 )
 
 
@@ -102,6 +119,80 @@ def disclosures(corp, code, bgn_de, end_de, pblntf_ty, page, count):
         pblntf_ty=pblntf_ty, page_no=page, page_count=count
     ))
     click.echo(result)
+
+
+def _parse_collect_targets(raw: str) -> list[tuple[str, str]]:
+    """`"F:감사보고서,A:사업보고서"` 형식의 문자열을 (공시유형, 키워드) 쌍
+    목록으로 해석한다. 빈 문자열이면 기본 프리셋을 사용한다."""
+    if not raw.strip():
+        return list(AUDIT_AND_BUSINESS_REPORT_TARGETS)
+
+    targets: list[tuple[str, str]] = []
+    for chunk in raw.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if ":" not in chunk:
+            raise click.BadParameter(f'"{chunk}"는 PBLNTF_TY:키워드 형식이 아닙니다 (예: "F:감사보고서")')
+        pblntf_ty, keyword = chunk.split(":", 1)
+        pblntf_ty = pblntf_ty.strip()
+        keyword = keyword.strip()
+        if not pblntf_ty or not keyword:
+            raise click.BadParameter(f'"{chunk}"는 PBLNTF_TY:키워드 형식이 아닙니다 (예: "F:감사보고서")')
+        targets.append((pblntf_ty, keyword))
+    return targets
+
+
+@cli.command("collect-disclosures")
+@click.option("--from", "bgn_de", required=True, help="검색 시작일 (YYYYMMDD)")
+@click.option("--to", "end_de", required=True, help="검색 종료일 (YYYYMMDD)")
+@click.option(
+    "--targets",
+    default="",
+    help='공시유형:키워드 쌍을 쉼표로 구분 (예: "F:감사보고서,A:사업보고서"). '
+    "기본값: 감사보고서(+연결감사보고서)+사업보고서 프리셋",
+)
+@click.option("-o", "--output", "output_path", required=True, help="수집 결과 매니페스트 JSON을 쓸 파일 경로")
+@click.option("--exclude-corrections", is_flag=True, default=False, help="[기재정정]/[첨부추가] 정정 공시를 제외")
+@click.option("--resume", is_flag=True, default=False, help="기존 체크포인트가 있으면 이어서 수집 (없으면 새로 시작)")
+@click.option("--max-retries", default=4, show_default=True, help="페이지별 최대 재시도 횟수")
+@click.option("--sleep", "pace_seconds", default=0.15, show_default=True, help="API 호출 사이 대기 시간(초)")
+def collect_disclosures_cmd(bgn_de, end_de, targets, output_path, exclude_corrections, resume, max_retries, pace_seconds):
+    """지정한 기간의 공시를 3개월 이하 창으로 나눠 전체 페이지를 순회하며
+    대량으로 수집하고, 체크포인트 가능한 매니페스트 JSON으로 저장합니다.
+
+    대량(bulk) 수집은 이 CLI 명령을 통해서만 제공합니다(장시간 실행되는 MCP
+    도구는 두지 않습니다). 단일 회사 공시 조회는 계속 search_disclosures /
+    search_disclosures_structured를 사용하세요.
+
+    --resume 없이 실행하면 기존 체크포인트(OUTPUT과 같은 디렉터리의
+    "<output>.checkpoint.json")를 버리고 새로 시작합니다.
+    """
+    parsed_targets = _parse_collect_targets(targets)
+    checkpoint_path = Path(f"{output_path}.checkpoint.json")
+    if not resume:
+        checkpoint_path.unlink(missing_ok=True)
+
+    manifest = asyncio.run(
+        collect_disclosures(
+            targets=parsed_targets,
+            bgn_de=bgn_de,
+            end_de=end_de,
+            max_retries=max_retries,
+            exclude_corrections=exclude_corrections,
+            pace_seconds=pace_seconds,
+            checkpoint=checkpoint_path,
+            generated_at=datetime.now(timezone.utc).isoformat(),
+        )
+    )
+
+    Path(output_path).write_text(
+        json.dumps(manifest.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    click.echo(
+        f"수집 완료: {manifest.total_records}건 (분류별: {manifest.counts_by_category}), "
+        f"실패 페이지 {len(manifest.failed_pages)}건 -> {output_path}"
+    )
 
 
 @cli.command()
@@ -305,6 +396,123 @@ def temis_topic_cases(year, corp, code, reprt_code, keywords, output_path):
         raise SystemExit(1)
 
     click.echo(outcome.message)
+
+
+@cli.command("audit-documents")
+@click.option("--rcept-no", "rcept_no", default="", help="접수번호 (14자리). 지정 시 다른 조회 파라미터 대신 직접 사용")
+@click.option("--code", "corp_code", default="", help="DART 고유번호 (rcept_no 미지정 시 --year와 함께 사용)")
+@click.option("--corp", "corp_name", default="", help="회사명 (--code 대신 사용; 여러 회사와 매치되면 오류)")
+@click.option("--year", "bsns_year", default="", help="사업연도 (rcept_no 미지정 시 필수)")
+@click.option("--report", "reprt_code", default="11011", help="보고서코드 (11011=사업보고서, 11012=반기, 11013=1분기, 11014=3분기)")
+@click.option("-o", "--output", "output_dir", required=True, help="저장 디렉토리 (실제 파일은 <output>/<rcept_no>/에 저장)")
+@click.option("--include", default="both", help='추출 대상: "audit", "consolidated", "both" 중 하나 (기본값: both)')
+@click.option("--require-consolidated", is_flag=True, default=False, help="연결감사보고서가 없으면 오류로 처리 (기본값: 없음을 매니페스트에만 기록)")
+def audit_documents(rcept_no, corp_code, corp_name, bsns_year, reprt_code, output_dir, include, require_consolidated):
+    """공시서류 원본 ZIP에서 감사보고서/연결감사보고서 XML을 추출합니다.
+
+    접수번호(--rcept-no)를 직접 지정하거나, --code 또는 --corp를 --year와
+    함께 지정해 자동 조회할 수 있습니다. --corp는 정확히 하나의 회사로
+    해석되어야 하며(모호하면 오류), OpenDART에 직접 전달되지 않습니다.
+
+    실패 시(입력 검증, 회사명 해석 실패, 접수번호 미해결, 다운로드 오류, 손상된
+    ZIP, --require-consolidated인데 연결감사보고서가 없음) 0이 아닌 종료
+    코드를 반환하며 출력 디렉토리는 전혀 만들지 않습니다(부분 파일 없음).
+    """
+    outcome = asyncio.run(
+        extract_audit_documents_core(
+            rcept_no=rcept_no,
+            corp_code=corp_code,
+            corp_name=corp_name,
+            bsns_year=bsns_year,
+            reprt_code=reprt_code,
+            output_dir=output_dir,
+            include=include,
+            require_consolidated=require_consolidated,
+        )
+    )
+
+    if isinstance(outcome, AuditDocsError):
+        click.echo(outcome.message, err=True)
+        raise SystemExit(1)
+
+    click.echo(outcome.message)
+
+
+@cli.command("bulk-audit-documents")
+@click.option("--manifest", "manifest_path", default="", help="Step-1 수집 매니페스트 JSON 경로 (records[].rcept_no 사용)")
+@click.option("--rcept-json", "rcept_json_path", default="", help="접수번호 문자열 배열 JSON 경로")
+@click.option("-o", "--output", "output_dir", required=True, help="추출 결과와 bulk-manifest.json을 쓸 디렉토리")
+@click.option("--include", default="both", help='추출 대상: "audit", "consolidated", "both" 중 하나 (기본값: both)')
+@click.option("--require-consolidated", is_flag=True, default=False, help="연결감사보고서가 없으면 skipped_no_consolidated로 기록 (기본값: 없음을 매니페스트에만 기록)")
+@click.option("--limit", "limit", type=int, default=None, help="처리할 최대 필링 수 (기본값: 전체)")
+@click.option("--resume", is_flag=True, default=False, help="기존 체크포인트가 있으면 이어서 처리 (없으면 새로 시작)")
+@click.option("--sleep-seconds", "sleep_seconds", default=0.2, show_default=True, help="필링 사이 대기 시간(초)")
+@click.option("--exclude-corrections", is_flag=True, default=False, help="[기재정정]/[첨부추가] 정정 공시를 제외 (--manifest 소스에만 적용)")
+def bulk_audit_documents(
+    manifest_path,
+    rcept_json_path,
+    output_dir,
+    include,
+    require_consolidated,
+    limit,
+    resume,
+    sleep_seconds,
+    exclude_corrections,
+):
+    """여러 필링의 감사보고서/연결감사보고서 XML을 일괄 추출하고, 필링별
+    상태를 담은 체크포인트 가능한 실행 매니페스트(<output>/bulk-manifest.json)를
+    남깁니다.
+
+    입력은 --manifest(Step-1 dart collect-disclosures 매니페스트) 또는
+    --rcept-json(접수번호 문자열 배열 JSON) 중 정확히 하나가 필요합니다.
+
+    필링 한 건에서 발생하는 어떤 오류나 예외도(손상/암호화된 ZIP 포함) 그
+    필링만 failed로 기록하고 전체 실행을 중단시키지 않습니다. 대량(bulk)
+    처리는 이 CLI 명령을 통해서만 제공합니다(장시간 실행되는 MCP 도구는 두지
+    않습니다) - 필링 한 건만 추출할 때는 계속 audit-documents /
+    extract_audit_documents를 사용하세요.
+    """
+    if bool(manifest_path) == bool(rcept_json_path):
+        click.echo("오류: --manifest 또는 --rcept-json 중 정확히 하나를 지정해주세요.", err=True)
+        raise SystemExit(1)
+
+    try:
+        if manifest_path:
+            filings = load_filings_from_manifest(manifest_path, exclude_corrections=exclude_corrections)
+            source = f"manifest:{manifest_path}"
+        else:
+            filings = load_filings_from_rcept_json(rcept_json_path)
+            source = f"rcept-json:{rcept_json_path}"
+    except BulkAuditSourceError as exc:
+        click.echo(f"오류: {exc}", err=True)
+        raise SystemExit(1)
+
+    checkpoint_path = Path(output_dir) / "bulk-manifest.json.checkpoint.json"
+    if not resume:
+        checkpoint_path.unlink(missing_ok=True)
+
+    try:
+        manifest = asyncio.run(
+            bulk_extract_audit_documents(
+                filings=filings,
+                output_dir=output_dir,
+                include=include,
+                require_consolidated=require_consolidated,
+                limit=limit,
+                sleep_seconds=sleep_seconds,
+                checkpoint=checkpoint_path,
+                generated_at=datetime.now(timezone.utc).isoformat(),
+                source=source,
+            )
+        )
+    except ValueError as exc:
+        click.echo(f"오류: {exc}", err=True)
+        raise SystemExit(1)
+
+    manifest_path_out = os.path.join(output_dir, "bulk-manifest.json")
+    click.echo(
+        f"일괄 추출 완료: {manifest.total}건 (상태별: {manifest.counts_by_status}) -> {manifest_path_out}"
+    )
 
 
 @cli.command()

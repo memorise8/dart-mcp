@@ -1,0 +1,31 @@
+{
+  "entries": [
+    {
+      "filename": "20260323001689.xml",
+      "document_name": "사업보고서",
+      "acode": "11011",
+      "size": 254,
+      "is_main_report": true,
+      "is_audit": false,
+      "is_consolidated_audit": false
+    },
+    {
+      "filename": "20260323001689_00760.xml",
+      "document_name": "감사보고서",
+      "acode": "00760",
+      "size": 254,
+      "is_main_report": false,
+      "is_audit": true,
+      "is_consolidated_audit": false
+    },
+    {
+      "filename": "20260323001689_00761.xml",
+      "document_name": "연결감사보고서",
+      "acode": "00761",
+      "size": 260,
+      "is_main_report": false,
+      "is_audit": false,
+      "is_consolidated_audit": true
+    }
+  ]
+}

@@ -20,9 +20,11 @@ from dart_search_mcp.tools.downloads import _resolve_rcept_no, download_document
 from dart_search_mcp.tools.taxonomy import get_xbrl_taxonomy
 from dart_search_mcp.tools.securities import get_securities_report
 from dart_search_mcp.tools.temis import TemisExportError, export_temis_topic_cases, export_temis_topic_cases_core
+from dart_search_mcp.tools.audit_docs import AuditDocsError, extract_audit_documents, extract_audit_documents_core
 
 __all__ = [
     "API_KEY",
+    "AuditDocsError",
     "BASE_URL",
     "MAJOR_EVENT_REGISTRY",
     "PERIODIC_REPORT_REGISTRY",
@@ -40,6 +42,8 @@ __all__ = [
     "download_xbrl",
     "export_temis_topic_cases",
     "export_temis_topic_cases_core",
+    "extract_audit_documents",
+    "extract_audit_documents_core",
     "get_company_info",
     "get_executive_stock_report",
     "get_financial_indicators",
