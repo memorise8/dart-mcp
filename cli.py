@@ -62,6 +62,16 @@ from dart_search_mcp.tools.extract_facts import (
     emit_topic_cases_from_facts,
     extract_audit_facts,
 )
+from dart_search_mcp.tools.tag_kam_cli import (
+    DEFAULT_BASE_URL as KAM_DEFAULT_BASE_URL,
+)
+from dart_search_mcp.tools.tag_kam_cli import (
+    DEFAULT_MODEL as KAM_DEFAULT_MODEL,
+)
+from dart_search_mcp.tools.tag_kam_cli import (
+    TagKamSourceError,
+    run_tag_kam,
+)
 from dart_search_mcp.tools.temis import _utc_now_iso
 
 
@@ -601,6 +611,57 @@ def extract_audit_facts_cmd(
             f"(facts {tc_summary['facts_rows']}, skipped {tc_summary['skipped']}, "
             f"corrupt {tc_summary['corrupt_lines']}) -> {emit_topic_cases_path}"
         )
+
+
+@cli.command("tag-kam")
+@click.option("--facts", "facts_path", required=True, help="kam_present 행을 담은 audit_facts.jsonl 경로")
+@click.option("-o", "--output", "output_path", required=True, help="사이드카 kam_tags.jsonl을 쓸 파일 경로")
+@click.option("--base-url", "base_url", default=KAM_DEFAULT_BASE_URL, show_default=True, help="OpenAI 호환 엔드포인트 base URL")
+@click.option("--model", "model", default=KAM_DEFAULT_MODEL, show_default=True, help="LLM 모델명")
+@click.option("--concurrency", "concurrency", type=int, default=4, show_default=True, help="동시 태깅 워커 수(캐시 미스만 해당)")
+@click.option("--limit", "limit", type=int, default=None, help="처리할 최대 대상 수 (기본값: 전체)")
+@click.option("--resume", is_flag=True, default=False, help="기존 체크포인트가 있으면 이어서 처리")
+@click.option("--dry-run", "dry_run", is_flag=True, default=False, help="엔드포인트 호출 없이 대상 건수와 태소노미만 출력")
+@click.option("--cache", "cache_path_opt", default="", help="캐시 파일 경로 (기본값: <output>.cache.json)")
+def tag_kam_cmd(facts_path, output_path, base_url, model, concurrency, limit, resume, dry_run, cache_path_opt):
+    """`dart extract-audit-facts`가 만든 audit_facts.jsonl에서 kam_present=true
+    행만 골라 KAM(핵심감사사항) 원문을 LLM으로 배치 태깅하고, 사이드카
+    OUTPUT(kam_tags.jsonl)을 생성합니다.
+
+    rcept 한 건의 태깅 실패는 그 rcept만 실패로 기록하고 전체 실행을
+    중단시키지 않습니다. `--dry-run`이면 엔드포인트를 전혀 호출하지 않고
+    대상 건수와 태소노미만 출력합니다.
+    """
+    try:
+        result = run_tag_kam(
+            facts_path,
+            output_path,
+            model=model,
+            base_url=base_url,
+            cache_path=cache_path_opt or None,
+            resume=resume,
+            limit=limit,
+            concurrency=concurrency,
+            dry_run=dry_run,
+        )
+    except TagKamSourceError as exc:
+        click.echo(f"오류: {exc}", err=True)
+        raise SystemExit(1)
+    except ValueError as exc:
+        click.echo(f"오류: {exc}", err=True)
+        raise SystemExit(1)
+
+    if result.get("dry_run"):
+        click.echo(f"[dry-run] 대상 {result['targets']}건 (엔드포인트 미호출)")
+        click.echo("태소노미:")
+        for tag in result["taxonomy"]:
+            click.echo(f"  - {tag}")
+        return
+
+    click.echo(
+        f"태깅 완료: {result['targets']}건 (성공 {result['tagged_ok']}, 실패 {result['failed']}, "
+        f"캐시히트 {result['cache_hits']}) -> {output_path}"
+    )
 
 
 @cli.command()
