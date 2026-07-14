@@ -161,7 +161,7 @@ class NormalBatchTests(unittest.TestCase):
                 self.assertEqual(row["base_url"], "http://x/v1")
                 self.assertEqual(row["tagged_at"], _FIXED_TAGGED_AT)
                 expected_hash = hashlib.sha256(
-                    f"gpt-5.4-mini\n{kam_raw_by_rcept[row['rcept_no']]}".encode("utf-8")
+                    f"gpt-5.4-mini\nhttp://x/v1\n{kam_raw_by_rcept[row['rcept_no']]}".encode("utf-8")
                 ).hexdigest()
                 self.assertEqual(row["kam_hash"], expected_hash)
 
@@ -178,10 +178,24 @@ class NormalBatchTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 tag_kam_batch(facts_path, output_path, call_fn=lambda *a, **k: "[]")
 
-    def test_kam_cache_key_matches_kam_tagger_formula(self) -> None:
+    def test_kam_cache_key_includes_base_url_and_diverges_from_kam_tagger_formula(self) -> None:
+        # Fix 2: `_kam_cache_key`는 base_url도 해시에 포함한다(provenance 정합을
+        # 위해 `kam_tagger._cache_key`와 의도적으로 다른 공식). 같은 model/kam_raw라도
+        # base_url이 다르면 키가 달라야 한다.
+        key_a = _kam_cache_key("m", "http://a/v1", "원문 X")
+        key_b = _kam_cache_key("m", "http://b/v1", "원문 X")
+        self.assertNotEqual(key_a, key_b)
+        self.assertEqual(
+            key_a,
+            hashlib.sha256("m\nhttp://a/v1\n원문 X".encode("utf-8")).hexdigest(),
+        )
+
+        # kam_tagger.tag_one_kam(base_url 미포함 공식)의 kam_hash와는 더 이상
+        # 같지 않다 - 이 CLI는 tag_one_kam을 호출하지 않고 캐시를 자체 관리하므로
+        # 두 공식이 일치할 필요가 없다.
         cache: dict[str, Any] = {}
-        result = tag_one_kam("원문 X", model="m", base_url="http://x", cache=cache, call_fn=lambda *a, **k: '["손상"]')
-        self.assertEqual(_kam_cache_key("m", "원문 X"), result["kam_hash"])
+        result = tag_one_kam("원문 X", model="m", base_url="http://a/v1", cache=cache, call_fn=lambda *a, **k: '["손상"]')
+        self.assertNotEqual(key_a, result["kam_hash"])
 
 
 class ResumeNoDuplicateTests(unittest.TestCase):
@@ -395,6 +409,210 @@ class CliCommandTests(unittest.TestCase):
                 self.assertIn("tagged_at", rows[0])
         finally:
             httpx.Client = original_client  # type: ignore[assignment]
+
+
+class DuplicateRceptWithinRunTests(unittest.TestCase):
+    """Fix 1: 같은 실행(run) 안에서 같은 rcept_no가 입력에 두 번 있으면(캐시
+    콜드) 둘 다 완료 전에 풀에 제출될 수 있는데, 출력 JSONL에는 그 rcept_no가
+    정확히 1행만 남아야 한다."""
+
+    def test_duplicate_rcept_no_in_input_produces_single_output_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            facts_path = _write_facts(
+                tmp,
+                [
+                    _fact_row("1", kam_raw="원문 A"),
+                    _fact_row("1", kam_raw="원문 A"),  # 같은 rcept_no 중복
+                    _fact_row("2", kam_raw="원문 B"),
+                ],
+            )
+            output_path = os.path.join(tmp, "kam_tags.jsonl")
+
+            def fake_call_fn(messages, *, model, base_url):
+                return '["수익인식"]'
+
+            summary = tag_kam_batch(
+                facts_path, output_path, tagged_at=_FIXED_TAGGED_AT, concurrency=4, call_fn=fake_call_fn
+            )
+
+            rows = _read_jsonl(output_path)
+            self.assertEqual(len(rows), 2)  # rcept "1" 중복이 아니라 1행만
+            self.assertEqual(sorted(r["rcept_no"] for r in rows), ["1", "2"])
+            self.assertEqual(summary["targets"], 3)
+
+    def test_duplicate_rcept_no_cache_hit_path_also_dedupes(self) -> None:
+        # 같은 rcept_no가 2번, kam_raw도 동일 -> 첫 처리 후 캐시가 즉시 채워져
+        # 두 번째는 캐시 히트 경로를 타지만 여전히 1행만 남아야 한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            facts_path = _write_facts(
+                tmp,
+                [
+                    _fact_row("1", kam_raw="같은 원문"),
+                    _fact_row("1", kam_raw="같은 원문"),
+                ],
+            )
+            output_path = os.path.join(tmp, "kam_tags.jsonl")
+
+            call_count = 0
+
+            def counting_call_fn(messages, *, model, base_url):
+                nonlocal call_count
+                call_count += 1
+                return '["손상"]'
+
+            summary = tag_kam_batch(
+                facts_path, output_path, tagged_at=_FIXED_TAGGED_AT, concurrency=1, call_fn=counting_call_fn
+            )
+
+            rows = _read_jsonl(output_path)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["rcept_no"], "1")
+            self.assertEqual(call_count, 1)
+            self.assertEqual(summary["tagged_ok"], 1)
+
+
+class CacheKeyBaseUrlTests(unittest.TestCase):
+    """Fix 2: 캐시 키에 base_url이 포함되어야 한다 - 같은 model/kam_raw라도
+    base_url이 다르면 캐시 미스로 재호출되고, 저장되는 행의 base_url도 그
+    실행의 base_url과 일치해야 한다."""
+
+    def test_different_base_url_causes_cache_miss_and_correct_stamp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            facts_path = _write_facts(tmp, [_fact_row("1", kam_raw="원문 A")])
+            output_path = os.path.join(tmp, "kam_tags.jsonl")
+            cache_path = os.path.join(tmp, "shared.cache.json")
+
+            call_count = 0
+
+            def counting_call_fn(messages, *, model, base_url):
+                nonlocal call_count
+                call_count += 1
+                return '["손상"]'
+
+            first_summary = tag_kam_batch(
+                facts_path,
+                output_path,
+                tagged_at=_FIXED_TAGGED_AT,
+                base_url="http://endpoint-a/v1",
+                cache_path=cache_path,
+                call_fn=counting_call_fn,
+            )
+            self.assertEqual(call_count, 1)
+            self.assertEqual(first_summary["cache_hits"], 0)
+
+            rows_a = _read_jsonl(output_path)
+            self.assertEqual(rows_a[0]["base_url"], "http://endpoint-a/v1")
+
+            # 같은 model/kam_raw, 다른 base_url, 같은 캐시 파일을 재사용해도
+            # 캐시가 히트되면 안 된다(콜드 -> 재호출).
+            output_path_b = os.path.join(tmp, "kam_tags_b.jsonl")
+            second_summary = tag_kam_batch(
+                facts_path,
+                output_path_b,
+                tagged_at=_FIXED_TAGGED_AT,
+                base_url="http://endpoint-b/v1",
+                cache_path=cache_path,
+                call_fn=counting_call_fn,
+            )
+            self.assertEqual(call_count, 2)  # 재호출됨 - 캐시 미스
+            self.assertEqual(second_summary["cache_hits"], 0)
+
+            rows_b = _read_jsonl(output_path_b)
+            self.assertEqual(rows_b[0]["base_url"], "http://endpoint-b/v1")
+            # 캐시 키(kam_hash)도 base_url별로 달라야 한다.
+            self.assertNotEqual(rows_a[0]["kam_hash"], rows_b[0]["kam_hash"])
+
+
+class RunParamsGuardResumeTests(unittest.TestCase):
+    """Fix 3: `--resume`에서 model/base_url이 이전 실행과 다르면
+    `_ensure_run_params_match_checkpoint`가 `ValueError`를 던져야 하고,
+    CLI 경로에서는 exit code 1로 매핑되어야 한다."""
+
+    def test_resume_with_different_model_raises_value_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            facts_path = _write_facts(tmp, [_fact_row("1", kam_raw="원문 A")])
+            output_path = os.path.join(tmp, "kam_tags.jsonl")
+
+            tag_kam_batch(
+                facts_path, output_path, tagged_at=_FIXED_TAGGED_AT, model="model-a", call_fn=lambda *a, **k: "[]"
+            )
+
+            with self.assertRaises(ValueError):
+                tag_kam_batch(
+                    facts_path,
+                    output_path,
+                    tagged_at="2026-07-02T00:00:00Z",
+                    model="model-b",
+                    resume=True,
+                    call_fn=lambda *a, **k: "[]",
+                )
+
+    def test_resume_with_different_base_url_raises_value_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            facts_path = _write_facts(tmp, [_fact_row("1", kam_raw="원문 A")])
+            output_path = os.path.join(tmp, "kam_tags.jsonl")
+
+            tag_kam_batch(
+                facts_path,
+                output_path,
+                tagged_at=_FIXED_TAGGED_AT,
+                base_url="http://endpoint-a/v1",
+                call_fn=lambda *a, **k: "[]",
+            )
+
+            with self.assertRaises(ValueError):
+                tag_kam_batch(
+                    facts_path,
+                    output_path,
+                    tagged_at="2026-07-02T00:00:00Z",
+                    base_url="http://endpoint-b/v1",
+                    resume=True,
+                    call_fn=lambda *a, **k: "[]",
+                )
+
+    def test_cli_resume_with_different_model_exits_with_code_1(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            facts_path = _write_facts(tmp, [_fact_row("1", kam_raw="원문")])
+            output_path = os.path.join(tmp, "kam_tags.jsonl")
+
+            class _FakeResponse:
+                status_code = 200
+
+                def json(self) -> Any:
+                    return {"choices": [{"message": {"content": '["손상"]'}}]}
+
+            class _FakeClient:
+                def __init__(self, *args, **kwargs) -> None:
+                    pass
+
+                def __enter__(self) -> "_FakeClient":
+                    return self
+
+                def __exit__(self, *exc_info) -> bool:
+                    return False
+
+                def post(self, url: str, json: dict[str, Any]) -> _FakeResponse:
+                    return _FakeResponse()
+
+            original_client = httpx.Client
+            httpx.Client = _FakeClient  # type: ignore[assignment]
+            try:
+                runner = CliRunner()
+                first_result = runner.invoke(
+                    cli.cli,
+                    ["tag-kam", "--facts", facts_path, "-o", output_path, "--model", "model-a"],
+                )
+                self.assertEqual(first_result.exit_code, 0, first_result.output)
+
+                second_result = runner.invoke(
+                    cli.cli,
+                    ["tag-kam", "--facts", facts_path, "-o", output_path, "--model", "model-b", "--resume"],
+                )
+
+                self.assertEqual(second_result.exit_code, 1)
+                self.assertIn("오류", second_result.output)
+            finally:
+                httpx.Client = original_client  # type: ignore[assignment]
 
 
 if __name__ == "__main__":

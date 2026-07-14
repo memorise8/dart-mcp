@@ -125,17 +125,28 @@ def load_kam_targets(facts_path: str | Path, *, limit: int | None = None) -> lis
 
 
 # ---------------------------------------------------------------------------
-# content-hash (kam_tagger._cache_key와 동일한 공식 - 계약)
+# content-hash (이 모듈 전용 공식 - base_url까지 포함해 kam_tagger._cache_key와
+# 의도적으로 다르다. 아래 docstring 참조)
 # ---------------------------------------------------------------------------
 
 
-def _kam_cache_key(model: str, kam_raw: str) -> str:
-    """`kam_tagger._cache_key`와 **동일한 공식**(`sha256(model + "\\n" + kam_raw)`)
-    이어야 하는 계약. 캐시 히트 여부를 워커 풀에 제출하기 **전에** 메인
-    스레드에서 미리 판별하기 위해 이 모듈에서 재계산한다(공유 캐시 dict를
-    읽기 위해 `tag_one_kam`을 부르면 미스일 때 그 자리에서 동기 호출까지
-    해버려 병렬화 의미가 없어진다)."""
-    return hashlib.sha256(f"{model}\n{kam_raw}".encode("utf-8")).hexdigest()
+def _kam_cache_key(model: str, base_url: str, kam_raw: str) -> str:
+    """`sha256(model + "\\n" + base_url + "\\n" + kam_raw)` hexdigest.
+
+    캐시 히트 여부를 워커 풀에 제출하기 **전에** 메인 스레드에서 미리
+    판별하기 위해 이 모듈에서 자체 계산한다(공유 캐시 dict를 읽기 위해
+    `tag_one_kam`을 부르면 미스일 때 그 자리에서 동기 호출까지 해버려
+    병렬화 의미가 없어진다).
+
+    `kam_tagger._cache_key`(`sha256(model + "\\n" + kam_raw)`, base_url
+    미포함)와는 **의도적으로 다른 공식**이다: base_url이 키에 없으면
+    같은 model·다른 base_url(예: 엔드포인트 교체)로 실행했을 때 캐시가
+    히트해버려, 이전 엔드포인트로 계산된 태그를 새 base_url로 스탬프하는
+    provenance 불일치가 생긴다. 이 모듈은 `tag_one_kam`을 호출하지 않고
+    캐시를 직접 관리하므로(`tag_kam_batch`의 `_finalize_success`), 이
+    자체 공식만 내부적으로 일관되면 되고 `kam_tagger`쪽 회귀 위험 없이
+    바꿀 수 있다."""
+    return hashlib.sha256(f"{model}\n{base_url}\n{kam_raw}".encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -457,6 +468,13 @@ def tag_kam_batch(
         max_workers = max(1, int(concurrency))
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             pending_futures: dict[Any, tuple[str, str]] = {}
+            # 같은 실행(run) 안에서 입력 facts.jsonl에 같은 rcept_no가 두 번 이상
+            # 나올 수 있다. `state["processed"]`는 제출된 rcept가 완료(성공/실패
+            # finalize)된 뒤에야 갱신되므로, 캐시가 콜드인 상태에서 같은 rcept_no가
+            # 완료 전에 다시 나오면 풀에 중복 제출되어 출력 JSONL에 같은 rcept_no가
+            # 두 행 생긴다("무중복" 설계 위반). 제출 시점에 바로 표시하는
+            # `submitted`로 이를 막는다.
+            submitted: set[str] = set()
 
             for i, target in enumerate(targets, start=1):
                 rcept_no = str(target.get("rcept_no", "") or "").strip()
@@ -468,13 +486,14 @@ def tag_kam_batch(
                     state["processed"][synthetic_key] = "missing_rcept_no"
                     _save_checkpoint(checkpoint_path, state)
                     continue
-                if rcept_no in state["processed"]:
+                if rcept_no in state["processed"] or rcept_no in submitted:
                     continue
 
                 kam_raw = str(target.get("kam_raw", "") or "")
-                kam_hash = _kam_cache_key(model, kam_raw)
+                kam_hash = _kam_cache_key(model, base_url, kam_raw)
                 cached = cache.get(kam_hash)
                 if cached is not None:
+                    submitted.add(rcept_no)
                     _finalize_success(
                         rcept_no=rcept_no,
                         tags=list(cached.get("tags") or []),
@@ -484,6 +503,7 @@ def tag_kam_batch(
                     )
                     continue
 
+                submitted.add(rcept_no)
                 future = pool.submit(_tag_worker, kam_raw, model=model, base_url=base_url, call_fn=call_fn)
                 pending_futures[future] = (rcept_no, kam_hash)
 
