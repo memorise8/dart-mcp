@@ -58,6 +58,16 @@ JSONL(`audit_facts.jsonl`)과 요약 JSON(`<output>.summary.json`)을 만드는
 이 모듈은 어떤 MCP 도구도 등록하지 않는다(대량 처리는 블로킹 MCP 도구
 호출로 적합하지 않다) - `cli.py`의 `dart extract-audit-facts` 명령을
 통해서만 제공한다.
+
+## finalize: facts.jsonl -> finov2 DartTopicCase JSON
+
+`deserialize_parsed_report`는 `serialize_parsed_report`의 역함수로, JSONL 한
+행(dict)을 `ParsedAuditReport`로 복원한다. `emit_topic_cases_from_facts`는
+완결된 `audit_facts.jsonl`을 (in-memory 파싱 결과가 아니라) **다시 읽어**
+기존 어댑터(`dart_search_mcp.audit_facts_adapter.parsed_reports_to_topic_cases`,
+Task 2)와 변환기(`dart_search_mcp.temis_export.topic_cases_to_json`, Task 6)를
+재사용해 finov2 `DartTopicCase` JSON 배열을 만든다 - `cli.py`의
+`--emit-topic-cases` 옵션이 이 함수를 호출한다.
 """
 
 from __future__ import annotations
@@ -179,6 +189,49 @@ def serialize_parsed_report(parsed: ParsedAuditReport) -> dict[str, Any]:
         "source_url": parsed.source_url,
         "doc_path": parsed.doc_path,
     }
+
+
+def _none_or_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    return int(value)
+
+
+def deserialize_parsed_report(row: dict[str, Any]) -> ParsedAuditReport:
+    """`serialize_parsed_report`의 역함수: JSONL 한 행(dict) -> `ParsedAuditReport`.
+
+    - `parse_flags`: list -> frozenset. `kam_tags`: list -> tuple.
+    - `fiscal_year`/`settlement_month`: null -> None, 그 외 값은 int로 강제
+      변환한다(변환 불가 시 `ValueError`/`TypeError`를 그대로 전파한다 -
+      호출자인 `emit_topic_cases_from_facts`가 그 라인 전체를 손상 라인으로
+      다뤄 건너뛴다).
+    - 나머지 필드는 그대로 옮기되, 누락된 키에는 방어적 기본값(빈 문자열/
+      False/빈 컬렉션)을 쓴다 - 이 모듈이 직접 만든 손상 없는 JSONL에는 전
+      필드가 항상 존재하므로 실전에서는 기본값이 쓰일 일이 거의 없다."""
+    return ParsedAuditReport(
+        rcept_no=str(row.get("rcept_no", "") or ""),
+        corp_code=str(row.get("corp_code", "") or ""),
+        corp_name=str(row.get("corp_name", "") or ""),
+        corp_cls=str(row.get("corp_cls", "") or ""),
+        stock_code=str(row.get("stock_code", "") or ""),
+        report_name=str(row.get("report_name", "") or ""),
+        rcept_dt=str(row.get("rcept_dt", "") or ""),
+        category=str(row.get("category", "") or ""),
+        fiscal_year=_none_or_int(row.get("fiscal_year")),
+        settlement_month=_none_or_int(row.get("settlement_month")),
+        auditor=str(row.get("auditor", "") or ""),
+        audit_opinion=str(row.get("audit_opinion", "") or "unknown"),
+        opinion_snippet=str(row.get("opinion_snippet", "") or ""),
+        going_concern=bool(row.get("going_concern", False)),
+        going_concern_snippet=str(row.get("going_concern_snippet", "") or ""),
+        kam_present=bool(row.get("kam_present", False)),
+        kam_raw=str(row.get("kam_raw", "") or ""),
+        emphasis_raw=str(row.get("emphasis_raw", "") or ""),
+        kam_tags=tuple(row.get("kam_tags") or ()),
+        parse_flags=frozenset(row.get("parse_flags") or ()),
+        source_url=str(row.get("source_url", "") or ""),
+        doc_path=str(row.get("doc_path", "") or ""),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -512,3 +565,92 @@ def extract_audit_facts(
     summary = _build_summary(total_selected, state["counts"])
     _write_json_atomic(summary_path_resolved, summary)
     return summary
+
+
+# ---------------------------------------------------------------------------
+# topic_cases 산출 (facts.jsonl -> finov2 DartTopicCase JSON, finalize 단계)
+# ---------------------------------------------------------------------------
+
+
+def emit_topic_cases_from_facts(
+    facts_path: str | Path,
+    output_path: str | Path,
+    *,
+    freshness_timestamp: str,
+) -> dict[str, Any]:
+    """완결된 사실 JSONL(`extract_audit_facts`의 output)을 다시 읽어 finov2
+    `DartTopicCase` JSON 배열(`dart_search_mcp.temis_export.topic_cases_to_json`)로
+    변환해 `output_path`에 원자적으로(tmp+replace) 쓴다.
+
+    설계 원칙: in-memory로 만들어진 파싱 결과가 아니라 디스크의 **완결된
+    JSONL을 다시 읽어** 생성한다 - resume/크래시로 여러 번 실행돼도 항상
+    호출 시점의 전체 facts 기준으로 정확히 재생성된다(누적 스트림 상태에
+    의존하지 않는다).
+
+    - 각 라인을 `json.loads` -> `deserialize_parsed_report`로 복원한다.
+      dict가 아니거나 복원에 실패하는 라인(JSON 손상, 숫자로 변환할 수
+      없는 fiscal_year 등)은 그 라인만 건너뛰고 `corrupt_lines`에 집계한다
+      - 전체 실행을 멈추지 않는다.
+    - 유효하게 복원된 사실들은 `dart_search_mcp.audit_facts_adapter.
+      parsed_reports_to_topic_cases`(Task 2 어댑터)에 그대로 넘긴다. 빈
+      rcept_no/corp_code이거나 fiscal_year를 정수로 해석할 수 없는 사실
+      (예: fiscal_year가 null인 행)은 그 안에서 `TopicCaseSkipped`로
+      집계되어 반환되는 `skipped`/`skipped_reasons_count`에 반영된다. KAM이
+      없는 사실도(핵심감사사항 섹션이 아예 없는 비상장 "단순 적정의견"
+      다수) topic 키워드 매칭 없이 `topic_slug="general"`인 케이스 1건으로
+      정상 생성된다(어댑터가 이미 보장하는 동작).
+    - 순수성: 이 함수는 시계를 직접 읽지 않는다 - `freshness_timestamp`는
+      호출자(CLI)가 주입한 값을 그대로 전달할 뿐이다.
+
+    반환값: `{"facts_rows": ..., "topic_cases": ..., "skipped": ...,
+    "skipped_reasons_count": {...}, "corrupt_lines": ...}`.
+    """
+    # 지연 import: 모듈 최상단에서 import하면 `dart_search_mcp.tools.reports`의
+    # `@mcp.tool()` 등록이 `server.py`가 정한 순서보다 먼저 실행될 위험이
+    # 있어 MCP 도구 등록 순서(`tests/test_public_surface.py`)가 바뀔 수
+    # 있다(`dart_search_mcp.tools.disclosures._resolve_single_corp_code`와
+    # 동일한 이유). 이 모듈(`extract_facts.py`)은 어떤 MCP 도구도 등록하지
+    # 않는 순수 동기 CLI 전용 모듈이므로, 이 함수가 실제로 호출될 때만
+    # 어댑터/변환기를 가져온다.
+    from dart_search_mcp.audit_facts_adapter import parsed_reports_to_topic_cases
+    from dart_search_mcp.temis_export import topic_cases_to_json
+
+    facts_path = Path(facts_path)
+    output_path = Path(output_path)
+
+    parsed_list: list[ParsedAuditReport] = []
+    corrupt_lines = 0
+
+    with open(facts_path, encoding="utf-8") as f:
+        for line in f:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                row = json.loads(stripped)
+                if not isinstance(row, dict):
+                    raise ValueError("JSONL 행이 객체(dict)가 아닙니다")
+                parsed_list.append(deserialize_parsed_report(row))
+            except (json.JSONDecodeError, ValueError, TypeError):
+                # 손상된(파싱 불가/필드 변환 불가) 라인 - 건너뛰고 집계만 한다.
+                corrupt_lines += 1
+
+    records, skipped = parsed_reports_to_topic_cases(parsed_list, freshness_timestamp=freshness_timestamp)
+
+    raw_json = topic_cases_to_json(records)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = output_path.with_name(output_path.name + ".tmp")
+    tmp_path.write_text(raw_json, encoding="utf-8")
+    tmp_path.replace(output_path)
+
+    skipped_reasons_count: dict[str, int] = {}
+    for item in skipped:
+        skipped_reasons_count[item.reason] = skipped_reasons_count.get(item.reason, 0) + 1
+
+    return {
+        "facts_rows": len(parsed_list),
+        "topic_cases": len(records),
+        "skipped": len(skipped),
+        "skipped_reasons_count": skipped_reasons_count,
+        "corrupt_lines": corrupt_lines,
+    }

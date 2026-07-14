@@ -57,7 +57,12 @@ from dart_search_mcp.tools.bulk_audit import (
     load_filings_from_manifest,
     load_filings_from_rcept_json,
 )
-from dart_search_mcp.tools.extract_facts import ExtractFactsSourceError, extract_audit_facts
+from dart_search_mcp.tools.extract_facts import (
+    ExtractFactsSourceError,
+    emit_topic_cases_from_facts,
+    extract_audit_facts,
+)
+from dart_search_mcp.tools.temis import _utc_now_iso
 
 
 @click.group()
@@ -525,6 +530,12 @@ def bulk_audit_documents(
 @click.option("--corp-cls", "corp_cls_raw", default="", help='법인구분 필터, 쉼표 구분 (예: "E,Y,K,N"). 기본값: 전체')
 @click.option("--summary", "summary_path", default="", help="요약 JSON 경로 (기본값: <output>.summary.json)")
 @click.option("--checkpoint", "checkpoint_path_opt", default="", help="체크포인트 JSON 경로 (기본값: <output>.checkpoint.json)")
+@click.option(
+    "--emit-topic-cases",
+    "emit_topic_cases_path",
+    default="",
+    help="주어지면 팩트 추출 완료 후 이 경로에 finov2 DartTopicCase JSON 배열을 생성 (facts.jsonl을 다시 읽어 생성)",
+)
 def extract_audit_facts_cmd(
     manifest_path,
     docs_dir,
@@ -534,6 +545,7 @@ def extract_audit_facts_cmd(
     corp_cls_raw,
     summary_path,
     checkpoint_path_opt,
+    emit_topic_cases_path,
 ):
     """`dart bulk-audit-documents`로 받아둔 로컬 감사보고서 XML을 순회하며
     구조화 감사 사실을 1행/1공시 JSONL(OUTPUT)과 요약 JSON으로 추출합니다.
@@ -543,6 +555,11 @@ def extract_audit_facts_cmd(
     발생하는 어떤 오류도(XML 없음 포함) 그 rcept만 실패로 기록하고 전체
     실행을 중단시키지 않습니다. 대량(bulk) 처리는 이 CLI 명령을 통해서만
     제공합니다(장시간 실행되는 MCP 도구는 두지 않습니다).
+
+    `--emit-topic-cases PATH`를 주면, 팩트 추출이 끝난 뒤(같은 명령 안에서)
+    방금 쓴 OUTPUT JSONL을 다시 읽어 finov2 `DartTopicCase` JSON 배열을
+    PATH에 생성합니다(finalize 단계, `dart_search_mcp.tools.extract_facts.
+    emit_topic_cases_from_facts`).
     """
     corp_cls = None
     if corp_cls_raw.strip():
@@ -569,6 +586,21 @@ def extract_audit_facts_cmd(
     click.echo(
         f"추출 완료: {summary['total_selected']}건 (성공 {summary['parsed_ok']}, 실패 {summary['failed']}) -> {output_path}"
     )
+
+    if emit_topic_cases_path.strip():
+        try:
+            tc_summary = emit_topic_cases_from_facts(
+                output_path, emit_topic_cases_path, freshness_timestamp=_utc_now_iso()
+            )
+        except OSError as exc:
+            click.echo(f"오류: topic_cases 생성 실패 - {exc}", err=True)
+            raise SystemExit(1)
+
+        click.echo(
+            f"topic_cases 생성 완료: {tc_summary['topic_cases']}건 "
+            f"(facts {tc_summary['facts_rows']}, skipped {tc_summary['skipped']}, "
+            f"corrupt {tc_summary['corrupt_lines']}) -> {emit_topic_cases_path}"
+        )
 
 
 @cli.command()

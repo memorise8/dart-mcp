@@ -17,15 +17,27 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from click.testing import CliRunner
+
+# 레포 관례: `dart_search_mcp.tools.*`(-> Task 4의 `emit_topic_cases_from_facts`가
+# 지연 import하는 `dart_search_mcp.tools.reports`)를 import하기 전에 `server`를
+# 먼저 import해서 `@mcp.tool()` 등록 순서를 보존한다(`tests/test_public_surface.py`가
+# 기대하는 정식 순서). `tests/test_audit_facts_adapter.py`/
+# `tests/test_temis_export_surface.py`와 동일한 이유.
+import server  # noqa: F401
+import cli
 from dart_search_mcp.tools.extract_facts import (
     ExtractFactsSourceError,
+    deserialize_parsed_report,
+    emit_topic_cases_from_facts,
     extract_audit_facts,
     select_xml_path,
     serialize_parsed_report,
 )
-from dart_search_mcp.audit_xml_parser import parse_audit_xml
+from dart_search_mcp.audit_xml_parser import ParsedAuditReport, parse_audit_xml
 
 _FIXTURES_DIR = Path(__file__).parent / "fixtures" / "audit_xml"
+_FRESHNESS = "2026-07-01T00:00:00Z"
 
 
 def _load_fixture(name: str) -> bytes:
@@ -603,6 +615,266 @@ class SourceLoadingTests(unittest.TestCase):
 
             with self.assertRaises(ExtractFactsSourceError):
                 extract_audit_facts(path, os.path.join(tmp, "docs"), os.path.join(tmp, "out.jsonl"))
+
+
+# ---------------------------------------------------------------------------
+# Task 4: deserialize_parsed_report / emit_topic_cases_from_facts
+# ---------------------------------------------------------------------------
+
+
+def _null_fiscal_year_parsed(rcept_no: str) -> ParsedAuditReport:
+    """fiscal_year를 유도할 수 없는 사실(fact)을 인위적으로 만든다 - 실제
+    fixture는 report_name/XML 본문/rcept_dt 중 하나로 항상 fiscal_year를
+    유도할 수 있으므로, null 케이스는 직접 구성해야 한다."""
+    return ParsedAuditReport(
+        rcept_no=rcept_no,
+        corp_code="00999999",
+        corp_name="연도미상",
+        corp_cls="E",
+        stock_code="",
+        report_name="감사보고서",
+        rcept_dt="",
+        category="감사보고서",
+        fiscal_year=None,
+        settlement_month=None,
+        auditor="어느회계법인",
+        audit_opinion="적정",
+        opinion_snippet="",
+        going_concern=False,
+        going_concern_snippet="",
+        kam_present=False,
+        kam_raw="",
+        emphasis_raw="",
+        kam_tags=(),
+        parse_flags=frozenset(),
+        source_url=f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}",
+        doc_path="",
+    )
+
+
+class DeserializeRoundTripTests(unittest.TestCase):
+    def test_serialize_then_deserialize_round_trips_for_representative_report(self) -> None:
+        xml_bytes = _load_fixture("02_listed_unqualified_with_kam.xml")
+        parsed = parse_audit_xml(xml_bytes, meta=_META_02_SAMSUNG_FN, doc_path="fixtures/02.xml")
+
+        row = serialize_parsed_report(parsed)
+        # 실제 JSONL 파이프라인과 동일하게 JSON 왕복(dumps/loads)까지 거친다.
+        row_via_json = json.loads(json.dumps(row, ensure_ascii=False))
+        restored = deserialize_parsed_report(row_via_json)
+
+        self.assertEqual(restored, parsed)
+        self.assertIsInstance(restored.parse_flags, frozenset)
+        self.assertIsInstance(restored.kam_tags, tuple)
+
+    def test_round_trip_preserves_none_fiscal_year_and_settlement_month(self) -> None:
+        parsed = _null_fiscal_year_parsed("R_NULL_FY")
+
+        row = json.loads(json.dumps(serialize_parsed_report(parsed), ensure_ascii=False))
+        restored = deserialize_parsed_report(row)
+
+        self.assertEqual(restored, parsed)
+        self.assertIsNone(restored.fiscal_year)
+        self.assertIsNone(restored.settlement_month)
+
+    def test_deserialize_is_lenient_with_missing_keys(self) -> None:
+        restored = deserialize_parsed_report({"rcept_no": "R1"})
+
+        self.assertEqual(restored.rcept_no, "R1")
+        self.assertEqual(restored.corp_code, "")
+        self.assertIsNone(restored.fiscal_year)
+        self.assertIsNone(restored.settlement_month)
+        self.assertEqual(restored.parse_flags, frozenset())
+        self.assertEqual(restored.kam_tags, ())
+        self.assertFalse(restored.going_concern)
+        self.assertFalse(restored.kam_present)
+
+
+_EXPECTED_TOPIC_CASE_FIELDS = {
+    "case_id",
+    "company_identifier",
+    "company_name",
+    "fiscal_year",
+    "report_id",
+    "auditor",
+    "topic_tags",
+    "disclosure_snippet",
+    "source_url",
+    "document_id",
+    "extraction_confidence",
+    "freshness_timestamp",
+}
+
+
+class EmitTopicCasesFromFactsTests(unittest.TestCase):
+    def _build_mixed_facts_jsonl(self, tmp: str) -> str:
+        """적정+KAM 있음(02) / 적정+KAM 없음·E(01) / 의견거절(06)의 실제
+        facts + fiscal_year가 null인 인위적 행 1건 + 손상된 라인 1건을 섞은
+        facts.jsonl을 만든다."""
+        docs_dir = os.path.join(tmp, "docs")
+        _write_doc(docs_dir, _META_01_ITOMATO["rcept_no"], "00760", _load_fixture("01_unlisted_unqualified_no_kam.xml"))
+        _write_doc(docs_dir, _META_02_SAMSUNG_FN["rcept_no"], "00760", _load_fixture("02_listed_unqualified_with_kam.xml"))
+        _write_doc(docs_dir, _META_06_BFLABS["rcept_no"], "00760", _load_fixture("06_disclaimer_of_opinion.xml"))
+        manifest_path = _write_manifest(tmp, [_META_01_ITOMATO, _META_02_SAMSUNG_FN, _META_06_BFLABS])
+        facts_path = os.path.join(tmp, "audit_facts.jsonl")
+        extract_audit_facts(manifest_path, docs_dir, facts_path)
+        self.assertEqual(len(_read_jsonl(facts_path)), 3)
+
+        null_fy_row = serialize_parsed_report(_null_fiscal_year_parsed("20260101999999"))
+        with open(facts_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(null_fy_row, ensure_ascii=False))
+            f.write("\n")
+            f.write('{"rcept_no": "손상됨", "corp_code": ')  # 손상 라인(파싱 불가), 개행 없음
+            f.write("\n")
+
+        return facts_path
+
+    def test_emit_builds_valid_topic_cases_with_mixed_scenarios(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            facts_path = self._build_mixed_facts_jsonl(tmp)
+            output_path = os.path.join(tmp, "dart_topic_cases.json")
+
+            summary = emit_topic_cases_from_facts(facts_path, output_path, freshness_timestamp=_FRESHNESS)
+
+            # 3건(실제) + 1건(fiscal_year null) = 4행이 유효하게 역직렬화됨.
+            self.assertEqual(summary["facts_rows"], 4)
+            # 손상 라인 1건은 별도 집계되고 emit을 멈추지 않는다.
+            self.assertEqual(summary["corrupt_lines"], 1)
+            # fiscal_year null 행은 어댑터가 skip으로 집계한다.
+            self.assertEqual(summary["skipped"], 1)
+            self.assertTrue(summary["skipped_reasons_count"])
+            # 나머지 3건(01,02,06)은 모두 유효한 topic case가 된다.
+            self.assertEqual(summary["topic_cases"], 3)
+
+            self.assertTrue(os.path.isfile(output_path))
+            with open(output_path, encoding="utf-8") as f:
+                records = json.load(f)
+
+            self.assertEqual(len(records), 3)
+            report_ids = {r["report_id"] for r in records}
+            self.assertEqual(
+                report_ids,
+                {_META_01_ITOMATO["rcept_no"], _META_02_SAMSUNG_FN["rcept_no"], _META_06_BFLABS["rcept_no"]},
+            )
+
+            for record in records:
+                # finov2 DartTopicCase 스키마와 필드 1:1 (temis_export.DartTopicCaseRecord 참고).
+                self.assertEqual(set(record.keys()), _EXPECTED_TOPIC_CASE_FIELDS)
+                self.assertIsInstance(record["company_identifier"], str)
+                self.assertIsInstance(record["fiscal_year"], int)
+                self.assertIsInstance(record["topic_tags"], list)
+                self.assertIsInstance(record["extraction_confidence"], float)
+                self.assertEqual(record["freshness_timestamp"], _FRESHNESS)
+
+            # KAM 없는 E 케이스(01)도 topic 키워드 매칭 없이 general 케이스
+            # 1건으로 정상 생성돼야 한다(어댑터/변환기가 이미 보장하는 동작).
+            itomato_case = next(r for r in records if r["report_id"] == _META_01_ITOMATO["rcept_no"])
+            self.assertEqual(itomato_case["topic_tags"], [])
+            self.assertIn("-general-", itomato_case["case_id"])
+
+    def test_emit_is_atomic_write_no_partial_file_left_behind_by_tmp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            facts_path = self._build_mixed_facts_jsonl(tmp)
+            output_path = os.path.join(tmp, "dart_topic_cases.json")
+
+            emit_topic_cases_from_facts(facts_path, output_path, freshness_timestamp=_FRESHNESS)
+
+            self.assertTrue(os.path.isfile(output_path))
+            self.assertFalse(os.path.isfile(output_path + ".tmp"))
+
+
+class FreshnessInjectionTests(unittest.TestCase):
+    def test_freshness_timestamp_is_injected_not_read_from_clock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            docs_dir = os.path.join(tmp, "docs")
+            _write_doc(docs_dir, _META_01_ITOMATO["rcept_no"], "00760", _load_fixture("01_unlisted_unqualified_no_kam.xml"))
+            manifest_path = _write_manifest(tmp, [_META_01_ITOMATO])
+            facts_path = os.path.join(tmp, "audit_facts.jsonl")
+            extract_audit_facts(manifest_path, docs_dir, facts_path)
+
+            output_path = os.path.join(tmp, "topic_cases.json")
+            fixed_ts = "2020-01-01T00:00:00Z"
+
+            summary = emit_topic_cases_from_facts(facts_path, output_path, freshness_timestamp=fixed_ts)
+            self.assertEqual(summary["topic_cases"], 1)
+
+            with open(output_path, encoding="utf-8") as f:
+                records = json.load(f)
+            self.assertTrue(records)
+            for record in records:
+                self.assertEqual(record["freshness_timestamp"], fixed_ts)
+
+
+class CorruptLineDefenseTests(unittest.TestCase):
+    def test_corrupt_line_is_skipped_and_counted_without_crashing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            docs_dir = os.path.join(tmp, "docs")
+            _write_doc(docs_dir, _META_01_ITOMATO["rcept_no"], "00760", _load_fixture("01_unlisted_unqualified_no_kam.xml"))
+            manifest_path = _write_manifest(tmp, [_META_01_ITOMATO])
+            facts_path = os.path.join(tmp, "audit_facts.jsonl")
+            extract_audit_facts(manifest_path, docs_dir, facts_path)
+
+            with open(facts_path, "a", encoding="utf-8") as f:
+                f.write('{"rcept_no": "잘린 라인", "corp_code":')  # torn/무효 JSON, 개행 없음
+                f.write("\n")
+                f.write("이것도 JSON이 아니다\n")
+
+            output_path = os.path.join(tmp, "topic_cases.json")
+            summary = emit_topic_cases_from_facts(facts_path, output_path, freshness_timestamp=_FRESHNESS)
+
+            self.assertEqual(summary["facts_rows"], 1)
+            self.assertEqual(summary["corrupt_lines"], 2)
+            self.assertEqual(summary["topic_cases"], 1)
+            self.assertTrue(os.path.isfile(output_path))
+
+
+class CliEmitTopicCasesTests(unittest.TestCase):
+    def test_cli_extract_audit_facts_with_emit_topic_cases_writes_both_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            docs_dir = os.path.join(tmp, "docs")
+            _write_doc(docs_dir, _META_01_ITOMATO["rcept_no"], "00760", _load_fixture("01_unlisted_unqualified_no_kam.xml"))
+            _write_doc(docs_dir, _META_02_SAMSUNG_FN["rcept_no"], "00760", _load_fixture("02_listed_unqualified_with_kam.xml"))
+            manifest_path = _write_manifest(tmp, [_META_01_ITOMATO, _META_02_SAMSUNG_FN])
+            output_path = os.path.join(tmp, "audit_facts.jsonl")
+            topic_cases_path = os.path.join(tmp, "dart_topic_cases.json")
+
+            runner = CliRunner()
+            result = runner.invoke(
+                cli.cli,
+                [
+                    "extract-audit-facts",
+                    "--manifest", manifest_path,
+                    "--docs-dir", docs_dir,
+                    "-o", output_path,
+                    "--emit-topic-cases", topic_cases_path,
+                ],
+            )
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertTrue(os.path.isfile(output_path))
+            self.assertTrue(os.path.isfile(topic_cases_path))
+            self.assertIn("topic_cases 생성 완료", result.output)
+
+            with open(topic_cases_path, encoding="utf-8") as f:
+                records = json.load(f)
+            self.assertEqual(len(records), 2)
+
+    def test_cli_extract_audit_facts_without_emit_topic_cases_only_writes_jsonl(self) -> None:
+        """`--emit-topic-cases` 없이는 기존 동작 그대로(팩트만) 유지돼야 한다."""
+        with tempfile.TemporaryDirectory() as tmp:
+            docs_dir = os.path.join(tmp, "docs")
+            _write_doc(docs_dir, _META_01_ITOMATO["rcept_no"], "00760", _load_fixture("01_unlisted_unqualified_no_kam.xml"))
+            manifest_path = _write_manifest(tmp, [_META_01_ITOMATO])
+            output_path = os.path.join(tmp, "audit_facts.jsonl")
+
+            runner = CliRunner()
+            result = runner.invoke(
+                cli.cli,
+                ["extract-audit-facts", "--manifest", manifest_path, "--docs-dir", docs_dir, "-o", output_path],
+            )
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertTrue(os.path.isfile(output_path))
+            self.assertNotIn("topic_cases", result.output)
 
 
 if __name__ == "__main__":
