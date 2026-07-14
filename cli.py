@@ -615,8 +615,19 @@ def extract_audit_facts_cmd(
 
 
 @cli.command("tag-kam")
-@click.option("--facts", "facts_path", required=True, help="kam_present 행을 담은 audit_facts.jsonl 경로")
-@click.option("-o", "--output", "output_path", required=True, help="사이드카 kam_tags.jsonl을 쓸 파일 경로")
+@click.option(
+    "--facts",
+    "facts_path",
+    required=True,
+    help="kam_present 행을 담은 audit_facts.jsonl 경로 (--output과 같은 경로면 거부됩니다)",
+)
+@click.option(
+    "-o",
+    "--output",
+    "output_path",
+    required=True,
+    help="사이드카 kam_tags.jsonl을 쓸 파일 경로 (--facts와 달라야 함)",
+)
 @click.option(
     "--base-url",
     "base_url",
@@ -646,6 +657,9 @@ def tag_kam_cmd(facts_path, output_path, base_url, model, concurrency, limit, re
     rcept 한 건의 태깅 실패는 그 rcept만 실패로 기록하고 전체 실행을
     중단시키지 않습니다. `--dry-run`이면 엔드포인트를 전혀 호출하지 않고
     대상 건수와 태소노미만 출력합니다.
+
+    `--output`이 `--facts`와 같은 경로를 가리키면(dry-run이 아닐 때) 입력을
+    덮어쓰는 것을 막기 위해 즉시 오류로 거부합니다(exit 1).
     """
     try:
         result = run_tag_kam(
@@ -680,15 +694,28 @@ def tag_kam_cmd(facts_path, output_path, base_url, model, concurrency, limit, re
 
 
 @cli.command("merge-kam-tags")
-@click.option("--facts", "facts_path", required=True, help="kam_tags 컬럼을 채울 audit_facts.jsonl 경로 (읽기 전용, 수정하지 않음)")
+@click.option(
+    "--facts",
+    "facts_path",
+    required=True,
+    help="kam_tags 컬럼을 채울 audit_facts.jsonl 경로 (읽기 전용 - --output과 같은 경로면 거부됩니다)",
+)
 @click.option("--tags", "tags_path", required=True, help="`dart tag-kam`이 만든 사이드카 kam_tags.jsonl 경로")
-@click.option("-o", "--output", "output_path", required=True, help="kam_tags가 채워진 enriched JSONL을 쓸 파일 경로")
+@click.option(
+    "-o",
+    "--output",
+    "output_path",
+    required=True,
+    help="kam_tags가 채워진 enriched JSONL을 쓸 파일 경로 (--facts와 달라야 함)",
+)
 def merge_kam_tags_cmd(facts_path, tags_path, output_path):
     """`dart tag-kam`이 만든 kam_tags.jsonl을 `dart extract-audit-facts`의
     audit_facts.jsonl에 rcept_no로 join해, kam_tags 컬럼이 채워진 OUTPUT(새
     JSONL)을 생성합니다.
 
-    입력 facts 파일은 수정하지 않습니다(항상 새 파일로 산출). rcept_no가
+    OUTPUT이 --facts와 다른 경로일 때에 한해 입력 facts 파일은 수정되지
+    않습니다(항상 새 파일로 산출) - OUTPUT이 --facts와 같은 경로를 가리키면
+    입력을 덮어쓰게 되므로 즉시 오류로 거부합니다(exit 1). rcept_no가
     매칭되지 않는 행은 기존 kam_tags(①에서는 항상 빈 배열)를 그대로
     유지합니다. 시계/네트워크를 쓰지 않는 순수·결정론적 파일 join입니다.
     """
@@ -702,6 +729,8 @@ def merge_kam_tags_cmd(facts_path, tags_path, output_path):
         f"병합 완료: facts {result['facts_rows']}행 (매칭 {result['matched']}, "
         f"미매칭 {result['unmatched']}) -> {output_path}"
     )
+    if result["corrupt_facts_lines"] > 0:
+        click.echo(f"주의: facts 파일에서 손상된 줄 {result['corrupt_facts_lines']}건을 건너뛰었습니다.")
 
 
 @cli.command()

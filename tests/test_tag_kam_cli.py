@@ -226,6 +226,40 @@ class NormalBatchTests(unittest.TestCase):
         self.assertNotEqual(key_a, result["kam_hash"])
 
 
+class TagKamBatchAliasGuardTests(unittest.TestCase):
+    """Fix A: `output_path`가 `facts_path`와 같은 경로를 가리키면(별칭) 마지막
+    쓰기가 입력을 덮어써버리므로 즉시 `TagKamSourceError`로 거부해야 한다 -
+    엔드포인트 호출 전에 거부되어야 하고, 입력 파일 바이트도 불변이어야
+    한다."""
+
+    def test_output_equal_to_facts_raises_and_does_not_call_endpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            facts_path = _write_facts(tmp, [_fact_row("1", kam_raw="원문 A")])
+
+            def fail_call_fn(*args, **kwargs):
+                raise AssertionError("별칭 가드가 트리거되면 call_fn을 호출하면 안 된다")
+
+            before = Path(facts_path).read_bytes()
+            with self.assertRaises(TagKamSourceError):
+                tag_kam_batch(facts_path, facts_path, tagged_at=_FIXED_TAGGED_AT, call_fn=fail_call_fn)
+            after = Path(facts_path).read_bytes()
+
+            self.assertEqual(before, after)
+
+    def test_cli_tag_kam_alias_exits_with_code_1(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            facts_path = _write_facts(tmp, [_fact_row("1", kam_raw="원문")])
+
+            runner = CliRunner()
+            result = runner.invoke(
+                cli.cli,
+                ["tag-kam", "--facts", facts_path, "-o", facts_path],
+            )
+
+            self.assertEqual(result.exit_code, 1)
+            self.assertIn("오류", result.output)
+
+
 class ResumeNoDuplicateTests(unittest.TestCase):
     def test_resume_does_not_recall_or_duplicate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -773,6 +807,103 @@ class MergeKamTagsJoinTests(unittest.TestCase):
             facts_path = _write_facts(tmp, [_fact_row("1")])
             with self.assertRaises(TagKamSourceError):
                 merge_kam_tags(facts_path, "/no/such/tags.jsonl", os.path.join(tmp, "out.jsonl"))
+
+    def test_corrupted_facts_lines_are_skipped_and_counted(self) -> None:
+        # Fix C: facts.jsonl 자체에 손상된 줄이 있으면 그 줄만 건너뛰고
+        # `corrupt_facts_lines`에 집계해야 한다(지금까지는 tags 쪽 손상만
+        # 테스트되어 있었다).
+        with tempfile.TemporaryDirectory() as tmp:
+            facts_path = os.path.join(tmp, "audit_facts.jsonl")
+            with open(facts_path, "w", encoding="utf-8") as f:
+                f.write(json.dumps(_fact_row("1", kam_raw="원문 A"), ensure_ascii=False))
+                f.write("\n")
+                f.write("{not valid json\n")
+                f.write(json.dumps(_fact_row("2", kam_raw="원문 B"), ensure_ascii=False))
+                f.write("\n")
+            tags_path = _write_tags_raw(tmp, [_tag_row_json("1", ["수익인식"])])
+            output_path = os.path.join(tmp, "enriched.jsonl")
+
+            result = merge_kam_tags(facts_path, tags_path, output_path)
+
+            self.assertEqual(result["corrupt_facts_lines"], 1)
+            self.assertEqual(result["facts_rows"], 2)
+            rows = _read_jsonl(output_path)
+            self.assertEqual(len(rows), 2)
+            by_rcept = {r["rcept_no"]: r for r in rows}
+            self.assertEqual(by_rcept["1"]["kam_tags"], ["수익인식"])
+            self.assertEqual(by_rcept["2"]["kam_tags"], [])
+
+
+class MergeKamTagsAliasGuardTests(unittest.TestCase):
+    """Fix A: `output_path`가 `facts_path`와 같은 경로를 가리키면(별칭) 마지막
+    원자적 `Path.replace`가 입력을 덮어써버리므로 즉시 `TagKamSourceError`로
+    거부해야 한다(① 82MB 원천 보호) - 입력 파일 바이트도 불변이어야 한다."""
+
+    def test_output_equal_to_facts_raises_and_input_md5_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            facts_path = _write_facts(tmp, [_fact_row("1", kam_raw="원문 A"), _fact_row("2", kam_raw="원문 B")])
+            tags_path = _write_tags_raw(tmp, [_tag_row_json("1", ["수익인식"])])
+
+            before_hash = hashlib.md5(Path(facts_path).read_bytes()).hexdigest()
+
+            with self.assertRaises(TagKamSourceError):
+                merge_kam_tags(facts_path, tags_path, facts_path)
+
+            after_hash = hashlib.md5(Path(facts_path).read_bytes()).hexdigest()
+            self.assertEqual(before_hash, after_hash)
+
+    def test_cli_merge_kam_tags_alias_exits_with_code_1(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            facts_path = _write_facts(tmp, [_fact_row("1", kam_raw="원문 A")])
+            tags_path = _write_tags_raw(tmp, [_tag_row_json("1", ["수익인식"])])
+
+            runner = CliRunner()
+            result = runner.invoke(
+                cli.cli,
+                ["merge-kam-tags", "--facts", facts_path, "--tags", tags_path, "-o", facts_path],
+            )
+
+            self.assertEqual(result.exit_code, 1)
+            self.assertIn("오류", result.output)
+
+
+class MergeKamTagsCliCorruptFactsLinesTests(unittest.TestCase):
+    """Fix C: merge CLI가 `corrupt_facts_lines`를 stdout 요약에 표출해야
+    한다(있을 때만)."""
+
+    def test_cli_shows_corrupt_facts_lines_warning_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            facts_path = os.path.join(tmp, "audit_facts.jsonl")
+            with open(facts_path, "w", encoding="utf-8") as f:
+                f.write(json.dumps(_fact_row("1", kam_raw="원문 A"), ensure_ascii=False))
+                f.write("\n")
+                f.write("{not valid json\n")
+            tags_path = _write_tags_raw(tmp, [_tag_row_json("1", ["수익인식"])])
+            output_path = os.path.join(tmp, "enriched.jsonl")
+
+            runner = CliRunner()
+            result = runner.invoke(
+                cli.cli,
+                ["merge-kam-tags", "--facts", facts_path, "--tags", tags_path, "-o", output_path],
+            )
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertIn("손상된 줄 1건", result.output)
+
+    def test_cli_no_corrupt_warning_when_facts_clean(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            facts_path = _write_facts(tmp, [_fact_row("1", kam_raw="원문 A")])
+            tags_path = _write_tags_raw(tmp, [_tag_row_json("1", ["수익인식"])])
+            output_path = os.path.join(tmp, "enriched.jsonl")
+
+            runner = CliRunner()
+            result = runner.invoke(
+                cli.cli,
+                ["merge-kam-tags", "--facts", facts_path, "--tags", tags_path, "-o", output_path],
+            )
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertNotIn("손상된 줄", result.output)
 
 
 class MergeKamTagsInputImmutableTests(unittest.TestCase):

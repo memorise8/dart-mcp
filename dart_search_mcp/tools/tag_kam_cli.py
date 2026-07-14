@@ -132,10 +132,13 @@ def load_kam_targets(facts_path: str | Path, *, limit: int | None = None) -> lis
 # 건드리지 않는 - 순수 파일 join 유틸이다. `dart tag-kam`이 만든 사이드카
 # `kam_tags.jsonl`(rcept_no -> tags)을 `dart extract-audit-facts`가 만든
 # `audit_facts.jsonl`에 rcept_no로 join해, `kam_tags` 컬럼이 채워진 **새
-# 파일**을 만든다. 입력 facts 파일은 오직 읽기 전용으로만 열리므로(open을
-# 쓰기 모드로 여는 코드 경로가 이 함수엔 없다) 바이트 단위로 불변임이
-# 구조적으로 보장된다. 시계/네트워크를 전혀 쓰지 않으므로 순수·결정론적이다
-# (같은 두 입력 파일 -> 항상 같은 출력 바이트).
+# 파일**을 만든다. 입력 facts 파일은 오직 읽기 전용으로만 열린다(open을 쓰기
+# 모드로 여는 코드 경로가 이 함수엔 없다). 다만 `output_path`가 `facts_path`와
+# 같은 경로를 가리키면(별칭) 마지막 원자적 `Path.replace`가 그 입력을
+# 덮어써버리므로, 이 경우엔 아무것도 쓰지 않고 즉시 `TagKamSourceError`로
+# 거부한다 - **`output_path`가 `facts_path`와 다를 때에 한해** 입력이 바이트
+# 단위로 불변임이 보장된다(절대 보장이 아니다). 시계/네트워크를 전혀 쓰지
+# 않으므로 순수·결정론적이다(같은 두 입력 파일 -> 항상 같은 출력 바이트).
 
 
 def load_kam_tags_map(tags_path: str | Path) -> dict[str, list[str]]:
@@ -189,8 +192,11 @@ def merge_kam_tags(
       없으면 원래 행의 `kam_tags`(①에서는 항상 `[]`)를 그대로 유지한다.
     - `kam_tags` 외 나머지 필드는 전혀 건드리지 않는다(같은 dict의 같은
       키에 값만 대입하므로 필드 순서도 그대로 유지된다).
-    - `facts_path`는 읽기 전용으로만 열린다 - 이 함수 안에 그 경로를 쓰기
-      모드로 여는 코드가 없으므로 입력이 바이트 단위로 불변임이 보장된다.
+    - `facts_path`는 읽기 전용으로만 열린다. `output_path`가 `facts_path`와
+      같은 경로를 가리키면(별칭) 마지막 원자적 쓰기가 그 입력을 덮어쓰므로,
+      이 경우엔 아무것도 쓰지 않고 즉시 `TagKamSourceError`를 던진다 -
+      **`output_path`가 `facts_path`와 다를 때에 한해** 입력이 바이트
+      단위로 불변임이 보장된다(절대 보장이 아니다).
     - `facts_path`의 각 줄도 `kam_tags.jsonl`과 동일한 방어(파싱 실패/dict
       아님)를 적용해 손상된 줄은 건너뛴다(집계에는 반영하되 출력에는
       쓰지 않는다) - 전체 실행을 중단하지 않는다.
@@ -199,12 +205,21 @@ def merge_kam_tags(
 
     반환값: `{"facts_rows": ..., "matched": ..., "unmatched": ...,
     "corrupt_facts_lines": ...}`.
+
+    `output_path`가 `facts_path`와 같은 경로(resolve 후 동일)를 가리키면
+    `TagKamSourceError`를 던진다(입력 파일을 덮어쓰는 것을 막기 위함).
     """
     facts_path = Path(facts_path)
     output_path = Path(output_path)
 
     if not facts_path.exists():
         raise TagKamSourceError(f"facts 파일을 찾을 수 없습니다: {facts_path}")
+
+    if output_path.resolve() == facts_path.resolve():
+        raise TagKamSourceError(
+            f"출력 경로가 입력 facts 경로와 같습니다 ({output_path}) - "
+            "output을 facts와 다른 경로로 지정하세요(입력을 덮어쓰는 것을 방지)."
+        )
 
     tags_map = load_kam_tags_map(tags_path)
 
@@ -495,6 +510,10 @@ def tag_kam_batch(
     체크포인트(기본값: `<output_path>.checkpoint.json`)에 처리한 rcept
     집합과 누적 집계를 저장한다. `resume=True`면 이어 쓰기 전에 기존 JSONL을
     스캔해 자가복구한다(크래시 후 resume에도 중복행 0).
+
+    `output_path`가 `facts_path`와 같은 경로(resolve 후 동일)를 가리키면
+    (`dry_run=False`일 때) `TagKamSourceError`를 던진다 - 출력을 append/write
+    모드로 여는 것이 입력 facts 파일을 덮어쓰는 것을 막기 위함이다.
     """
     targets = load_kam_targets(facts_path, limit=limit)
 
@@ -510,6 +529,13 @@ def tag_kam_batch(
 
     facts_path = Path(facts_path)
     output_path = Path(output_path)
+
+    if output_path.resolve() == facts_path.resolve():
+        raise TagKamSourceError(
+            f"출력 경로가 입력 facts 경로와 같습니다 ({output_path}) - "
+            "output을 facts와 다른 경로로 지정하세요(입력을 덮어쓰는 것을 방지)."
+        )
+
     cache_path_resolved = Path(cache_path) if cache_path else output_path.with_name(output_path.name + ".cache.json")
     checkpoint_path = Path(checkpoint) if checkpoint else output_path.with_name(output_path.name + ".checkpoint.json")
     summary_path_resolved = Path(summary_path) if summary_path else output_path.with_name(output_path.name + ".summary.json")

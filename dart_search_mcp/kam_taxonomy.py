@@ -128,7 +128,10 @@ def _extract_json_array(text: str) -> list[object] | None:
     for candidate in candidates:
         try:
             parsed = json.loads(candidate)
-        except (json.JSONDecodeError, ValueError):
+        except Exception:  # noqa: BLE001 - 이 함수의 계약은 "never raise"다. 정상적인
+            # 파싱 실패(JSONDecodeError)뿐 아니라 병리적 입력(예: 매우 깊게 중첩된
+            # 대괄호 문자열)이 유발하는 RecursionError 등도 여기서 흡수해야
+            # `parse_tag_response`가 어떤 입력에도 예외를 던지지 않는다.
             continue
         result = _coerce_to_list(parsed)
         if result is not None:

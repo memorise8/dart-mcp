@@ -121,6 +121,19 @@ class ParseTagResponseTests(unittest.TestCase):
             except Exception as exc:  # noqa: BLE001
                 self.fail(f"parse_tag_response raised on {garbage!r}: {exc}")
 
+    def test_never_raises_on_pathological_deeply_nested_input(self) -> None:
+        # Fix B: 매우 깊게 중첩된 대괄호 문자열은 CPython json 디코더가
+        # RecursionError를 일으킨다("[" * 20000으로 재현 가능) - 이전에는
+        # `(JSONDecodeError, ValueError)`만 잡아서 이런 예외가 새어나갔다.
+        # 이 함수의 계약은 "never raise"이므로 예외 없이 실패 마커를
+        # 반환해야 한다.
+        try:
+            valid, dropped = parse_tag_response("[" * 20000)
+        except Exception as exc:  # noqa: BLE001
+            self.fail(f"parse_tag_response raised on pathological input: {exc}")
+        self.assertEqual(valid, [])
+        self.assertEqual(len(dropped), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
