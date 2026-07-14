@@ -31,8 +31,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from dart_search_mcp.tools.reports import _normalize_text
-
 # ---------------------------------------------------------------------------
 # 결과 타입
 # ---------------------------------------------------------------------------
@@ -83,6 +81,17 @@ class ParsedAuditReport:
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _ENTITY_RE = re.compile(r"&[a-zA-Z#0-9]+;")
+
+
+def _normalize_text(value: str) -> str:
+    """개행/탭/중복 공백을 단일 공백으로 정리하고 앞뒤 공백을 제거한다.
+
+    `dart_search_mcp.tools.reports._normalize_text`와 동일한 로직의 인라인
+    복제본이다. 이 모듈은 순수·결정론 파서이므로 `tools.reports`(및 그것이
+    전이 import하는 `config.py`의 import-time `load_dotenv()` 파일접근)에
+    의존하지 않는다."""
+
+    return re.sub(r"\s+", " ", value).strip()
 
 
 def _strip_tags_to_text(xml_bytes: bytes) -> str:
