@@ -57,6 +57,7 @@ from dart_search_mcp.tools.bulk_audit import (
     load_filings_from_manifest,
     load_filings_from_rcept_json,
 )
+from dart_search_mcp.tools.extract_facts import ExtractFactsSourceError, extract_audit_facts
 
 
 @click.group()
@@ -512,6 +513,61 @@ def bulk_audit_documents(
     manifest_path_out = os.path.join(output_dir, "bulk-manifest.json")
     click.echo(
         f"일괄 추출 완료: {manifest.total}건 (상태별: {manifest.counts_by_status}) -> {manifest_path_out}"
+    )
+
+
+@cli.command("extract-audit-facts")
+@click.option("--manifest", "manifest_path", required=True, help="Step-1 수집 매니페스트 JSON 경로 (records[] 사용)")
+@click.option("--docs-dir", "docs_dir", required=True, help="rcept별 로컬 감사 XML이 있는 디렉토리 (dart bulk-audit-documents 출력)")
+@click.option("-o", "--output", "output_path", required=True, help="구조화 감사 사실(1행/1공시) JSONL을 쓸 파일 경로")
+@click.option("--resume", is_flag=True, default=False, help="기존 체크포인트가 있으면 이어서 처리 (없으면 새로 시작)")
+@click.option("--limit", "limit", type=int, default=None, help="처리할 최대 레코드 수 (기본값: 전체)")
+@click.option("--corp-cls", "corp_cls_raw", default="", help='법인구분 필터, 쉼표 구분 (예: "E,Y,K,N"). 기본값: 전체')
+@click.option("--summary", "summary_path", default="", help="요약 JSON 경로 (기본값: <output>.summary.json)")
+@click.option("--checkpoint", "checkpoint_path_opt", default="", help="체크포인트 JSON 경로 (기본값: <output>.checkpoint.json)")
+def extract_audit_facts_cmd(
+    manifest_path,
+    docs_dir,
+    output_path,
+    resume,
+    limit,
+    corp_cls_raw,
+    summary_path,
+    checkpoint_path_opt,
+):
+    """`dart bulk-audit-documents`로 받아둔 로컬 감사보고서 XML을 순회하며
+    구조화 감사 사실을 1행/1공시 JSONL(OUTPUT)과 요약 JSON으로 추출합니다.
+
+    각 rcept는 docs-dir/<rcept_no>/ 폴더에서 연결감사(00761) > 감사(00760) >
+    사업보고서 임베드 순으로 XML을 하나 골라 파싱합니다. rcept 한 건에서
+    발생하는 어떤 오류도(XML 없음 포함) 그 rcept만 실패로 기록하고 전체
+    실행을 중단시키지 않습니다. 대량(bulk) 처리는 이 CLI 명령을 통해서만
+    제공합니다(장시간 실행되는 MCP 도구는 두지 않습니다).
+    """
+    corp_cls = None
+    if corp_cls_raw.strip():
+        corp_cls = {c.strip() for c in corp_cls_raw.split(",") if c.strip()}
+
+    try:
+        summary = extract_audit_facts(
+            manifest_path,
+            docs_dir,
+            output_path,
+            resume=resume,
+            limit=limit,
+            corp_cls=corp_cls,
+            checkpoint=checkpoint_path_opt or None,
+            summary_path=summary_path or None,
+        )
+    except ExtractFactsSourceError as exc:
+        click.echo(f"오류: {exc}", err=True)
+        raise SystemExit(1)
+    except ValueError as exc:
+        click.echo(f"오류: {exc}", err=True)
+        raise SystemExit(1)
+
+    click.echo(
+        f"추출 완료: {summary['total_selected']}건 (성공 {summary['parsed_ok']}, 실패 {summary['failed']}) -> {output_path}"
     )
 
 
