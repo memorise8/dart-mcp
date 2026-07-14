@@ -242,6 +242,113 @@ uv run dart bulk-audit-documents --manifest manifest.json -o outdir
   finov2 쪽에서 별도로 진행하는 작업입니다(이 저장소는 구현하지 않으며
   완료를 주장하지 않습니다).
 
+## 감사 구조화 추출 + KAM(핵심감사사항) LLM 태깅
+
+로컬 감사보고서 XML에서 감사의견/계속기업 불확실성/핵심감사사항(KAM) 원문 등
+구조화 사실을 대량으로 뽑아내고(①), 그 KAM 원문을 LLM으로 고정 태소노미에
+따라 배치 태깅한 뒤(②), 두 산출물을 join하는 3단계 CLI 흐름입니다. 입력은
+위 "대량 공시 수집과 감사서류 추출"의 Step C(`dart bulk-audit-documents`)
+산출물(`docs-dir`)입니다.
+
+### ① `dart extract-audit-facts`: 구조화 감사 사실 추출
+
+```bash
+uv run dart extract-audit-facts --manifest manifest.json --docs-dir outdir \
+  -o audit_facts.jsonl
+```
+
+- Step 1(`dart collect-disclosures`) 매니페스트의 각 필링에 대해
+  `docs-dir/<rcept_no>/`의 로컬 감사 XML(연결감사 `_00761` > 감사 `_00760` >
+  사업보고서 임베드 순으로 하나 선택)을 순수 파서로 파싱해, **1행/1공시**
+  JSONL(`audit_facts.jsonl`)과 요약 JSON을 만듭니다. 각 행에는 `corp_code`,
+  `audit_opinion`, `going_concern`, `kam_present`, `kam_raw`(핵심감사사항
+  원문), `kam_tags`(이 단계에서는 항상 `[]`) 등이 담깁니다.
+- rcept 한 건에서 발생하는 어떤 오류(XML 없음 포함)도 그 rcept만 실패로
+  기록하고 전체 실행을 중단시키지 않습니다. `--resume`으로 이어서
+  처리할 수 있고, 크래시 후 resume해도 JSONL 자가복구로 중복행이 생기지
+  않습니다.
+- `--corp-cls`, `--limit`으로 대상 범위를 좁힐 수 있고, `--emit-topic-cases
+  PATH`를 주면 같은 실행 안에서 finov2 `DartTopicCase` JSON도 함께
+  생성합니다(아래 "finov2 연계 주의" 참고).
+
+### ② `dart tag-kam`: KAM 원문 LLM 배치 태깅
+
+```bash
+uv run dart tag-kam --facts audit_facts.jsonl -o kam_tags.jsonl
+```
+
+`audit_facts.jsonl`에서 `kam_present=true`이고 `kam_raw`가 있는 행만 골라,
+OpenAI 호환 엔드포인트로 핵심감사사항 원문을 고정 태소노미(통제 어휘)에
+따라 배치 태깅하고, 사이드카 `kam_tags.jsonl`(`{rcept_no, tags, dropped,
+kam_hash, model, base_url, tagged_at}`)을 만듭니다. `audit_facts.jsonl`
+자체는 이 단계에서 전혀 수정하지 않습니다.
+
+**OpenAI 호환 엔드포인트 설정** — 기본값은 API 키가 필요 없는 사내
+엔드포인트입니다.
+
+| 설정 | 플래그 | 환경 변수 | 기본값 |
+|------|--------|-----------|--------|
+| base URL | `--base-url` | `KAM_LLM_BASE_URL` | `http://192.168.0.4:10532/v1` |
+| 모델 | `--model` | `KAM_LLM_MODEL` | `gpt-5.4-mini` |
+
+우선순위는 명시 플래그 > 환경 변수 > 위 기본값 순이며, **API 키를 요구하지
+않습니다**(요청 헤더에 인증 토큰을 싣지 않습니다). 엔드포인트가 떠 있지
+않으면(연결 거부/타임아웃) rcept 한 건만 실패로 기록하고 전체 실행은
+계속되며, 응답 본문 전체나 실제 엔드포인트 URL을 로그/에러 메시지에
+그대로 덤프하지 않습니다.
+
+**고정 태소노미** — LLM은 `dart_search_mcp/kam_taxonomy.py`의 통제 어휘
+목록에서만 태깅할 수 있습니다. 목록 밖 태그나 오탈자는 코드가 폐기하고
+`dropped`로 따로 집계합니다(성공을 과장하지 않습니다). 해당하는 태그가
+없으면 `tags: []`입니다.
+
+**캐시·resume·dry-run**:
+
+- content-hash 캐시(`model`+`base_url`+`kam_raw` 기준)로 같은 입력을 다시
+  호출하지 않습니다. `--cache PATH`로 경로를 지정할 수 있습니다.
+- `--resume`을 주면 체크포인트를 이어서 사용해 이미 태깅된 rcept를
+  건너뜁니다(크래시 후 resume에도 중복행 0). `--resume` 없이 실행하면 항상
+  새로 시작합니다.
+- `--dry-run`은 엔드포인트를 전혀 호출하지 않고 대상 건수와 태소노미
+  목록만 출력합니다(요금이 발생하지 않습니다).
+- `--concurrency N`으로 동시 태깅 워커 수(캐시 미스만 해당)를 제한합니다.
+
+### ③ `dart merge-kam-tags`: kam_tags를 audit_facts에 join
+
+```bash
+uv run dart merge-kam-tags --facts audit_facts.jsonl --tags kam_tags.jsonl \
+  -o audit_facts.enriched.jsonl
+```
+
+②의 사이드카 `kam_tags.jsonl`(`rcept_no -> tags`)을 ①의 `audit_facts.jsonl`에
+`rcept_no` 기준으로 join해, `kam_tags` 컬럼이 채워진 **새 파일**
+(`audit_facts.enriched.jsonl`)을 만듭니다.
+
+- 입력 `audit_facts.jsonl`은 **수정하지 않습니다**(읽기 전용으로만 열립니다
+  — 원본은 항상 그대로 남습니다). `kam_tags.jsonl`에 매칭되는 `rcept_no`가
+  없는 행은 ①의 `kam_tags: []`를 그대로 유지합니다. `kam_tags` 외 나머지
+  필드는 전혀 바뀌지 않습니다.
+- 시계/네트워크를 전혀 쓰지 않는 순수 함수라 **결정론적**입니다 — 같은 두
+  입력 파일이면 항상 같은 출력 바이트를 만듭니다. 출력은 tmp+`Path.replace`로
+  원자적으로 씁니다(부분 파일이 남지 않습니다).
+- `kam_tags.jsonl`에 같은 `rcept_no`가 여러 줄 있으면(예: 여러 번의 `tag-kam`
+  실행을 합친 파일) **가장 나중 줄의 값이 우선**합니다. 손상된(파싱 불가)
+  줄은 그 줄만 방어적으로 건너뛰고 전체 실행을 중단하지 않습니다.
+- 실행 후 stdout에 `facts` 행수, 매칭(`매칭`)/미매칭(`미매칭`) 건수를
+  요약으로 출력합니다.
+
+### finov2 연계 주의
+
+`DartTopicCase`(위 "TEMIS(finov2) 연동" 섹션의 5단계 산출물)는 이 3단계
+흐름과는 **별도의, 손실이 있는(lossy) 투영**입니다 — `going_concern`,
+`kam_tags` 등 이 흐름이 만드는 풍부한 필드 다수를 `DartTopicCase`가
+그대로 전파하지 않습니다. `kam_tags`의 **원천 데이터**는 어디까지나
+`audit_facts.jsonl`/`kam_tags.jsonl`(그리고 이 둘을 합친
+`audit_facts.enriched.jsonl`)이며, `dart temis-topic-cases`/
+`export_temis_topic_cases`가 만드는 `DartTopicCase` JSON이 아닙니다.
+`kam_tags`를 `DartTopicCase`에 반영하는 작업은 **후속 작업**입니다 — 이
+저장소는 아직 구현하지 않으며 완료를 주장하지 않습니다.
+
 ## TEMIS(finov2) 연동: 안전한 내보내기 흐름
 
 이 저장소는 OpenDART 호출·파싱·변환을 전담하는 adapter/exporter입니다. finov2는
