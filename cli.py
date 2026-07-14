@@ -70,6 +70,7 @@ from dart_search_mcp.tools.tag_kam_cli import (
 )
 from dart_search_mcp.tools.tag_kam_cli import (
     TagKamSourceError,
+    merge_kam_tags,
     run_tag_kam,
 )
 from dart_search_mcp.tools.temis import _utc_now_iso
@@ -616,8 +617,22 @@ def extract_audit_facts_cmd(
 @cli.command("tag-kam")
 @click.option("--facts", "facts_path", required=True, help="kam_present 행을 담은 audit_facts.jsonl 경로")
 @click.option("-o", "--output", "output_path", required=True, help="사이드카 kam_tags.jsonl을 쓸 파일 경로")
-@click.option("--base-url", "base_url", default=KAM_DEFAULT_BASE_URL, show_default=True, help="OpenAI 호환 엔드포인트 base URL")
-@click.option("--model", "model", default=KAM_DEFAULT_MODEL, show_default=True, help="LLM 모델명")
+@click.option(
+    "--base-url",
+    "base_url",
+    default=KAM_DEFAULT_BASE_URL,
+    envvar="KAM_LLM_BASE_URL",
+    show_default=True,
+    help="OpenAI 호환 엔드포인트 base URL (env: KAM_LLM_BASE_URL)",
+)
+@click.option(
+    "--model",
+    "model",
+    default=KAM_DEFAULT_MODEL,
+    envvar="KAM_LLM_MODEL",
+    show_default=True,
+    help="LLM 모델명 (env: KAM_LLM_MODEL)",
+)
 @click.option("--concurrency", "concurrency", type=int, default=4, show_default=True, help="동시 태깅 워커 수(캐시 미스만 해당)")
 @click.option("--limit", "limit", type=int, default=None, help="처리할 최대 대상 수 (기본값: 전체)")
 @click.option("--resume", is_flag=True, default=False, help="기존 체크포인트가 있으면 이어서 처리")
@@ -661,6 +676,31 @@ def tag_kam_cmd(facts_path, output_path, base_url, model, concurrency, limit, re
     click.echo(
         f"태깅 완료: {result['targets']}건 (성공 {result['tagged_ok']}, 실패 {result['failed']}, "
         f"캐시히트 {result['cache_hits']}) -> {output_path}"
+    )
+
+
+@cli.command("merge-kam-tags")
+@click.option("--facts", "facts_path", required=True, help="kam_tags 컬럼을 채울 audit_facts.jsonl 경로 (읽기 전용, 수정하지 않음)")
+@click.option("--tags", "tags_path", required=True, help="`dart tag-kam`이 만든 사이드카 kam_tags.jsonl 경로")
+@click.option("-o", "--output", "output_path", required=True, help="kam_tags가 채워진 enriched JSONL을 쓸 파일 경로")
+def merge_kam_tags_cmd(facts_path, tags_path, output_path):
+    """`dart tag-kam`이 만든 kam_tags.jsonl을 `dart extract-audit-facts`의
+    audit_facts.jsonl에 rcept_no로 join해, kam_tags 컬럼이 채워진 OUTPUT(새
+    JSONL)을 생성합니다.
+
+    입력 facts 파일은 수정하지 않습니다(항상 새 파일로 산출). rcept_no가
+    매칭되지 않는 행은 기존 kam_tags(①에서는 항상 빈 배열)를 그대로
+    유지합니다. 시계/네트워크를 쓰지 않는 순수·결정론적 파일 join입니다.
+    """
+    try:
+        result = merge_kam_tags(facts_path, tags_path, output_path)
+    except TagKamSourceError as exc:
+        click.echo(f"오류: {exc}", err=True)
+        raise SystemExit(1)
+
+    click.echo(
+        f"병합 완료: facts {result['facts_rows']}행 (매칭 {result['matched']}, "
+        f"미매칭 {result['unmatched']}) -> {output_path}"
     )
 
 

@@ -125,6 +125,140 @@ def load_kam_targets(facts_path: str | Path, *, limit: int | None = None) -> lis
 
 
 # ---------------------------------------------------------------------------
+# `dart merge-kam-tags` (Task 4): kam_tags.jsonl -> audit_facts.jsonl join
+# ---------------------------------------------------------------------------
+#
+# `run_tag_kam`/`tag_kam_batch`(Task 3, 위)와는 독립적인 - 네트워크/LLM을 전혀
+# 건드리지 않는 - 순수 파일 join 유틸이다. `dart tag-kam`이 만든 사이드카
+# `kam_tags.jsonl`(rcept_no -> tags)을 `dart extract-audit-facts`가 만든
+# `audit_facts.jsonl`에 rcept_no로 join해, `kam_tags` 컬럼이 채워진 **새
+# 파일**을 만든다. 입력 facts 파일은 오직 읽기 전용으로만 열리므로(open을
+# 쓰기 모드로 여는 코드 경로가 이 함수엔 없다) 바이트 단위로 불변임이
+# 구조적으로 보장된다. 시계/네트워크를 전혀 쓰지 않으므로 순수·결정론적이다
+# (같은 두 입력 파일 -> 항상 같은 출력 바이트).
+
+
+def load_kam_tags_map(tags_path: str | Path) -> dict[str, list[str]]:
+    """`tags_path`(`kam_tags.jsonl`)를 읽어 `rcept_no -> tags` 매핑을 만든다.
+
+    `json.loads` 실패, dict가 아님, `rcept_no`가 비어있지 않은 문자열이
+    아님, `tags`가 리스트가 아님 - 이 네 경우 모두 그 줄만 방어적으로
+    건너뛴다(전체 로딩을 중단하지 않는다). 같은 `rcept_no`가 여러 줄에
+    걸쳐 나오면(예: `dart tag-kam` resume으로 인한 과거 값 잔존) **가장
+    나중에 나온 줄의 값이 우선**한다(뒤 줄이 앞 줄을 덮어쓴다)."""
+    path = Path(tags_path)
+    if not path.exists():
+        raise TagKamSourceError(f"tags 파일을 찾을 수 없습니다: {path}")
+
+    mapping: dict[str, list[str]] = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    row = json.loads(stripped)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                rcept_no = row.get("rcept_no")
+                if not isinstance(rcept_no, str) or not rcept_no:
+                    continue
+                tags = row.get("tags")
+                if not isinstance(tags, list):
+                    continue
+                mapping[rcept_no] = list(tags)
+    except OSError as exc:
+        raise TagKamSourceError(f"tags 파일을 읽을 수 없습니다 ({path}): {exc}") from exc
+
+    return mapping
+
+
+def merge_kam_tags(
+    facts_path: str | Path,
+    tags_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """`facts_path`(`audit_facts.jsonl`)의 각 행에 `tags_path`(`kam_tags.jsonl`)의
+    `rcept_no -> tags` 매핑을 join해 `kam_tags` 컬럼을 채운 JSONL을
+    `output_path`에 원자적으로(tmp+`Path.replace`) 쓴다.
+
+    - 매칭되는 `rcept_no`가 있으면 그 `tags`로 `kam_tags`를 덮어쓴다. 매칭이
+      없으면 원래 행의 `kam_tags`(①에서는 항상 `[]`)를 그대로 유지한다.
+    - `kam_tags` 외 나머지 필드는 전혀 건드리지 않는다(같은 dict의 같은
+      키에 값만 대입하므로 필드 순서도 그대로 유지된다).
+    - `facts_path`는 읽기 전용으로만 열린다 - 이 함수 안에 그 경로를 쓰기
+      모드로 여는 코드가 없으므로 입력이 바이트 단위로 불변임이 보장된다.
+    - `facts_path`의 각 줄도 `kam_tags.jsonl`과 동일한 방어(파싱 실패/dict
+      아님)를 적용해 손상된 줄은 건너뛴다(집계에는 반영하되 출력에는
+      쓰지 않는다) - 전체 실행을 중단하지 않는다.
+    - 시계/네트워크를 전혀 쓰지 않는 순수 함수라 결정론적이다: 같은
+      `facts_path`/`tags_path` 내용이면 항상 같은 출력 바이트를 만든다.
+
+    반환값: `{"facts_rows": ..., "matched": ..., "unmatched": ...,
+    "corrupt_facts_lines": ...}`.
+    """
+    facts_path = Path(facts_path)
+    output_path = Path(output_path)
+
+    if not facts_path.exists():
+        raise TagKamSourceError(f"facts 파일을 찾을 수 없습니다: {facts_path}")
+
+    tags_map = load_kam_tags_map(tags_path)
+
+    facts_rows = 0
+    matched = 0
+    unmatched = 0
+    corrupt_facts_lines = 0
+    enriched_lines: list[str] = []
+
+    try:
+        with open(facts_path, encoding="utf-8") as f:
+            for line in f:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    row = json.loads(stripped)
+                except json.JSONDecodeError:
+                    corrupt_facts_lines += 1
+                    continue
+                if not isinstance(row, dict):
+                    corrupt_facts_lines += 1
+                    continue
+
+                facts_rows += 1
+                rcept_no = row.get("rcept_no")
+                if isinstance(rcept_no, str) and rcept_no in tags_map:
+                    row["kam_tags"] = list(tags_map[rcept_no])
+                    matched += 1
+                else:
+                    row["kam_tags"] = list(row.get("kam_tags") or [])
+                    unmatched += 1
+
+                enriched_lines.append(json.dumps(row, ensure_ascii=False))
+    except OSError as exc:
+        raise TagKamSourceError(f"facts 파일을 읽을 수 없습니다 ({facts_path}): {exc}") from exc
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = output_path.with_name(output_path.name + ".merge.tmp")
+    with open(tmp_path, "w", encoding="utf-8") as tmp_f:
+        for enriched_line in enriched_lines:
+            tmp_f.write(enriched_line)
+            tmp_f.write("\n")
+    tmp_path.replace(output_path)
+
+    return {
+        "facts_rows": facts_rows,
+        "matched": matched,
+        "unmatched": unmatched,
+        "corrupt_facts_lines": corrupt_facts_lines,
+    }
+
+
+# ---------------------------------------------------------------------------
 # content-hash (이 모듈 전용 공식 - base_url까지 포함해 kam_tagger._cache_key와
 # 의도적으로 다르다. 아래 docstring 참조)
 # ---------------------------------------------------------------------------

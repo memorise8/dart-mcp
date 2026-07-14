@@ -31,6 +31,8 @@ from dart_search_mcp.tools.tag_kam_cli import (
     TagKamSourceError,
     _kam_cache_key,
     load_kam_targets,
+    load_kam_tags_map,
+    merge_kam_tags,
     tag_kam_batch,
 )
 
@@ -55,6 +57,32 @@ def _fact_row(rcept_no: str, *, kam_present: bool = True, kam_raw: str = "원문
         "kam_present": kam_present,
         "kam_raw": kam_raw,
     }
+
+
+def _write_tags_raw(tmp_dir: str, lines: list[str], name: str = "kam_tags.jsonl") -> str:
+    """`merge_kam_tags`(Task 4)의 손상 라인 방어 테스트용 - dict가 아니라
+    이미 직렬화된 원문 줄을 그대로 쓴다(손상된 줄도 그대로 끼워넣기 위해)."""
+    path = os.path.join(tmp_dir, name)
+    with open(path, "w", encoding="utf-8") as f:
+        for line in lines:
+            f.write(line)
+            f.write("\n")
+    return path
+
+
+def _tag_row_json(rcept_no: str, tags: list[str]) -> str:
+    return json.dumps(
+        {
+            "rcept_no": rcept_no,
+            "tags": tags,
+            "dropped": [],
+            "kam_hash": "h",
+            "model": "gpt-5.4-mini",
+            "base_url": "http://x/v1",
+            "tagged_at": "2026-07-01T00:00:00Z",
+        },
+        ensure_ascii=False,
+    )
 
 
 def _read_jsonl(path: str) -> list[dict[str, Any]]:
@@ -613,6 +641,313 @@ class RunParamsGuardResumeTests(unittest.TestCase):
                 self.assertIn("오류", second_result.output)
             finally:
                 httpx.Client = original_client  # type: ignore[assignment]
+
+
+class LoadKamTagsMapTests(unittest.TestCase):
+    """Task 4: `load_kam_tags_map`(rcept_no -> tags 매핑 로딩)."""
+
+    def test_loads_valid_rows_into_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tags_path = _write_tags_raw(
+                tmp, [_tag_row_json("1", ["수익인식"]), _tag_row_json("2", ["손상", "수익인식"])]
+            )
+
+            mapping = load_kam_tags_map(tags_path)
+
+            self.assertEqual(mapping, {"1": ["수익인식"], "2": ["손상", "수익인식"]})
+
+    def test_corrupted_and_malformed_lines_are_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tags_path = _write_tags_raw(
+                tmp,
+                [
+                    _tag_row_json("1", ["수익인식"]),
+                    "{not valid json",  # torn/손상 라인
+                    '{"rcept_no": 123, "tags": ["x"]}',  # rcept_no가 문자열이 아님
+                    '{"tags": ["y"]}',  # rcept_no 없음
+                    '{"rcept_no": "2", "tags": "손상"}',  # tags가 리스트가 아님
+                    "",  # 빈 줄
+                ],
+            )
+
+            mapping = load_kam_tags_map(tags_path)
+
+            self.assertEqual(mapping, {"1": ["수익인식"]})
+
+    def test_duplicate_rcept_no_last_line_wins(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tags_path = _write_tags_raw(
+                tmp, [_tag_row_json("1", ["수익인식"]), _tag_row_json("1", ["손상"])]
+            )
+
+            mapping = load_kam_tags_map(tags_path)
+
+            self.assertEqual(mapping, {"1": ["손상"]})
+
+    def test_missing_tags_file_raises_source_error(self) -> None:
+        with self.assertRaises(TagKamSourceError):
+            load_kam_tags_map("/no/such/kam_tags.jsonl")
+
+
+class MergeKamTagsJoinTests(unittest.TestCase):
+    """Task 4: `merge_kam_tags` join 정확성 + 미매칭 처리 + 다른 필드 불변."""
+
+    def test_join_fills_matched_rows_and_keeps_unmatched_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            facts_rows = [
+                _fact_row("1", kam_raw="원문 A"),
+                _fact_row("2", kam_raw="원문 B"),
+                _fact_row("3", kam_raw="원문 C"),
+            ]
+            for row in facts_rows:
+                row["kam_tags"] = []  # ①의 실제 산출물과 동형(항상 kam_tags: [] 보유)
+            facts_path = _write_facts(tmp, facts_rows)
+            tags_path = _write_tags_raw(
+                tmp, [_tag_row_json("1", ["수익인식"]), _tag_row_json("2", ["손상", "수익인식"])]
+            )
+            output_path = os.path.join(tmp, "audit_facts.enriched.jsonl")
+
+            result = merge_kam_tags(facts_path, tags_path, output_path)
+
+            self.assertEqual(result["facts_rows"], 3)
+            self.assertEqual(result["matched"], 2)
+            self.assertEqual(result["unmatched"], 1)
+
+            rows = _read_jsonl(output_path)
+            by_rcept = {r["rcept_no"]: r for r in rows}
+            self.assertEqual(by_rcept["1"]["kam_tags"], ["수익인식"])
+            self.assertEqual(by_rcept["2"]["kam_tags"], ["손상", "수익인식"])
+            self.assertEqual(by_rcept["3"]["kam_tags"], [])  # 미매칭 -> ①의 [] 유지
+
+            # 나머지 필드는 손대지 않는다.
+            self.assertEqual(by_rcept["1"]["kam_raw"], "원문 A")
+            self.assertEqual(by_rcept["1"]["corp_name"], "테스트법인")
+            self.assertEqual(by_rcept["1"]["corp_cls"], "Y")
+            self.assertEqual(by_rcept["1"]["kam_present"], True)
+
+    def test_corrupted_tags_lines_do_not_crash_and_leave_rows_unmatched(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            facts_path = _write_facts(tmp, [_fact_row("1", kam_raw="원문 A"), _fact_row("2", kam_raw="원문 B")])
+            tags_path = _write_tags_raw(
+                tmp,
+                [
+                    _tag_row_json("1", ["수익인식"]),
+                    "{not valid json",
+                    '{"rcept_no": "2", "tags": "손상"}',  # tags가 리스트가 아님 -> 무시
+                ],
+            )
+            output_path = os.path.join(tmp, "enriched.jsonl")
+
+            result = merge_kam_tags(facts_path, tags_path, output_path)
+
+            rows = _read_jsonl(output_path)
+            by_rcept = {r["rcept_no"]: r for r in rows}
+            self.assertEqual(by_rcept["1"]["kam_tags"], ["수익인식"])
+            self.assertEqual(by_rcept["2"]["kam_tags"], [])
+            self.assertEqual(result["matched"], 1)
+            self.assertEqual(result["unmatched"], 1)
+
+    def test_duplicate_rcept_no_in_tags_last_one_wins(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            facts_path = _write_facts(tmp, [_fact_row("1", kam_raw="원문 A")])
+            tags_path = _write_tags_raw(
+                tmp, [_tag_row_json("1", ["수익인식"]), _tag_row_json("1", ["손상"])]
+            )
+            output_path = os.path.join(tmp, "enriched.jsonl")
+
+            result = merge_kam_tags(facts_path, tags_path, output_path)
+
+            rows = _read_jsonl(output_path)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["kam_tags"], ["손상"])  # 마지막 줄 값 우선
+            self.assertEqual(result["matched"], 1)
+
+    def test_missing_facts_file_raises_source_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tags_path = _write_tags_raw(tmp, [_tag_row_json("1", ["수익인식"])])
+            with self.assertRaises(TagKamSourceError):
+                merge_kam_tags("/no/such/facts.jsonl", tags_path, os.path.join(tmp, "out.jsonl"))
+
+    def test_missing_tags_file_raises_source_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            facts_path = _write_facts(tmp, [_fact_row("1")])
+            with self.assertRaises(TagKamSourceError):
+                merge_kam_tags(facts_path, "/no/such/tags.jsonl", os.path.join(tmp, "out.jsonl"))
+
+
+class MergeKamTagsInputImmutableTests(unittest.TestCase):
+    """Task 4: 입력 facts 파일은 바이트 단위로 불변이어야 한다."""
+
+    def test_input_facts_bytes_unchanged_after_merge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            facts_path = _write_facts(tmp, [_fact_row("1", kam_raw="원문 A"), _fact_row("2", kam_raw="원문 B")])
+            tags_path = _write_tags_raw(tmp, [_tag_row_json("1", ["수익인식"])])
+            output_path = os.path.join(tmp, "enriched.jsonl")
+
+            before = Path(facts_path).read_bytes()
+            merge_kam_tags(facts_path, tags_path, output_path)
+            after = Path(facts_path).read_bytes()
+
+            self.assertEqual(before, after)
+
+
+class MergeKamTagsDeterminismTests(unittest.TestCase):
+    """Task 4: 같은 두 입력이면 항상 같은 출력 바이트(시계/네트워크 미접근)."""
+
+    def test_same_input_produces_same_output_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            facts_path = _write_facts(tmp, [_fact_row("1", kam_raw="원문 A"), _fact_row("2", kam_raw="원문 B")])
+            tags_path = _write_tags_raw(tmp, [_tag_row_json("1", ["수익인식"]), _tag_row_json("2", ["손상"])])
+            output_path_1 = os.path.join(tmp, "enriched1.jsonl")
+            output_path_2 = os.path.join(tmp, "enriched2.jsonl")
+
+            merge_kam_tags(facts_path, tags_path, output_path_1)
+            merge_kam_tags(facts_path, tags_path, output_path_2)
+
+            self.assertEqual(Path(output_path_1).read_bytes(), Path(output_path_2).read_bytes())
+
+
+class MergeKamTagsAtomicWriteTests(unittest.TestCase):
+    """Task 4: 출력은 tmp+replace로 원자적으로 쓴다 - 부분 파일이 남지 않는다."""
+
+    def test_atomic_write_leaves_no_tmp_file_and_complete_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            facts_path = _write_facts(
+                tmp, [_fact_row(str(i), kam_raw=f"원문 {i}") for i in range(5)]
+            )
+            tags_path = _write_tags_raw(tmp, [_tag_row_json("0", ["수익인식"])])
+            output_path = os.path.join(tmp, "enriched.jsonl")
+
+            merge_kam_tags(facts_path, tags_path, output_path)
+
+            self.assertTrue(os.path.exists(output_path))
+            self.assertFalse(os.path.exists(output_path + ".merge.tmp"))
+            rows = _read_jsonl(output_path)
+            self.assertEqual(len(rows), 5)
+
+
+class MergeKamTagsCliCommandTests(unittest.TestCase):
+    """Task 4: `dart merge-kam-tags` CLI 배선."""
+
+    def test_cli_merge_kam_tags_end_to_end(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            facts_path = _write_facts(tmp, [_fact_row("1", kam_raw="원문 A"), _fact_row("2", kam_raw="원문 B")])
+            tags_path = _write_tags_raw(tmp, [_tag_row_json("1", ["수익인식"])])
+            output_path = os.path.join(tmp, "enriched.jsonl")
+
+            runner = CliRunner()
+            result = runner.invoke(
+                cli.cli,
+                ["merge-kam-tags", "--facts", facts_path, "--tags", tags_path, "-o", output_path],
+            )
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertIn("병합 완료", result.output)
+            rows = _read_jsonl(output_path)
+            by_rcept = {r["rcept_no"]: r for r in rows}
+            self.assertEqual(by_rcept["1"]["kam_tags"], ["수익인식"])
+            self.assertEqual(by_rcept["2"]["kam_tags"], [])
+
+    def test_cli_missing_facts_file_exits_with_code_1(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tags_path = _write_tags_raw(tmp, [_tag_row_json("1", ["수익인식"])])
+            output_path = os.path.join(tmp, "enriched.jsonl")
+
+            runner = CliRunner()
+            result = runner.invoke(
+                cli.cli,
+                ["merge-kam-tags", "--facts", "/no/such/facts.jsonl", "--tags", tags_path, "-o", output_path],
+            )
+
+            self.assertEqual(result.exit_code, 1)
+            self.assertIn("오류", result.output)
+
+
+class TagKamEnvVarOverrideTests(unittest.TestCase):
+    """`--base-url`/`--model`이 env `KAM_LLM_BASE_URL`/`KAM_LLM_MODEL`로도
+    오버라이드 가능해야 한다(문서화된 동작 - 명시 플래그가 항상 env보다
+    우선하고, env가 하드코딩된 기본값보다 우선한다)."""
+
+    def test_env_vars_override_defaults_when_flags_absent(self) -> None:
+        class _FakeResponse:
+            status_code = 200
+
+            def json(self) -> Any:
+                return {"choices": [{"message": {"content": '["손상"]'}}]}
+
+        class _FakeClient:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            def __enter__(self) -> "_FakeClient":
+                return self
+
+            def __exit__(self, *exc_info) -> bool:
+                return False
+
+            def post(self, url: str, json: dict[str, Any]) -> _FakeResponse:
+                return _FakeResponse()
+
+        original_client = httpx.Client
+        httpx.Client = _FakeClient  # type: ignore[assignment]
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                facts_path = _write_facts(tmp, [_fact_row("1", kam_raw="원문")])
+                output_path = os.path.join(tmp, "kam_tags.jsonl")
+
+                runner = CliRunner()
+                result = runner.invoke(
+                    cli.cli,
+                    ["tag-kam", "--facts", facts_path, "-o", output_path],
+                    env={"KAM_LLM_BASE_URL": "http://env-endpoint/v1", "KAM_LLM_MODEL": "env-model"},
+                )
+
+                self.assertEqual(result.exit_code, 0, result.output)
+                rows = _read_jsonl(output_path)
+                self.assertEqual(rows[0]["base_url"], "http://env-endpoint/v1")
+                self.assertEqual(rows[0]["model"], "env-model")
+        finally:
+            httpx.Client = original_client  # type: ignore[assignment]
+
+    def test_explicit_flag_overrides_env_var(self) -> None:
+        class _FakeResponse:
+            status_code = 200
+
+            def json(self) -> Any:
+                return {"choices": [{"message": {"content": '["손상"]'}}]}
+
+        class _FakeClient:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            def __enter__(self) -> "_FakeClient":
+                return self
+
+            def __exit__(self, *exc_info) -> bool:
+                return False
+
+            def post(self, url: str, json: dict[str, Any]) -> _FakeResponse:
+                return _FakeResponse()
+
+        original_client = httpx.Client
+        httpx.Client = _FakeClient  # type: ignore[assignment]
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                facts_path = _write_facts(tmp, [_fact_row("1", kam_raw="원문")])
+                output_path = os.path.join(tmp, "kam_tags.jsonl")
+
+                runner = CliRunner()
+                result = runner.invoke(
+                    cli.cli,
+                    ["tag-kam", "--facts", facts_path, "-o", output_path, "--model", "flag-model"],
+                    env={"KAM_LLM_MODEL": "env-model"},
+                )
+
+                self.assertEqual(result.exit_code, 0, result.output)
+                rows = _read_jsonl(output_path)
+                self.assertEqual(rows[0]["model"], "flag-model")
+        finally:
+            httpx.Client = original_client  # type: ignore[assignment]
 
 
 if __name__ == "__main__":
