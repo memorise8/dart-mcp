@@ -319,6 +319,29 @@ class ResumeTests(unittest.TestCase):
                     corp_cls={"E"},
                 )
 
+    def test_resume_with_different_docs_dir_raises_value_error(self) -> None:
+        """run-params 가드는 corp_cls뿐 아니라 docs_dir이 바뀌어도 걸려야
+        한다(다른 필드도 동등하게 보호되는지 확인)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            docs_dir = os.path.join(tmp, "docs")
+            other_docs_dir = os.path.join(tmp, "docs2")
+            _write_doc(docs_dir, _META_01_ITOMATO["rcept_no"], "00760", _load_fixture("01_unlisted_unqualified_no_kam.xml"))
+            os.makedirs(other_docs_dir, exist_ok=True)
+            manifest_path = _write_manifest(tmp, [_META_01_ITOMATO])
+            output_path = os.path.join(tmp, "audit_facts.jsonl")
+            checkpoint_path = Path(tmp) / "audit_facts.jsonl.checkpoint.json"
+
+            extract_audit_facts(manifest_path, docs_dir, output_path, checkpoint=checkpoint_path)
+
+            with self.assertRaises(ValueError):
+                extract_audit_facts(
+                    manifest_path,
+                    other_docs_dir,
+                    output_path,
+                    resume=True,
+                    checkpoint=checkpoint_path,
+                )
+
     def test_no_resume_ignores_stale_checkpoint_and_starts_fresh(self) -> None:
         """`resume=False`(기본값)면 체크포인트에 이전 실행의 다른
         run-params가 남아 있어도 오류 없이 새로 시작해야 한다(과거 실행
@@ -341,6 +364,106 @@ class ResumeTests(unittest.TestCase):
             self.assertEqual(summary["total_selected"], 1)
             self.assertEqual(summary["parsed_ok"], 1)
             self.assertEqual(len(_read_jsonl(output_path)), 1)
+
+
+class CrashRecoveryTests(unittest.TestCase):
+    """리뷰어가 재현한 크래시-중복 시나리오의 회귀 테스트: `_process_one`이
+    JSONL에 줄을 flush했지만 호출부가 checkpoint를 저장하기 전에 크래시한
+    상황(+ torn 마지막 라인)을 인위적으로 만들고, `--resume`이 이를
+    자가복구해 최종 JSONL에 중복행 없이 각 rcept_no가 정확히 한 번씩만
+    남는지 검증한다."""
+
+    def test_resume_repairs_torn_line_and_prevents_duplicate_after_crash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            docs_dir = os.path.join(tmp, "docs")
+            _write_doc(docs_dir, _META_01_ITOMATO["rcept_no"], "00760", _load_fixture("01_unlisted_unqualified_no_kam.xml"))
+            _write_doc(docs_dir, _META_02_SAMSUNG_FN["rcept_no"], "00760", _load_fixture("02_listed_unqualified_with_kam.xml"))
+            manifest_path = _write_manifest(tmp, [_META_01_ITOMATO, _META_02_SAMSUNG_FN])
+            output_path = os.path.join(tmp, "audit_facts.jsonl")
+            checkpoint_path = Path(tmp) / "audit_facts.jsonl.checkpoint.json"
+
+            # 1건(01)만 정상 처리된 실행(체크포인트에 01만 processed로 기록됨).
+            extract_audit_facts(
+                manifest_path, docs_dir, output_path, limit=1, checkpoint=checkpoint_path
+            )
+            self.assertEqual(len(_read_jsonl(output_path)), 1)
+
+            # rcept 02를 _process_one이 JSONL에 flush까지는 했지만(물리적으로
+            # 존재) 호출부가 checkpoint에 processed로 기록/저장하기 전에
+            # 크래시한 상황을 인위적으로 재현한다: JSONL에 02행을 직접
+            # append하고 checkpoint는 그대로 둔다(01만 processed에 있음).
+            # 그 직후 torn(부분/잘린) 마지막 라인도 하나 심어, 쓰기 도중
+            # 크래시한 흔적까지 함께 재현한다.
+            xml_bytes = _load_fixture("02_listed_unqualified_with_kam.xml")
+            parsed = parse_audit_xml(xml_bytes, meta=_META_02_SAMSUNG_FN, doc_path="dummy")
+            row02 = serialize_parsed_report(parsed)
+            with open(output_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(row02, ensure_ascii=False))
+                f.write("\n")
+                f.write('{"rcept_no": "20250710000299", "corp_name": "잘린')  # torn, 개행 없음
+
+            checkpoint_before = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            self.assertNotIn(_META_02_SAMSUNG_FN["rcept_no"], checkpoint_before["processed"])
+
+            summary = extract_audit_facts(
+                manifest_path, docs_dir, output_path, resume=True, checkpoint=checkpoint_path
+            )
+
+            rows = _read_jsonl(output_path)
+            rcept_nos = [r["rcept_no"] for r in rows]
+            # 중복행 0: 각 rcept_no 정확히 1회.
+            self.assertEqual(len(rcept_nos), len(set(rcept_nos)))
+            self.assertEqual(
+                set(rcept_nos), {_META_01_ITOMATO["rcept_no"], _META_02_SAMSUNG_FN["rcept_no"]}
+            )
+            self.assertEqual(len(rows), 2)
+
+            self.assertEqual(summary["total_selected"], 2)
+            self.assertEqual(summary["parsed_ok"], 2)
+            self.assertEqual(summary["failed"], 0)
+
+            # resume 후 재실행해도(멱등) 중복이 생기지 않아야 한다.
+            extract_audit_facts(
+                manifest_path, docs_dir, output_path, resume=True, checkpoint=checkpoint_path
+            )
+            rows_again = _read_jsonl(output_path)
+            self.assertEqual(len(rows_again), 2)
+            self.assertEqual(
+                {r["rcept_no"] for r in rows_again},
+                {_META_01_ITOMATO["rcept_no"], _META_02_SAMSUNG_FN["rcept_no"]},
+            )
+
+    def test_resume_deduplicates_preexisting_duplicate_lines(self) -> None:
+        """(대체 시나리오) 이미 중복 라인이 심어진 JSONL을 --resume하면
+        복구 스캔이 이를 병합해 각 rcept_no가 한 번만 남아야 한다."""
+        with tempfile.TemporaryDirectory() as tmp:
+            docs_dir = os.path.join(tmp, "docs")
+            _write_doc(docs_dir, _META_01_ITOMATO["rcept_no"], "00760", _load_fixture("01_unlisted_unqualified_no_kam.xml"))
+            manifest_path = _write_manifest(tmp, [_META_01_ITOMATO])
+            output_path = os.path.join(tmp, "audit_facts.jsonl")
+            checkpoint_path = Path(tmp) / "audit_facts.jsonl.checkpoint.json"
+
+            extract_audit_facts(manifest_path, docs_dir, output_path, checkpoint=checkpoint_path)
+            self.assertEqual(len(_read_jsonl(output_path)), 1)
+
+            # 과거 크래시로 이미 중복행이 생겼던 상태를 인위적으로 심는다.
+            xml_bytes = _load_fixture("01_unlisted_unqualified_no_kam.xml")
+            parsed = parse_audit_xml(xml_bytes, meta=_META_01_ITOMATO, doc_path="dummy")
+            row01 = serialize_parsed_report(parsed)
+            with open(output_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(row01, ensure_ascii=False))
+                f.write("\n")
+
+            self.assertEqual(len(_read_jsonl(output_path)), 2)
+
+            summary = extract_audit_facts(
+                manifest_path, docs_dir, output_path, resume=True, checkpoint=checkpoint_path
+            )
+
+            rows = _read_jsonl(output_path)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["rcept_no"], _META_01_ITOMATO["rcept_no"])
+            self.assertEqual(summary["parsed_ok"], 1)
 
 
 class CorpClsFilterTests(unittest.TestCase):
@@ -437,6 +560,38 @@ class XmlPriorityTests(unittest.TestCase):
             self.assertIsNotNone(chosen)
             assert chosen is not None
             self.assertEqual(chosen.name, f"{rcept_no}_00761.xml")
+
+    def test_select_xml_path_falls_back_to_embedded_report_xml(self) -> None:
+        """00760/00761이 둘 다 없고 `<rcept>.xml`만 있으면(사업보고서 임베드
+        케이스) 그 파일을 선택해야 한다."""
+        with tempfile.TemporaryDirectory() as tmp:
+            rcept_no = "RCEPT_EMBED"
+            folder = os.path.join(tmp, rcept_no)
+            os.makedirs(folder, exist_ok=True)
+            embedded_path = os.path.join(folder, f"{rcept_no}.xml")
+            with open(embedded_path, "wb") as f:
+                f.write(b"<X>embedded</X>")
+
+            chosen = select_xml_path(tmp, rcept_no)
+
+            self.assertIsNotNone(chosen)
+            assert chosen is not None
+            self.assertEqual(str(chosen), embedded_path)
+
+    def test_select_xml_path_returns_none_for_ambiguous_multiple_xml_files(self) -> None:
+        """00760/00761/`<rcept>.xml` 어느 것도 없고 xml이 2개 이상이면(어느
+        것을 골라야 할지 모호하면) None(-> 호출자가 no_xml로 격리)이어야
+        한다."""
+        with tempfile.TemporaryDirectory() as tmp:
+            rcept_no = "RCEPT_AMBIGUOUS"
+            folder = os.path.join(tmp, rcept_no)
+            os.makedirs(folder, exist_ok=True)
+            with open(os.path.join(folder, "a.xml"), "wb") as f:
+                f.write(b"<X>a</X>")
+            with open(os.path.join(folder, "b.xml"), "wb") as f:
+                f.write(b"<X>b</X>")
+
+            self.assertIsNone(select_xml_path(tmp, rcept_no))
 
 
 class SourceLoadingTests(unittest.TestCase):

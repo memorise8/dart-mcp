@@ -32,17 +32,28 @@ JSONL(`audit_facts.jsonl`)과 요약 JSON(`<output>.summary.json`)을 만드는
   가드는 `bulk_audit._ensure_run_params_match_checkpoint`와 동형이다 -
   `--resume`으로 이어 쓸 때 manifest/docs-dir/corp-cls/output이 바뀌면
   명확한 오류를 낸다.
+- **크래시 후 resume 시 JSONL 자가복구(멱등화):** JSONL append는 그 자체로
+  멱등이 아니다 - 한 rcept 처리 후 줄을 flush했지만 호출부가 체크포인트를
+  저장하기 **전에** 크래시하면, resume 시 그 rcept가 checkpoint의
+  `processed`엔 없어 재처리될 수 있어 중복행이 생길 수 있고, 줄을 쓰는
+  도중 크래시하면 torn(부분) 마지막 줄이 남을 수도 있다. 그래서 "정상
+  종료 시 무중복"만 보장하는 게 아니라, "체크포인트가 진실원천"이라고
+  단정하지도 않는다 - 대신 `resume=True`로 시작할 때마다(신규 실행에선
+  스캔이 불필요하므로 건너뛴다) 기존 output JSONL을 한 번 스캔해
+  `json.loads` 성공 + `rcept_no` 존재하는 유효 라인만 남기고(torn 마지막
+  라인은 버려진다, 같은 rcept_no가 중복으로 있었다면 하나로 합친다) 그
+  복구된 내용으로 파일을 tmp+replace로 원자적으로 재작성한다. 이 스캔에서
+  얻은 rcept_no 집합을 checkpoint의 `processed`/`counts`에 보강해(JSONL을
+  보조 진실원천으로 삼는다) 물리적으로 이미 있는 rcept는 재기록/재계상하지
+  않는다. 결과적으로 크래시 후 resume해도 중복행 0, torn 라인 제거가
+  보장된다(정상 종료 경로는 원래대로 동작한다).
 - **원자적 쓰기:** 체크포인트와 summary JSON은 tmp 파일에 쓴 뒤
   `Path.replace`로 원자적으로 교체한다(`dart_search_mcp.collect`의 원자적
   쓰기 원본 패턴과 동일). **JSONL 출력 자체는** 매 rcept 처리 시 한 줄씩
   append한다 - 48k건 규모에서 매 줄마다 전체 파일을 tmp+replace로 다시
-  쓰는 것은 비현실적이므로(브리프가 명시한 원자적 쓰기 대상은 체크포인트/
-  summary이지 계속 자라나는 JSONL 로그 파일이 아니다), 대신
-  "체크포인트가 진실원천"이라는 규칙으로 중복 행을 막는다: `resume=False`
-  로 시작하면(또는 `resume=True`인데 체크포인트가 비어 있으면) 출력
-  파일을 새로 쓰기 모드로 열어 이전 내용을 버리고, `resume=True`이고
-  체크포인트에 이미 처리된 rcept가 있으면 append 모드로 열어 그 rcept들은
-  다시 쓰지 않는다.
+  쓰는 것은 비현실적이다. 대신 위 자가복구 단계가 resume 시 한 번만 전체를
+  재작성해 클린 상태로 만들고, 그 이후 append는 그 클린 상태 위에
+  이어붙는다.
 
 이 모듈은 어떤 MCP 도구도 등록하지 않는다(대량 처리는 블로킹 MCP 도구
 호출로 적합하지 않다) - `cli.py`의 `dart extract-audit-facts` 명령을
@@ -258,6 +269,59 @@ def _write_json_atomic(path: Path, data: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# resume 시 JSONL 자가복구(멱등화)
+# ---------------------------------------------------------------------------
+
+
+def _scan_and_repair_output(output_path: Path) -> dict[str, dict[str, Any]]:
+    """resume 시작 시 기존 output JSONL을 한 번 스캔해 자가복구한다.
+
+    라인 단위로 읽어 `json.loads` 성공 + `rcept_no` 필드가 있는 **유효
+    라인만** 남긴다(마지막 라인이 torn/파싱 불가면 다른 무효 라인과 함께
+    버려진다 - 잘려나간다). 같은 rcept_no가 여러 번 나오면(과거 크래시로
+    이미 중복행이 생겼던 경우) 가장 나중에 나온 라인 값으로 병합해 한 번만
+    남긴다. 복구된 내용으로 파일을 tmp+replace로 원자적으로 재작성한 뒤
+    (그 이후 append가 이어질 클린 상태를 만든다), `rcept_no -> row` 매핑을
+    반환한다 - 호출자가 체크포인트의 `processed`/`counts`를 이 매핑으로
+    보강해, 물리적으로 이미 JSONL에 있는 rcept의 재기록/재계상을 막는다.
+
+    출력 파일이 아직 없으면(신규 실행 등) 아무 것도 하지 않고 빈 dict를
+    반환한다."""
+    if not output_path.exists():
+        return {}
+
+    order: list[str] = []
+    rows_by_rcept: dict[str, dict[str, Any]] = {}
+    with open(output_path, encoding="utf-8") as f:
+        for line in f:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                row = json.loads(stripped)
+            except json.JSONDecodeError:
+                # torn(부분) 라인 등 파싱 불가 - 버린다(잘라낸다).
+                continue
+            if not isinstance(row, dict):
+                continue
+            rcept_no = row.get("rcept_no")
+            if not isinstance(rcept_no, str) or not rcept_no:
+                continue
+            if rcept_no not in rows_by_rcept:
+                order.append(rcept_no)
+            rows_by_rcept[rcept_no] = row
+
+    tmp_path = output_path.with_name(output_path.name + ".repair.tmp")
+    with open(tmp_path, "w", encoding="utf-8") as tmp_f:
+        for rcept_no in order:
+            tmp_f.write(json.dumps(rows_by_rcept[rcept_no], ensure_ascii=False))
+            tmp_f.write("\n")
+    tmp_path.replace(output_path)
+
+    return rows_by_rcept
+
+
+# ---------------------------------------------------------------------------
 # 집계
 # ---------------------------------------------------------------------------
 
@@ -270,16 +334,29 @@ def _record_failure(counts: dict[str, Any], kind: str, rcept_no: str) -> None:
         samples.append(rcept_no)
 
 
-def _record_success(counts: dict[str, Any], parsed: ParsedAuditReport) -> None:
+def _record_success(
+    counts: dict[str, Any],
+    *,
+    audit_opinion: str | None,
+    going_concern: bool,
+    kam_present: bool,
+    corp_cls: str | None,
+) -> None:
+    """성공 집계 1건을 반영한다.
+
+    개별 필드(전체 `ParsedAuditReport`가 아니라)를 받는 이유: 정상 처리
+    경로(`_process_one`)뿐 아니라, resume 시 JSONL 자가복구로 이미
+    직렬화돼 있던 row(dict)로부터도 동일하게 재계상할 수 있어야 하기
+    때문이다(둘 다 이 함수를 통해 같은 로직을 공유한다)."""
     counts["parsed_ok"] += 1
-    opinion = parsed.audit_opinion if parsed.audit_opinion in counts["opinion_distribution"] else "unknown"
+    opinion = audit_opinion if audit_opinion in counts["opinion_distribution"] else "unknown"
     counts["opinion_distribution"][opinion] = counts["opinion_distribution"].get(opinion, 0) + 1
-    if parsed.going_concern:
+    if going_concern:
         counts["going_concern_true"] += 1
-    if parsed.kam_present:
+    if kam_present:
         counts["kam_present"] += 1
-    corp_cls = parsed.corp_cls or "unknown"
-    counts["by_corp_cls"][corp_cls] = counts["by_corp_cls"].get(corp_cls, 0) + 1
+    resolved_corp_cls = corp_cls or "unknown"
+    counts["by_corp_cls"][resolved_corp_cls] = counts["by_corp_cls"].get(resolved_corp_cls, 0) + 1
 
 
 def _build_summary(total_selected: int, counts: dict[str, Any]) -> dict[str, Any]:
@@ -328,7 +405,13 @@ def _process_one(
         _record_failure(counts, kind, rcept_no)
         return kind
 
-    _record_success(counts, parsed)
+    _record_success(
+        counts,
+        audit_opinion=parsed.audit_opinion,
+        going_concern=parsed.going_concern,
+        kam_present=parsed.kam_present,
+        corp_cls=parsed.corp_cls,
+    )
     return "ok"
 
 
@@ -350,10 +433,11 @@ def extract_audit_facts(
     원자적으로 쓴다. 반환값은 그 요약 dict과 동일하다.
 
     체크포인트(기본값: `<output_path>.checkpoint.json`)에 처리한 rcept
-    집합과 누적 집계를 저장한다. `resume=True`면 기존 체크포인트를 이어
-    쓰고(이미 처리된 rcept는 건너뛰며 output에도 재기록하지 않는다),
-    `resume=False`(기본값)면 기존 체크포인트/output 내용을 무시하고 항상
-    새로 시작한다.
+    집합과 누적 집계를 저장한다. `resume=True`면 이어 쓰기 전에 먼저 기존
+    output JSONL을 스캔해 중복/torn(부분) 마지막 라인을 제거하고 원자적으로
+    재작성한다(크래시 후 resume에도 자가 복구) - 그렇게 확인된 rcept는
+    checkpoint에 없더라도 재기록/재계상하지 않는다. `resume=False`
+    (기본값)면 기존 체크포인트/output 내용을 무시하고 항상 새로 시작한다.
     """
     manifest_path = Path(manifest_path)
     docs_dir = Path(docs_dir)
@@ -374,14 +458,40 @@ def extract_audit_facts(
     _ensure_run_params_match_checkpoint(state, run_params)
     _save_checkpoint(checkpoint_path, state)
 
-    mode = "a" if state["processed"] else "w"
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if resume:
+        # 크래시 후 resume: JSONL을 스캔·복구하고, 복구된(=물리적으로 이미
+        # 있는) rcept 중 checkpoint의 processed에는 아직 없는 것들을 여기서
+        # 보강한다 - 이렇게 하면 아래 루프의 기존 `processed` 체크만으로도
+        # 재기록/재처리가 자동으로 건너뛰어진다.
+        recovered = _scan_and_repair_output(output_path)
+        for rcept_no, row in recovered.items():
+            if rcept_no in state["processed"]:
+                continue
+            state["processed"][rcept_no] = "ok"
+            _record_success(
+                state["counts"],
+                audit_opinion=row.get("audit_opinion"),
+                going_concern=bool(row.get("going_concern")),
+                kam_present=bool(row.get("kam_present")),
+                corp_cls=row.get("corp_cls"),
+            )
+        _save_checkpoint(checkpoint_path, state)
+
+    mode = "a" if resume else "w"
 
     with open(output_path, mode, encoding="utf-8") as out_f:
         for i, record in enumerate(records, start=1):
             rcept_no = str(record.get("rcept_no", "") or "").strip()
             if not rcept_no:
+                # 인덱스 기반 합성 키로 한 번만 집계한다(resume마다 재계상 방지).
+                synthetic_key = f"__norcept_{i}"
+                if synthetic_key in state["processed"]:
+                    continue
                 _record_failure(state["counts"], "missing_rcept_no", "<unknown>")
+                state["processed"][synthetic_key] = "missing_rcept_no"
+                _save_checkpoint(checkpoint_path, state)
                 continue
             if rcept_no in state["processed"]:
                 continue
