@@ -11,7 +11,20 @@ import하며, 그 모듈이 전이적으로 import하는 ``config.py``의 import
 
 ``to_audit_report_record``는 그 자체로는 순수 함수다(네트워크/파일시스템
 접근 없음, 부수효과 없음) — 입력 dataclass의 필드만 읽어 새 dataclass를
-만든다."""
+만든다.
+
+**DartTopicCase는 ``audit_facts.jsonl``의 손실 투영(lossy projection)이다.**
+``AuditReportRecord``(따라서 그로부터 산출되는 DartTopicCase)에는
+``ParsedAuditReport``의 ``going_concern``/``going_concern_snippet``/
+``opinion_snippet``/``kam_present``/``stock_code``/``report_name``/
+``rcept_dt``/``settlement_month``/``parse_flags`` 필드가 없다 — 이 값들은
+``audit_facts.jsonl``엔 존재하지만 이 어댑터를 거쳐 DartTopicCase로는
+**전파되지 않는다**(의도된 투영이며 버그가 아니다). 이 필드들의
+**원천(source of truth)은 여전히 ``audit_facts.jsonl``**이다. finov2 등
+하류 소비자가 going_concern/kam_present/각종 snippet/settlement_month가
+필요하다면 ``audit_facts.jsonl``을 직접 소비하거나, DartTopicCase 스키마
+자체를 확장해야 한다 — 이 어댑터를 확장하는 것만으로는 부족하다(finov2
+쪽 스키마 계약이 먼저 바뀌어야 한다)."""
 
 from __future__ import annotations
 

@@ -1,9 +1,17 @@
 """DART 감사보고서 원문 XML(``dart_collected/docs/<rcept>/<rcept>_<acode>.xml``)에서
 감사 사실(fact)을 뽑아내는 순수·결정론 파서.
 
-이 모듈은 네트워크/파일시스템 접근이 전혀 없다. 입력은 항상 ``xml_bytes``(원문
-바이트)와 ``meta``(manifest.json의 ``records[]`` 항목 하나) 뿐이며, 같은 입력에는
-항상 같은 출력을 낸다(``datetime.now()``/``random`` 등 비결정 요소 없음).
+이 **모듈 body**는 순수하다: ``re``/``dataclasses``만 import하고, 함수 입력은
+항상 ``xml_bytes``(원문 바이트)와 ``meta``(manifest.json의 ``records[]`` 항목
+하나) 뿐이며, 같은 입력에는 항상 같은 출력을 낸다(``datetime.now()``/``random``/
+네트워크 등 비결정·부수효과 요소 없음). 다만 이는 **모듈 body**에 한정된 사실이다
+— ``dart_search_mcp`` **패키지**를 통해 이 모듈을 import하면(예: ``import
+dart_search_mcp.audit_xml_parser``), 패키지 ``__init__.py``가 top-level에서
+``from dart_search_mcp.app import mcp``를 실행하고, 그 경로가 전이적으로
+``config.py``의 import-time ``load_dotenv()``(디스크 ``.env`` 읽기)를 유발한다.
+즉 "이 모듈을 import하면 파일 I/O가 전혀 없다"는 단정은 패키지 경유 import에는
+성립하지 않는다 — 파서 함수 자체의 순수성·결정론과는 무관한, 패키지 구조에서
+비롯된 부수효과다.
 
 ## 랜드마크 기반 파싱과 실측 근거
 
