@@ -102,6 +102,34 @@ _META_05_BACARDI = {
     "source_url": "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20250701000289",
 }
 
+_META_06_BFLABS = {
+    "category": "사업보고서",
+    "report_name": "사업보고서 (2025.12)",
+    "rcept_no": "20260324000003",
+    "rcept_dt": "20260324",
+    "corp_code": "00656021",
+    "corp_name": "비에프랩스",
+    "stock_code": "139050",
+    "corp_cls": "E",
+    "flr_nm": "비에프랩스",
+    "remark": "연",
+    "source_url": "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260324000003",
+}
+
+_META_07_ELAPHONISI = {
+    "category": "감사보고서",
+    "report_name": "[기재정정]감사보고서 (2024.12)",
+    "rcept_no": "20250918000376",
+    "rcept_dt": "20250918",
+    "corp_code": "01668333",
+    "corp_name": "엘라포니시",
+    "stock_code": "",
+    "corp_cls": "E",
+    "flr_nm": "중정회계법인",
+    "remark": "",
+    "source_url": "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20250918000376",
+}
+
 
 # ---------------------------------------------------------------------------
 # classify_opinion - 4개 의견 유형 (실측 문장 + 실측 부적정/의견거절 문장을
@@ -420,6 +448,42 @@ class ParseFixture05QualifiedOpinionTests(unittest.TestCase):
     def test_auditor_matches_no_mismatch(self) -> None:
         self.assertEqual(self.result.auditor, "대주회계법인")
         self.assertNotIn("auditor_mismatch", self.result.parse_flags)
+
+
+class ParseFixture06DisclaimerOfOpinionTests(unittest.TestCase):
+    """의견거절 실제 사례 - "의견을 표명하지 않습니다"/"의견거절근거" +
+    의견거절근거 문단 내부에 계속기업 관련 중요한 불확실성 서술."""
+
+    def setUp(self) -> None:
+        xml_bytes = _load("06_disclaimer_of_opinion.xml")
+        self.result = parse_audit_xml(xml_bytes, _META_06_BFLABS, doc_path="fixtures/06.xml")
+
+    def test_opinion_is_disclaimer(self) -> None:
+        self.assertEqual(self.result.audit_opinion, "의견거절")
+        self.assertIn("opinion", self.result.parse_flags)
+
+    def test_meta_passthrough_fields(self) -> None:
+        self.assertEqual(self.result.rcept_no, "20260324000003")
+        self.assertEqual(self.result.corp_name, "비에프랩스")
+
+
+class ParseFixture07AdverseOpinionTests(unittest.TestCase):
+    """부적정의견 실제 사례 - "표시하고 있지 않습니다". 실제 헤더가
+    "부적정의견의 근거"(_SECTION_LANDMARKS의 "부적정의견근거"와 문자열이
+    달라 헤더로 인식되지 않음)이므로 opinion_para 경계는 다음 랜드마크인
+    "강조사항"에서 끊긴다 - 그래도 판정 문구는 그 안에 포함되어 있어야 한다."""
+
+    def setUp(self) -> None:
+        xml_bytes = _load("07_adverse_opinion.xml")
+        self.result = parse_audit_xml(xml_bytes, _META_07_ELAPHONISI, doc_path="fixtures/07.xml")
+
+    def test_opinion_is_adverse(self) -> None:
+        self.assertEqual(self.result.audit_opinion, "부적정")
+        self.assertIn("opinion", self.result.parse_flags)
+
+    def test_meta_passthrough_fields(self) -> None:
+        self.assertEqual(self.result.rcept_no, "20250918000376")
+        self.assertEqual(self.result.corp_name, "엘라포니시")
 
 
 # ---------------------------------------------------------------------------
