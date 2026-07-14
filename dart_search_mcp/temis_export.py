@@ -186,14 +186,24 @@ def _confidence_for(fact: AuditReportRecord) -> float:
 
     확인하는 필드는 `auditor`, `audit_opinion`, `core_audit_matter`,
     `emphasis_matter` 4개다. 각 필드는 빈 문자열이거나 "-"(값 없음 표시)면
-    "없음"으로 취급된다(`_is_field_present`). 반환값은 채워진 필드 수를
-    전체 필드 수로 나눈 비율이며, 항상 [0.0, 1.0] 범위다(4개 모두 채워지면
-    1.0, 하나도 채워지지 않으면 0.0). 이 값이 나타내는 것은 오직
-    "이 사실(fact)이 얼마나 완전하게 추출되었는가"(필드 완전성)이며, 매칭된
-    토픽 키워드 개수나 실제 모델 기반 신뢰도와는 무관하다."""
-    fields = (fact.auditor, fact.audit_opinion, fact.core_audit_matter, fact.emphasis_matter)
-    present = sum(1 for value in fields if _is_field_present(value))
-    return present / len(fields)
+    "없음"으로 취급된다(`_is_field_present`). `audit_opinion`은 추가로
+    `"unknown"`(파서가 감사의견을 분류하지 못했다는 센티넬 — 실제 의견
+    유형이 아니다)이면 마찬가지로 "없음"으로 취급한다: 미분류를 추출로
+    과대계상하지 않기 위함이며, 다른 필드나 `"unknown"` 이외의 의견값에는
+    영향이 없다. 반환값은 채워진 필드 수를 전체 필드 수로 나눈 비율이며,
+    항상 [0.0, 1.0] 범위다(4개 모두 채워지면 1.0, 하나도 채워지지 않으면
+    0.0). 이 값이 나타내는 것은 오직 "이 사실(fact)이 얼마나 완전하게
+    추출되었는가"(필드 완전성)이며, 매칭된 토픽 키워드 개수나 실제 모델
+    기반 신뢰도와는 무관하다."""
+    opinion_present = _is_field_present(fact.audit_opinion) and fact.audit_opinion != "unknown"
+    fields_present = (
+        _is_field_present(fact.auditor),
+        opinion_present,
+        _is_field_present(fact.core_audit_matter),
+        _is_field_present(fact.emphasis_matter),
+    )
+    present = sum(1 for value in fields_present if value)
+    return present / len(fields_present)
 
 
 def _case_id_discriminator(fact: AuditReportRecord) -> str:

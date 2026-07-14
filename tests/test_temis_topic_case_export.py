@@ -447,6 +447,23 @@ class ExtractionConfidenceTests(unittest.TestCase):
             self.assertGreaterEqual(record.extraction_confidence, 0.0)
             self.assertLessEqual(record.extraction_confidence, 1.0)
 
+    def test_unknown_audit_opinion_does_not_count_as_present(self) -> None:
+        """audit_opinion="unknown"(파서가 감사의견을 분류하지 못한 센티넬)은
+        추출된 값이 아니라 "없음"으로 취급되어야 한다 — 미분류를 추출로
+        과대계상하면 안 된다. auditor/core_audit_matter/emphasis_matter
+        3개만 채워졌으므로 confidence는 0.75(4개 중 3개)여야 한다."""
+        fact = _fact(
+            auditor="삼일회계법인",
+            audit_opinion="unknown",
+            core_audit_matter="핵심감사사항 본문.",
+            emphasis_matter="강조사항 본문.",
+        )
+
+        records, skipped = convert_audit_reports_to_topic_cases([fact], freshness_timestamp=_FRESHNESS)
+
+        self.assertEqual(skipped, [])
+        self.assertEqual(records[0].extraction_confidence, 0.75)
+
     def test_keyword_dense_but_field_sparse_fact_does_not_get_top_confidence(self) -> None:
         keyword_dense_fact = _fact(
             auditor="-",
