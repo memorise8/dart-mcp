@@ -4,6 +4,26 @@
 
 공시 검색, 기업 개황, 재무제표, 재무지표, 지분공시, 정기보고서 주요정보, 주요사항보고서, 증권신고서, 원문 ZIP, XBRL ZIP 다운로드를 지원합니다.
 
+## 구성 (지금까지 개발된 것)
+
+세 가지 기능 축으로 이루어져 있습니다:
+
+1. **DART 조회·수집** — 공시 검색, 기업 개황, 재무제표/지표, 지분·정기·주요사항·증권 보고서,
+   원문/XBRL 다운로드. **MCP 도구 18개 + CLI 명령 25개**로 제공(아래 "MCP 도구", "CLI 사용법").
+   대량 수집·감사서류 추출은 CLI 전용(`collect-disclosures`, `bulk-audit-documents`).
+2. **감사 구조화 추출 + KAM 태깅 파이프라인** — 수집한 감사보고서 XML을 질의 가능한 데이터로 변환:
+   - `extract-audit-facts` — 감사인·감사의견(적정/한정/부적정/의견거절)·계속기업·KAM 원문을 `audit_facts.jsonl`로 추출
+   - `tag-kam` — KAM 원문을 **고정 태소노미**로 LLM 태깅(OpenAI 호환 엔드포인트, 키 불필요) → `kam_tags.jsonl`
+   - `merge-kam-tags` — 둘을 rcept_no로 join → `audit_facts.enriched.jsonl`
+   (아래 "감사 구조화 추출 + KAM(핵심감사사항) LLM 태깅")
+3. **TEMIS 연동** — 감사 사실을 TEMIS `DartTopicCase` JSON으로 내보내기(`temis-topic-cases`,
+   `extract-audit-facts --emit-topic-cases`). 이 저장소는 OpenDART 수집·파싱·변환을 전담하고,
+   TEMIS는 산출 JSON을 소비만 합니다(아래 "TEMIS 연동").
+
+전체 파이프라인: `collect-disclosures → bulk-audit-documents → extract-audit-facts → tag-kam → merge-kam-tags → (temis-topic-cases)`.
+모든 기능은 Claude Code 등 특정 하네스에 종속되지 않습니다 — 셸/cron에서 `dart` CLI로, 또는
+`dart serve`(MCP 서버)로 아무 MCP 클라이언트에서 사용할 수 있습니다.
+
 ## 빠른 시작
 
 1. DART Open API 키를 발급합니다.
