@@ -14,8 +14,10 @@ build/
 
 # Local tooling artifacts (oh-my-claudecode)
 .omc/
+.omx/
 .claude/
 .superpowers/
+.omo/evidence/
 
 # 대량 수집 산출물(수집 매니페스트 + 감사서류 XML) — 커밋 금지
 dart_collected/
