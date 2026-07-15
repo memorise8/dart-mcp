@@ -3,7 +3,7 @@ slug: dart-company-audit-collection
 status: plan-written
 intent: clear
 pending-action: start implementation or run high-accuracy review
-approach: Add MCP/CLI surfaces in dart-search-mcp for exporting the full corpCode.xml company list, resolving annual report receipt numbers, extracting audit/consolidated-audit XML documents from OpenDART document ZIPs, and running checkpointed bulk collection that emits importable artifacts for TEMIS/finov2.
+approach: Add MCP/CLI surfaces in dart-search-mcp for exporting the full corpCode.xml company list, resolving annual report receipt numbers, extracting audit/consolidated-audit XML documents from OpenDART document ZIPs, and running checkpointed bulk collection that emits importable artifacts for TEMIS/temis.
 ---
 
 # Draft: dart-company-audit-collection
@@ -23,7 +23,7 @@ Target universe | Default to all corpCode.xml records, with `--listed-only` filt
 Output formats | JSON first, CSV optional for company list only | Downstream TEMIS import and existing topic-case flow are JSON-based; CSV is useful for manual inspection | yes
 Bulk persistence | Write per-company artifacts plus a manifest/checkpoint, not one huge overwritten file | Existing TEMIS exporter overwrites one company file; bulk needs resumability and failure isolation | yes
 Consolidated audit detection | Identify by XML `DOCUMENT-NAME` containing `연결감사보고서` or document ACODE `00761` | Verified in the downloaded sample ZIP; can be tested offline with fixture ZIPs | yes
-Execution safety | No production finov2 writes from MCP bulk commands | Existing boundary says MCP exports source artifacts and finov2 imports them separately | yes
+Execution safety | No production temis writes from MCP bulk commands | Existing boundary says MCP exports source artifacts and temis imports them separately | yes
 
 ## Findings (cited - path:lines)
 - `dart_search_mcp/corp.py:21` downloads and parses OpenDART `corpCode.xml`; `dart_search_mcp/corp.py:37` builds records with `corp_code`, `corp_name`, `stock_code`, and `modify_date`.
@@ -35,7 +35,7 @@ Execution safety | No production finov2 writes from MCP bulk commands | Existing
 - Manual probe of `uv run dart download 20260323001689 -o /tmp/dart_20260323001689` succeeded and produced a ZIP containing `20260323001689_00760.xml` (`감사보고서`) and `20260323001689_00761.xml` (`연결감사보고서`).
 
 ## Decisions (with rationale)
-- Add the new features to `dart-search-mcp`, not finov2, because OpenDART access and corpCode parsing already live in this repo and finov2 should consume exported artifacts.
+- Add the new features to `dart-search-mcp`, not temis, because OpenDART access and corpCode parsing already live in this repo and temis should consume exported artifacts.
 - Keep existing tool/command names compatible; add new names instead of changing `search`, `download`, or `temis-topic-cases`.
 - Split pure parsing/extraction helpers from network/file-writing adapters so most tests use fixture ZIPs and do not require a live DART API key.
 - Treat bulk collection as an opt-in CLI/MCP operation with checkpointing; do not automatically crawl every company during normal commands or tests.
@@ -51,7 +51,7 @@ Execution safety | No production finov2 writes from MCP bulk commands | Existing
 - Documentation updates for README, generated CLI docs, and MCP tool docs.
 
 ## Scope OUT (Must NOT have)
-- No finov2 database writes from this repo.
+- No temis database writes from this repo.
 - No automatic production deployment.
 - No browser scraping of DART viewer pages as the primary path; use OpenDART APIs and downloaded ZIPs first.
 - No PDF conversion requirement in the first pass; XML is the source artifact.

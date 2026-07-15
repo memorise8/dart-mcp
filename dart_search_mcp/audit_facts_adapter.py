@@ -20,10 +20,10 @@ import하며, 그 모듈이 전이적으로 import하는 ``config.py``의 import
 ``rcept_dt``/``settlement_month``/``parse_flags`` 필드가 없다 — 이 값들은
 ``audit_facts.jsonl``엔 존재하지만 이 어댑터를 거쳐 DartTopicCase로는
 **전파되지 않는다**(의도된 투영이며 버그가 아니다). 이 필드들의
-**원천(source of truth)은 여전히 ``audit_facts.jsonl``**이다. finov2 등
+**원천(source of truth)은 여전히 ``audit_facts.jsonl``**이다. temis 등
 하류 소비자가 going_concern/kam_present/각종 snippet/settlement_month가
 필요하다면 ``audit_facts.jsonl``을 직접 소비하거나, DartTopicCase 스키마
-자체를 확장해야 한다 — 이 어댑터를 확장하는 것만으로는 부족하다(finov2
+자체를 확장해야 한다 — 이 어댑터를 확장하는 것만으로는 부족하다(temis
 쪽 스키마 계약이 먼저 바뀌어야 한다)."""
 
 from __future__ import annotations
@@ -100,7 +100,7 @@ def parsed_reports_to_topic_cases(
     """``to_audit_report_record``로 각 사실을 어댑팅한 뒤 기존
     ``convert_audit_reports_to_topic_cases``에 그대로 넘기는 편의 함수.
 
-    Task 3/4(대량 CLI)가 파서 출력 목록을 finov2 ``DartTopicCase`` 레코드
+    Task 3/4(대량 CLI)가 파서 출력 목록을 temis ``DartTopicCase`` 레코드
     목록으로 한 번에 변환할 때 쓴다. 어댑팅 자체와 마찬가지로 순수/결정적이다
     — ``freshness_timestamp``는 호출자가 주입한 값을 그대로 전달할 뿐,
     이 함수가 직접 시계를 읽지 않는다."""

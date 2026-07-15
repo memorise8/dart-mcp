@@ -1,21 +1,21 @@
 # temis-dart-mcp-hardening - Work Plan
 
 ## TL;DR (For humans)
-**What you'll get:** DART MCP가 TEMIS의 DART 주제별 사례검색 데이터 원천이자 OpenDART adapter 역할을 맡도록 보강됩니다. 기존 사람이 읽는 MCP/CLI 출력은 유지하면서, finov2가 그대로 소비할 수 있는 `dart_topic_cases.json` export 경로를 추가합니다.
+**What you'll get:** DART MCP가 TEMIS의 DART 주제별 사례검색 데이터 원천이자 OpenDART adapter 역할을 맡도록 보강됩니다. 기존 사람이 읽는 MCP/CLI 출력은 유지하면서, temis가 그대로 소비할 수 있는 `dart_topic_cases.json` export 경로를 추가합니다.
 
-**Why this approach:** 현재 finov2는 이미 `DART_TOPIC_CASES_PATH` JSON을 읽는 구조라, OpenDART 호출/파싱 adapter를 finov2에 중복 구현할 필요가 없습니다. DART MCP가 수집과 변환을 끝내고 finov2는 생성 파일만 바라보게 하면 경계가 단순해집니다.
+**Why this approach:** 현재 temis는 이미 `DART_TOPIC_CASES_PATH` JSON을 읽는 구조라, OpenDART 호출/파싱 adapter를 temis에 중복 구현할 필요가 없습니다. DART MCP가 수집과 변환을 끝내고 temis는 생성 파일만 바라보게 하면 경계가 단순해집니다.
 
-**What it will NOT do:** finov2 제품 코드를 이 repo에서 수정하지 않고, finov2-side OpenDART adapter도 만들지 않습니다. NICE/Layer 3 리포트나 가치평가는 다루지 않습니다. 기본 테스트에서 live DART API를 호출하지 않습니다.
+**What it will NOT do:** temis 제품 코드를 이 repo에서 수정하지 않고, temis-side OpenDART adapter도 만들지 않습니다. NICE/Layer 3 리포트나 가치평가는 다루지 않습니다. 기본 테스트에서 live DART API를 호출하지 않습니다.
 
 **Effort:** Large
 **Risk:** Medium - live OpenDART 호출은 되지만 현재 출력 계약이 문자열 중심이고 API key 로그 노출 가능성이 있어 보안/호환성 검증이 필요합니다.
-**Decisions to sanity-check:** 기존 16개 MCP tool/CLI command는 유지하고, TEMIS용 structured/export surface는 opt-in으로 추가합니다. DART 공시 검색은 회사명 직접 조회가 아니라 `corp_code` 기반으로 고정합니다. finov2 연동은 새 adapter가 아니라 `DART_TOPIC_CASES_PATH=/path/to/dart_topic_cases.json` 설정/운영 wiring으로 제한합니다.
+**Decisions to sanity-check:** 기존 16개 MCP tool/CLI command는 유지하고, TEMIS용 structured/export surface는 opt-in으로 추가합니다. DART 공시 검색은 회사명 직접 조회가 아니라 `corp_code` 기반으로 고정합니다. temis 연동은 새 adapter가 아니라 `DART_TOPIC_CASES_PATH=/path/to/dart_topic_cases.json` 설정/운영 wiring으로 제한합니다.
 
 Your next move: another session can run this plan as implementation work. Full execution detail follows below.
 
 ---
 
-> TL;DR (machine): Large / Medium risk / Make dart-search-mcp own the OpenDART adapter/exporter role, preserve existing string surface, add typed core, safe logging, corp_code-first search, TEMIS `DartTopicCase` JSON export consumable via finov2 `DART_TOPIC_CASES_PATH`, docs, and no-live-default QA.
+> TL;DR (machine): Large / Medium risk / Make dart-search-mcp own the OpenDART adapter/exporter role, preserve existing string surface, add typed core, safe logging, corp_code-first search, TEMIS `DartTopicCase` JSON export consumable via temis `DART_TOPIC_CASES_PATH`, docs, and no-live-default QA.
 
 ## Scope
 ### Must have
@@ -24,15 +24,15 @@ Your next move: another session can run this plan as implementation work. Full e
 - Add a safe OpenDART HTTP boundary that never leaks `crtfc_key` through logs, exceptions, docs, or evidence.
 - Treat `corp_code` as the canonical disclosure-search key; company name search must be a separate resolver step.
 - Add deterministic offline tests with mocked OpenDART responses.
-- Add a TEMIS-compatible export path that emits JSON matching the current `DartTopicCase` contract in `../../finov2/fino-backend/app/schemas/dart_topic_search.py`.
+- Add a TEMIS-compatible export path that emits JSON matching the current `DartTopicCase` contract in `../../temis/fino-backend/app/schemas/dart_topic_search.py`.
 - Make this repo the owner of the OpenDART adapter role: company resolution, disclosure/report retrieval, snippet/topic extraction, and TEMIS JSON generation happen here.
-- Document the finov2 consumption contract as file-based: set `DART_TOPIC_CASES_PATH` to the generated `dart_topic_cases.json`; keep any future finov2 work to thin config/job orchestration.
+- Document the temis consumption contract as file-based: set `DART_TOPIC_CASES_PATH` to the generated `dart_topic_cases.json`; keep any future temis work to thin config/job orchestration.
 - Add source provenance fields: a unique `case_id` (fixture pattern: `dart-<topic>-<year>-<seq>`), company identifier, company name, fiscal year, report id, auditor, topic tags, snippet, source URL, document id, extraction confidence, and freshness timestamp.
 - Add docs and QA commands for default offline verification and opt-in live smoke verification.
 
 ### Must NOT have (guardrails, anti-slop, scope boundaries)
-- Must not modify finov2 product code in this repo-local work.
-- Must not plan or implement a finov2-side OpenDART adapter that duplicates this repo's collection/parsing logic.
+- Must not modify temis product code in this repo-local work.
+- Must not plan or implement a temis-side OpenDART adapter that duplicates this repo's collection/parsing logic.
 - Must not implement NICE ingestion, Layer 3 commercial reports, valuation scoring, or counterparty risk scoring.
 - Must not remove or rename existing MCP tools or CLI commands.
 - Must not make live OpenDART calls in the default unit test suite.
@@ -56,8 +56,8 @@ Your next move: another session can run this plan as implementation work. Full e
   - `rg -n "secret-test-key" README.md docs .omo/evidence --glob '!*.json'` must return no matches.
 - TEMIS schema gate:
   - Generate a sample export into `.omo/evidence/task-6-temis-dart-mcp-hardening.json`.
-  - Validate required field names and JSON shape with a repo-local Python script, without importing finov2 production code.
-  - Validate the generated file can be used as the value for finov2 `DART_TOPIC_CASES_PATH` by checking it is a JSON array of `DartTopicCase`-shaped records.
+  - Validate required field names and JSON shape with a repo-local Python script, without importing temis production code.
+  - Validate the generated file can be used as the value for temis `DART_TOPIC_CASES_PATH` by checking it is a JSON array of `DartTopicCase`-shaped records.
 - Live smoke gate is opt-in only:
   - If `DART_API_KEY` is present, run one redacted Samsung Electronics smoke flow and save only sanitized evidence.
   - If `DART_API_KEY` is missing, record a skipped live-smoke evidence file and keep the plan passable.
@@ -68,7 +68,7 @@ Your next move: another session can run this plan as implementation work. Full e
 - Wave 1: Foundation and safety. Typed core envelope, redacted HTTP boundary, structured corp-code resolver.
 - Wave 2: DART data extraction. Corp-code-first disclosure search, audit/report structured extraction, document ZIP text/snippet extraction.
 - Wave 3: TEMIS export. Topic tagging, `DartTopicCase` JSON generation, CLI/MCP export surface.
-- Wave 4: Docs and readiness. Generated docs, README, QA script/live smoke, finov2 file-consumption contract, final scope audit.
+- Wave 4: Docs and readiness. Generated docs, README, QA script/live smoke, temis file-consumption contract, final scope audit.
 
 ### Dependency matrix
 | Todo | Depends on | Blocks | Can parallelize with |
@@ -89,7 +89,7 @@ Your next move: another session can run this plan as implementation work. Full e
 - [ ] 1. Add a structured result layer without breaking string outputs
   What to do / Must NOT do: Add structured dataclasses or typed dictionaries for DART API success, no-data, and error results under `dart_search_mcp/types.py` or a new focused module. Refactor only internals so existing MCP tool functions and CLI commands still return their current strings. Do not add Pydantic unless the executor justifies the dependency and updates `uv.lock`.
   Parallelization: Wave 1 | Blocked by: none | Blocks: 3, 4, 5, 6, 8, 10
-  References (executor has NO interview context - be exhaustive): `dart_search_mcp/types.py:1`, `dart_search_mcp/client.py:8`, `dart_search_mcp/formatting.py:44`, `tests/test_public_surface.py:7`, `../../finov2/fino-backend/app/schemas/dart_topic_search.py:10`
+  References (executor has NO interview context - be exhaustive): `dart_search_mcp/types.py:1`, `dart_search_mcp/client.py:8`, `dart_search_mcp/formatting.py:44`, `tests/test_public_surface.py:7`, `../../temis/fino-backend/app/schemas/dart_topic_search.py:10`
   Acceptance criteria (agent-executable): `uv run python -m unittest tests.test_structured_results -v` exits 0; `uv run python -m unittest tests.test_public_surface -v` still exits 0.
   QA scenarios (name the exact tool + invocation): happy: `uv run python -m unittest tests.test_structured_results -v | tee .omo/evidence/task-1-temis-dart-mcp-hardening.txt`; failure: a mocked non-`000` DART status returns a typed error object internally while the public formatter still emits the existing Korean error style, recorded in the same evidence file.
   Commit: Y | `feat(core): add structured DART result envelope`
@@ -127,10 +127,10 @@ Your next move: another session can run this plan as implementation work. Full e
   Commit: Y | `feat(reports): expose structured audit report facts`
 
 - [ ] 6. Generate TEMIS-compatible `DartTopicCase` JSON from structured facts
-  What to do / Must NOT do: Add a converter that maps structured disclosure/audit facts into TEMIS `DartTopicCase` records and writes a JSON array suitable for finov2 `DART_TOPIC_CASES_PATH`. Include topic-tag extraction from a small deterministic Korean keyword dictionary, source URL `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=<rcept_no>`, document id, extraction confidence, and ISO freshness timestamp. Do not claim exhaustive tagging quality. Do not require finov2 to call OpenDART directly.
+  What to do / Must NOT do: Add a converter that maps structured disclosure/audit facts into TEMIS `DartTopicCase` records and writes a JSON array suitable for temis `DART_TOPIC_CASES_PATH`. Include topic-tag extraction from a small deterministic Korean keyword dictionary, source URL `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=<rcept_no>`, document id, extraction confidence, and ISO freshness timestamp. Do not claim exhaustive tagging quality. Do not require temis to call OpenDART directly.
   Parallelization: Wave 3 | Blocked by: 3, 4, 5 | Blocks: 8, 9, 10
-  References (executor has NO interview context - be exhaustive): `../../finov2/fino-backend/app/schemas/dart_topic_search.py:10`, `../../finov2/fino-backend/tests/fixtures/dart_topic_cases.json:1`, `dart_search_mcp/tools/reports.py:8`, `dart_search_mcp/tools/disclosures.py:8`
-  Acceptance criteria (agent-executable): `uv run python -m unittest tests.test_temis_topic_case_export -v` exits 0; generated JSON validates required fields with `python -m json.tool`; sample records include a unique `case_id`, `company_identifier`, `auditor`, `topic_tags`, `source_url`, `document_id`, `extraction_confidence`, and `freshness_timestamp`; tests assert strict types matching the finov2 pydantic schema (`fiscal_year` is an int, `extraction_confidence` is a float in [0, 1], `freshness_timestamp` is an ISO-8601 string, `topic_tags` is a list of strings) so a finov2 `TypeAdapter(list[DartTopicCase])` validation would pass; evidence notes the file can be used by finov2 via `DART_TOPIC_CASES_PATH`.
+  References (executor has NO interview context - be exhaustive): `../../temis/fino-backend/app/schemas/dart_topic_search.py:10`, `../../temis/fino-backend/tests/fixtures/dart_topic_cases.json:1`, `dart_search_mcp/tools/reports.py:8`, `dart_search_mcp/tools/disclosures.py:8`
+  Acceptance criteria (agent-executable): `uv run python -m unittest tests.test_temis_topic_case_export -v` exits 0; generated JSON validates required fields with `python -m json.tool`; sample records include a unique `case_id`, `company_identifier`, `auditor`, `topic_tags`, `source_url`, `document_id`, `extraction_confidence`, and `freshness_timestamp`; tests assert strict types matching the temis pydantic schema (`fiscal_year` is an int, `extraction_confidence` is a float in [0, 1], `freshness_timestamp` is an ISO-8601 string, `topic_tags` is a list of strings) so a temis `TypeAdapter(list[DartTopicCase])` validation would pass; evidence notes the file can be used by temis via `DART_TOPIC_CASES_PATH`.
   QA scenarios (name the exact tool + invocation): happy: `uv run python -m unittest tests.test_temis_topic_case_export -v | tee .omo/evidence/task-6-temis-dart-mcp-hardening.txt` and write sample JSON to `.omo/evidence/task-6-temis-dart-mcp-hardening.json`; failure: a fact with empty source/receipt number is skipped or marked invalid and cannot produce a fake DART URL.
   Commit: Y | `feat(temis): generate DART topic case export`
 
@@ -143,7 +143,7 @@ Your next move: another session can run this plan as implementation work. Full e
   Commit: Y | `feat(downloads): extract bounded disclosure snippets`
 
 - [ ] 8. Add opt-in TEMIS export CLI and MCP surface
-  What to do / Must NOT do: Add a CLI command such as `temis-topic-cases` and an MCP tool such as `export_temis_topic_cases` that generate TEMIS-compatible JSON from `corp_code`, `bsns_year`, `reprt_code`, optional topic keywords, and output path. The command should be the operational adapter boundary: finov2 consumes the written JSON file rather than implementing OpenDART calls. Preserve existing commands and tools; update public surface tests to include the new opt-in command/tool if added.
+  What to do / Must NOT do: Add a CLI command such as `temis-topic-cases` and an MCP tool such as `export_temis_topic_cases` that generate TEMIS-compatible JSON from `corp_code`, `bsns_year`, `reprt_code`, optional topic keywords, and output path. The command should be the operational adapter boundary: temis consumes the written JSON file rather than implementing OpenDART calls. Preserve existing commands and tools; update public surface tests to include the new opt-in command/tool if added.
   Parallelization: Wave 3 | Blocked by: 3, 4, 5, 6, 7 | Blocks: 9, 10
   References (executor has NO interview context - be exhaustive): `cli.py:43`, `cli.py:265`, `server.py:1`, `dart_search_mcp/app.py:1`, `tests/test_public_surface.py:7`, `docs/tools.md:1`, `docs/cli.md:1`
   Acceptance criteria (agent-executable): `uv run dart temis-topic-cases --help` exits 0; MCP `list_tools()` includes the new tool while all previous 16 names remain; a mocked CLI run writes valid JSON to a temp file.
@@ -151,7 +151,7 @@ Your next move: another session can run this plan as implementation work. Full e
   Commit: Y | `feat(cli): add TEMIS DART topic case export`
 
 - [ ] 9. Update docs and generated tool references for TEMIS integration
-  What to do / Must NOT do: Update README and generated docs to explain the safe TEMIS flow: configure API key, resolve company code, search disclosures by corp code, extract audit/report facts, export topic cases, then point finov2 at the generated JSON with `DART_TOPIC_CASES_PATH=/absolute/path/to/dart_topic_cases.json` and `DART_TOPIC_SEARCH_ENABLED=true`. Include security notes about key redaction and no committed `.env`. Explicitly state that finov2 does not need a separate OpenDART adapter unless a future runtime job scheduler is added. Do not document live commands with real API keys or real unredacted URLs.
+  What to do / Must NOT do: Update README and generated docs to explain the safe TEMIS flow: configure API key, resolve company code, search disclosures by corp code, extract audit/report facts, export topic cases, then point temis at the generated JSON with `DART_TOPIC_CASES_PATH=/absolute/path/to/dart_topic_cases.json` and `DART_TOPIC_SEARCH_ENABLED=true`. Include security notes about key redaction and no committed `.env`. Explicitly state that temis does not need a separate OpenDART adapter unless a future runtime job scheduler is added. Do not document live commands with real API keys or real unredacted URLs.
   Parallelization: Wave 4 | Blocked by: 8 | Blocks: 10
   References (executor has NO interview context - be exhaustive): `README.md:1`, `README.md:13`, `README.md:38`, `README.md:88`, `docs/tools.md:1`, `docs/cli.md:1`, `scripts/generate_docs.py:1`
   Acceptance criteria (agent-executable): `uv run python scripts/generate_docs.py` exits 0; `git diff -- docs README.md` shows TEMIS export docs including `DART_TOPIC_CASES_PATH`; `uv run python scripts/qa.py` exits 0.
@@ -159,11 +159,11 @@ Your next move: another session can run this plan as implementation work. Full e
   Commit: Y | `docs(temis): document DART topic case export flow`
 
 - [ ] 10. Final compatibility, live-smoke, and scope-fidelity verification
-  What to do / Must NOT do: Run the full offline gate, secret gate, generated sample validation, and optional live smoke. Live smoke must sanitize evidence before writing. Confirm no finov2 files changed, no finov2 OpenDART adapter was created, and no runtime state is staged. Do not mark complete from self-report only.
+  What to do / Must NOT do: Run the full offline gate, secret gate, generated sample validation, and optional live smoke. Live smoke must sanitize evidence before writing. Confirm no temis files changed, no temis OpenDART adapter was created, and no runtime state is staged. Do not mark complete from self-report only.
   Parallelization: Wave 4 | Blocked by: 1-9 | Blocks: final delivery
-  References (executor has NO interview context - be exhaustive): this plan; `.omo/drafts/temis-dart-mcp-hardening.md`; `scripts/qa.py:1`; `.gitignore:1`; `../../finov2/fino-backend/app/schemas/dart_topic_search.py:10`
+  References (executor has NO interview context - be exhaustive): this plan; `.omo/drafts/temis-dart-mcp-hardening.md`; `scripts/qa.py:1`; `.gitignore:1`; `../../temis/fino-backend/app/schemas/dart_topic_search.py:10`
   Acceptance criteria (agent-executable): `git status --short` shows only intended source/docs/test/plan/evidence files; `uv run python scripts/qa.py` exits 0; generated TEMIS JSON sample passes `python -m json.tool`; secret safety gate passes; optional live smoke either passes with redacted evidence or records a missing-key skip.
-  QA scenarios (name the exact tool + invocation): happy: `uv run python scripts/qa.py | tee .omo/evidence/task-10-temis-dart-mcp-hardening.txt`; failure: `git diff --name-only ../../finov2` must be empty for this repo-local plan, `rg -n "OpenDART adapter|DART adapter" ../../finov2/fino-backend ../../finov2/fino-frontend ../../finov2/temis-ops` must not show a new finov2 adapter implementation from this work, and `rg -n "NICE|valuation|Layer 3 commercial" dart_search_mcp cli.py server.py README.md docs tests scripts` plus the secret safety gate must not show unsupported scope creep or leaked keys.
+  QA scenarios (name the exact tool + invocation): happy: `uv run python scripts/qa.py | tee .omo/evidence/task-10-temis-dart-mcp-hardening.txt`; failure: `git diff --name-only ../../temis` must be empty for this repo-local plan, `rg -n "OpenDART adapter|DART adapter" ../../temis/fino-backend ../../temis/fino-frontend ../../temis/temis-ops` must not show a new temis adapter implementation from this work, and `rg -n "NICE|valuation|Layer 3 commercial" dart_search_mcp cli.py server.py README.md docs tests scripts` plus the secret safety gate must not show unsupported scope creep or leaked keys.
   Commit: Y | `test(temis): verify DART MCP export readiness`
 
 ## Final verification wave
@@ -171,7 +171,7 @@ Your next move: another session can run this plan as implementation work. Full e
 - [ ] F1. Plan compliance audit: every todo has references, exact acceptance criteria, happy/failure QA, evidence path, and commit line.
 - [ ] F2. Code quality review: structured internals are small, typed, tested, and do not duplicate public formatting logic unnecessarily.
 - [ ] F3. Real manual QA: run CLI help, diagnostics, mocked TEMIS export, and optional live Samsung flow when `DART_API_KEY` is available; evidence must be redacted.
-- [ ] F4. Scope fidelity: no finov2 product edits, no finov2 OpenDART adapter, no NICE/Layer 3 implementation, no public command/tool removals, no committed runtime/secrets.
+- [ ] F4. Scope fidelity: no temis product edits, no temis OpenDART adapter, no NICE/Layer 3 implementation, no public command/tool removals, no committed runtime/secrets.
 
 ## Commit strategy
 - Commit by wave/todo, not one broad change.
@@ -194,5 +194,5 @@ Your next move: another session can run this plan as implementation work. Full e
 - No API key or key-bearing URL is printed or committed.
 - Company-name input is resolved to `corp_code` before disclosure search.
 - The repo can generate a TEMIS-compatible DART topic case JSON sample with source traceability.
-- README/docs explain that finov2 can consume the generated JSON by setting `DART_TOPIC_CASES_PATH`, so a separate finov2 OpenDART adapter is not required for this layer.
+- README/docs explain that temis can consume the generated JSON by setting `DART_TOPIC_CASES_PATH`, so a separate temis OpenDART adapter is not required for this layer.
 - The final git status contains only intentional plan/implementation/evidence changes and no runtime state.

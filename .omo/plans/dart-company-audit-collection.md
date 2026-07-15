@@ -3,9 +3,9 @@
 ## TL;DR (For humans)
 **What you'll get:** dart-search-mcp will be able to export the full OpenDART company list, find a company's annual report, download the source ZIP, identify/extract audit and consolidated-audit XML files, and run a resumable bulk collection that produces TEMIS-importable artifacts.
 
-**Why this approach:** OpenDART access already belongs in dart-search-mcp, while finov2/TEMIS should consume exported files or DB-import inputs. The plan keeps the current one-company TEMIS exporter intact and adds bulk orchestration around safer per-company artifacts and manifests.
+**Why this approach:** OpenDART access already belongs in dart-search-mcp, while temis/TEMIS should consume exported files or DB-import inputs. The plan keeps the current one-company TEMIS exporter intact and adds bulk orchestration around safer per-company artifacts and manifests.
 
-**What it will NOT do:** It will not write directly into finov2's production database, scrape DART viewer HTML as the primary source, or require PDF conversion in the first pass.
+**What it will NOT do:** It will not write directly into temis's production database, scrape DART viewer HTML as the primary source, or require PDF conversion in the first pass.
 
 **Effort:** Medium
 **Risk:** Medium - OpenDART ZIP contents vary by filing, and all-company collection needs resumability, API pacing, and clear failure reporting.
@@ -15,7 +15,7 @@ Your next move: start implementation from this plan, or ask for a high-accuracy 
 
 ---
 
-> TL;DR (machine): Medium effort / medium risk plan to add corp list export, audit/consolidated-audit XML extraction, and checkpointed bulk collection to dart-search-mcp without changing finov2 runtime behavior.
+> TL;DR (machine): Medium effort / medium risk plan to add corp list export, audit/consolidated-audit XML extraction, and checkpointed bulk collection to dart-search-mcp without changing temis runtime behavior.
 
 ## Scope
 ### Must have
@@ -34,7 +34,7 @@ Your next move: start implementation from this plan, or ask for a high-accuracy 
 - Update generated docs and README examples.
 
 ### Must NOT have (guardrails, anti-slop, scope boundaries)
-- No direct finov2/TEMIS database writes from dart-search-mcp.
+- No direct temis/TEMIS database writes from dart-search-mcp.
 - No automatic all-company crawl without explicit user-provided output path and year/report inputs.
 - No change to existing command names or existing MCP tool names.
 - No required live DART calls in the default test suite.
@@ -264,7 +264,7 @@ Wave 3:
 - [ ] F1. Plan compliance audit: verify every Must Have has a completed todo, every Must NOT Have remains true, and new tools/commands are documented.
 - [ ] F2. Code quality review: review parser boundaries, file writes, overwrite safety, API key redaction, and long-running bulk behavior.
 - [ ] F3. Real manual QA: run the CLI surfaces with a fixture or live API key and attach evidence under `.omo/evidence/`.
-- [ ] F4. Scope fidelity: confirm finov2 DB import/deploy was not added to dart-search-mcp and remains a downstream step.
+- [ ] F4. Scope fidelity: confirm temis DB import/deploy was not added to dart-search-mcp and remains a downstream step.
 
 ## Commit strategy
 - Use small commits by feature boundary:

@@ -757,7 +757,7 @@ class EmitTopicCasesFromFactsTests(unittest.TestCase):
             )
 
             for record in records:
-                # finov2 DartTopicCase 스키마와 필드 1:1 (temis_export.DartTopicCaseRecord 참고).
+                # temis DartTopicCase 스키마와 필드 1:1 (temis_export.DartTopicCaseRecord 참고).
                 self.assertEqual(set(record.keys()), _EXPECTED_TOPIC_CASE_FIELDS)
                 self.assertIsInstance(record["company_identifier"], str)
                 self.assertIsInstance(record["fiscal_year"], int)

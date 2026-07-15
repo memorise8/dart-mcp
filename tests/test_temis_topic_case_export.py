@@ -1,10 +1,10 @@
 """
 `dart_search_mcp.temis_export`에 대한 테스트.
 
-Task 6: 구조화된 감사보고서 사실(`AuditReportRecord`, Task 5)을 finov2가
+Task 6: 구조화된 감사보고서 사실(`AuditReportRecord`, Task 5)을 temis가
 `DART_TOPIC_CASES_PATH`로 소비하는 TEMIS `DartTopicCase` JSON 배열로 변환한다.
 
-핵심 계약(전역 제약 + finov2 `app/schemas/dart_topic_search.py`의 `DartTopicCase`,
+핵심 계약(전역 제약 + temis `app/schemas/dart_topic_search.py`의 `DartTopicCase`,
 frozen pydantic 모델과 정확히 필드/타입이 일치해야 함):
   case_id: str (고유, `dart-<topic>-<year>-<seq>` 패턴)
   company_identifier: str
@@ -19,7 +19,7 @@ frozen pydantic 모델과 정확히 필드/타입이 일치해야 함):
   extraction_confidence: float, [0.0, 1.0]
   freshness_timestamp: str (ISO-8601)
 
-finov2의 pydantic 스키마를 이 레포에서 직접 import하지 않는다(레포 간 결합/의존성
+temis의 pydantic 스키마를 이 레포에서 직접 import하지 않는다(레포 간 결합/의존성
 추가 위험 회피). 대신 위 계약을 이 테스트가 로컬에서 엄격한 타입으로 검증한다.
 
 레포 관례에 따라 `dart_search_mcp.tools.reports`를 import하기 전에 `server`를
@@ -483,7 +483,7 @@ class ExtractionConfidenceTests(unittest.TestCase):
 
 
 class TopicCasesToJsonTests(unittest.TestCase):
-    def test_serializes_to_json_array_matching_finov2_schema_shape(self) -> None:
+    def test_serializes_to_json_array_matching_temis_schema_shape(self) -> None:
         fact_1 = _fact(
             corp_code="00126380",
             corp_name="삼성전자",

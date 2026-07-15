@@ -59,14 +59,14 @@ JSONL(`audit_facts.jsonl`)과 요약 JSON(`<output>.summary.json`)을 만드는
 호출로 적합하지 않다) - `cli.py`의 `dart extract-audit-facts` 명령을
 통해서만 제공한다.
 
-## finalize: facts.jsonl -> finov2 DartTopicCase JSON
+## finalize: facts.jsonl -> temis DartTopicCase JSON
 
 `deserialize_parsed_report`는 `serialize_parsed_report`의 역함수로, JSONL 한
 행(dict)을 `ParsedAuditReport`로 복원한다. `emit_topic_cases_from_facts`는
 완결된 `audit_facts.jsonl`을 (in-memory 파싱 결과가 아니라) **다시 읽어**
 기존 어댑터(`dart_search_mcp.audit_facts_adapter.parsed_reports_to_topic_cases`,
 Task 2)와 변환기(`dart_search_mcp.temis_export.topic_cases_to_json`, Task 6)를
-재사용해 finov2 `DartTopicCase` JSON 배열을 만든다 - `cli.py`의
+재사용해 temis `DartTopicCase` JSON 배열을 만든다 - `cli.py`의
 `--emit-topic-cases` 옵션이 이 함수를 호출한다.
 """
 
@@ -568,7 +568,7 @@ def extract_audit_facts(
 
 
 # ---------------------------------------------------------------------------
-# topic_cases 산출 (facts.jsonl -> finov2 DartTopicCase JSON, finalize 단계)
+# topic_cases 산출 (facts.jsonl -> temis DartTopicCase JSON, finalize 단계)
 # ---------------------------------------------------------------------------
 
 
@@ -578,7 +578,7 @@ def emit_topic_cases_from_facts(
     *,
     freshness_timestamp: str,
 ) -> dict[str, Any]:
-    """완결된 사실 JSONL(`extract_audit_facts`의 output)을 다시 읽어 finov2
+    """완결된 사실 JSONL(`extract_audit_facts`의 output)을 다시 읽어 temis
     `DartTopicCase` JSON 배열(`dart_search_mcp.temis_export.topic_cases_to_json`)로
     변환해 `output_path`에 원자적으로(tmp+replace) 쓴다.
 

@@ -1,15 +1,15 @@
 """
-TEMIS(finov2) 호환 `DartTopicCase` JSON 생성기.
+TEMIS 호환 `DartTopicCase` JSON 생성기.
 
 `dart_search_mcp.tools.reports.AuditReportRecord`(Task 5의 회계감사인 구조화
-사실)을 finov2 `DART_TOPIC_CASES_PATH`가 그대로 읽어들이는 `DartTopicCase`
+사실)을 temis `DART_TOPIC_CASES_PATH`가 그대로 읽어들이는 `DartTopicCase`
 JSON 배열로 변환한다.
 
 설계 원칙:
   - 이 모듈은 순수/결정적이다. 네트워크 호출도, `datetime.now()` 같은 시계
     부수 효과도 없다. `freshness_timestamp`는 호출자가 주입한 문자열을 그대로
     쓴다 (실제 "지금" 시각을 주입하는 일은 Task 8 CLI 계층의 책임이다).
-  - finov2의 `DartTopicCase` pydantic 스키마(`app/schemas/dart_topic_search.py`)를
+  - temis의 `DartTopicCase` pydantic 스키마(`app/schemas/dart_topic_search.py`)를
     이 레포에서 직접 import하지 않는다 — 레포 간 결합과 (`sys.path` 조작 등)
     불안정한 의존을 피하기 위해서다. 대신 `DartTopicCaseRecord`가 그 스키마와
     필드명·타입을 정확히 미러링하고, 테스트가 엄격한 타입으로 그 계약을
@@ -95,8 +95,8 @@ _TOPIC_KEYWORD_EXCLUSIONS: dict[str, tuple[str, ...]] = {
 
 @dataclass(frozen=True, slots=True)
 class DartTopicCaseRecord:
-    """finov2 `DartTopicCase` pydantic 스키마와 필드명/타입이 1:1로 대응하는
-    이 레포의 불변 로컬 표현. finov2 스키마를 직접 import하지 않기 위해
+    """temis `DartTopicCase` pydantic 스키마와 필드명/타입이 1:1로 대응하는
+    이 레포의 불변 로컬 표현. temis 스키마를 직접 import하지 않기 위해
     이 모듈이 자체적으로 미러링한다 — 필드가 바뀌면 양쪽을 함께 갱신해야
     한다."""
 
@@ -340,6 +340,6 @@ def convert_audit_reports_to_topic_cases(
 
 
 def topic_cases_to_json(records: list[DartTopicCaseRecord]) -> str:
-    """`DartTopicCaseRecord` 목록을 finov2 `DART_TOPIC_CASES_PATH`가 바로
+    """`DartTopicCaseRecord` 목록을 temis `DART_TOPIC_CASES_PATH`가 바로
     읽을 수 있는 JSON 배열 문자열로 직렬화한다."""
     return json.dumps([record.to_dict() for record in records], ensure_ascii=False, indent=2)

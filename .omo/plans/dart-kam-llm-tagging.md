@@ -64,7 +64,7 @@ dart tag-kam --facts audit_facts.jsonl -o kam_tags.jsonl
 
 - `dart merge-kam-tags --facts audit_facts.jsonl --tags kam_tags.jsonl -o audit_facts.enriched.jsonl`:
   rcept_no join으로 `kam_tags` 컬럼 채운 **새 파일** 산출(① 불변). 매칭 없으면 []. 순수·결정론.
-- README/스펙에 tag-kam 사용법·비용·태소노미·finov2 연계(후속) 문서화.
+- README/스펙에 tag-kam 사용법·비용·태소노미·temis 연계(후속) 문서화.
 - 테스트: join 정확성, 미매칭 처리, 결정론.
 검증: `uv run python -m unittest` (전체)
 

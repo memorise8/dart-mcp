@@ -7,14 +7,14 @@
 ## 1. 목표와 범위
 
 `dart_collected/docs/`에 수집된 48,373건 감사보고서 XML(14GB)에서 **결정론적 파서**로
-핵심 감사 사실을 뽑아, 질의 가능한 구조화 산출물과 기존 finov2 파이프라인 입력을 만든다.
+핵심 감사 사실을 뽑아, 질의 가능한 구조화 산출물과 기존 temis 파이프라인 입력을 만든다.
 
 - **Phase ① (이번):** 규칙 기반 파서. 비용 0, 전수, 재현 가능.
   추출 대상: 감사인 · 감사의견 유형 · 계속기업 불확실성 여부 · KAM/강조사항 **원문 보존**.
 - **Phase ② (다음, 별도):** 보존된 KAM 원문을 LLM으로 주제 태깅. ①의 산출물을
   UPDATE만 하므로 재파싱·재다운로드 없음. 이번 설계는 ②가 공짜로 얹히도록 자리만 마련한다.
 
-범위 밖: LLM 호출(②), finov2 DB 쓰기(MCP는 JSON 산출만, finov2가 적재 — 기존 제약 유지),
+범위 밖: LLM 호출(②), temis DB 쓰기(MCP는 JSON 산출만, temis가 적재 — 기존 제약 유지),
 재무제표 수치 파싱, 연결/별도 구분 이상의 재무 분석.
 
 ## 2. 데이터 근거 (실측)
@@ -51,7 +51,7 @@ dart_collected/docs/<rcept>/<rcept>_<acode>.xml   dart_collected/manifest.json
    audit_facts.jsonl (1행/1공시)                    │
    + summary manifest                     기존 convert_audit_reports_to_topic_cases()
    ← 사용자가 원한 질의 테이블                        │
-   ← ②의 입력(KAM 원문 보존)               DartTopicCase JSON → finov2 (기존 경로 재사용)
+   ← ②의 입력(KAM 원문 보존)               DartTopicCase JSON → temis (기존 경로 재사용)
 ```
 
 - **파서는 순수 함수** (기존 `temis_export`와 동일 원칙: `datetime.now()` 등 부수효과 없음,
@@ -61,7 +61,7 @@ dart_collected/docs/<rcept>/<rcept>_<acode>.xml   dart_collected/manifest.json
 - ⚠️ **(B)는 손실 투영이다:** `AuditReportRecord`(→DartTopicCase)엔 `going_concern`/
   `going_concern_snippet`/`opinion_snippet`/`kam_present`/`stock_code`/`report_name`/
   `rcept_dt`/`settlement_month`/`parse_flags` 필드가 없어 DartTopicCase로 전파되지
-  않는다(의도됨). 이 필드들의 원천은 항상 `audit_facts.jsonl`(A) — finov2가 이 값들이
+  않는다(의도됨). 이 필드들의 원천은 항상 `audit_facts.jsonl`(A) — temis가 이 값들이
   필요하면 (A)를 직접 소비하거나 DartTopicCase 스키마를 확장해야 한다.
 
 ## 4. 산출 스키마 (A) — `ParsedAuditReport` / `audit_facts.jsonl`
@@ -122,7 +122,7 @@ XML은 `<TITLE>`로 대분류만 표시되고 감사의견/KAM은 "독립된 감
    `parse_flags.fiscal_year=false`로 남긴다.
 2. **산출물 범위 (확정):** 이번 v1에서 **둘 다** 낸다 — (A) `audit_facts.jsonl`(1차, 조회 테이블)
    + (B) `dart_topic_cases.json`(어댑터 → 기존 `convert_audit_reports_to_topic_cases` 재사용,
-   finov2 적재용). (B)는 기존 CLI/변환 재사용이라 저비용.
+   temis 적재용). (B)는 기존 CLI/변환 재사용이라 저비용.
 
 ## 7. 인터페이스 (CLI, 대량이므로 CLI 전용 — 기존 collect/bulk-audit 관례)
 

@@ -380,13 +380,13 @@ def securities(corp_code, report_type, bgn_de, end_de):
 @click.option("--keywords", default="", help='기본 토픽 키워드 사전에 추가할 항목, "slug:용어,slug2:용어2" 형식 (선택)')
 @click.option("-o", "--output", "output_path", required=True, help="TEMIS DartTopicCase JSON 배열을 쓸 출력 파일 경로")
 def temis_topic_cases(year, corp, code, reprt_code, keywords, output_path):
-    """감사보고서 사실(회계감사인)을 TEMIS(finov2) DartTopicCase JSON 배열로
+    """감사보고서 사실(회계감사인)을 TEMIS DartTopicCase JSON 배열로
     변환해 OUTPUT 경로에 씁니다 (opt-in 운영 adapter 경계 명령).
 
-    finov2는 OpenDART를 직접 호출하지 않습니다. 이 명령의 산출물은 항상 회사
-    1건 단위이며, finov2는 현재 DART_TOPIC_CASES_PATH로 이 파일을 직접
+    temis는 OpenDART를 직접 호출하지 않습니다. 이 명령의 산출물은 항상 회사
+    1건 단위이며, temis는 현재 DART_TOPIC_CASES_PATH로 이 파일을 직접
     읽습니다(파일 하나에 회사 1건). 여러 회사를 누적하는 DB import(case_id를
-    upsert 키로 사용) 모드는 finov2 쪽에서 별도로 진행 중입니다.
+    upsert 키로 사용) 모드는 temis 쪽에서 별도로 진행 중입니다.
 
     --code 또는 --corp 중 하나가 필요합니다. 둘 다 없거나, --corp가 여러
     회사와 매치되거나(모호) 해석되지 않으면(결과 없음) 오류 메시지를 출력하고
@@ -545,7 +545,7 @@ def bulk_audit_documents(
     "--emit-topic-cases",
     "emit_topic_cases_path",
     default="",
-    help="주어지면 팩트 추출 완료 후 이 경로에 finov2 DartTopicCase JSON 배열을 생성 (facts.jsonl을 다시 읽어 생성)",
+    help="주어지면 팩트 추출 완료 후 이 경로에 temis DartTopicCase JSON 배열을 생성 (facts.jsonl을 다시 읽어 생성)",
 )
 def extract_audit_facts_cmd(
     manifest_path,
@@ -568,7 +568,7 @@ def extract_audit_facts_cmd(
     제공합니다(장시간 실행되는 MCP 도구는 두지 않습니다).
 
     `--emit-topic-cases PATH`를 주면, 팩트 추출이 끝난 뒤(같은 명령 안에서)
-    방금 쓴 OUTPUT JSONL을 다시 읽어 finov2 `DartTopicCase` JSON 배열을
+    방금 쓴 OUTPUT JSONL을 다시 읽어 temis `DartTopicCase` JSON 배열을
     PATH에 생성합니다(finalize 단계, `dart_search_mcp.tools.extract_facts.
     emit_topic_cases_from_facts`).
     """
