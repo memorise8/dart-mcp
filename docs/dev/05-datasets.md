@@ -31,8 +31,10 @@ dart bulk-audit-documents --manifest dart_collected/manifest.json -o dart_collec
 dart extract-audit-facts --manifest ... --docs-dir dart_collected/docs -o dart_collected/audit_facts.jsonl --emit-topic-cases dart_collected/dart_topic_cases.json
 dart tag-kam --facts dart_collected/audit_facts.jsonl -o dart_collected/kam_tags.jsonl     # (캐시 증분)
 dart merge-kam-tags --facts ... --tags ... -o dart_collected/audit_facts.enriched.jsonl
-uv run python <scratchpad>/nice_yaksik_export.py all dart_collected/nice_yaksik_financials.jsonl   # 재무 DB
 ```
+- NICE 약식재무 단계는 현재 실행 명령이 없다. 당시 `scratchpad/nice_yaksik_export.py`가 Git과
+  작업트리에 없으므로, 스크립트를 복구·버전 관리한 뒤 [03](03-nice-financial-db.md)의 재현 상태를
+  갱신해야 한다.
 - OpenDART 일일한도 ~4만/일이 유일 실제 제약. 대량 단계는 전부 resume 지원.
 - 증분 운영: 신규 분기 공시가 나오면 같은 순서 재실행(cron 가능).
 

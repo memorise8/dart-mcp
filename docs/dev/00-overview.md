@@ -20,6 +20,8 @@
 - [03 NICE 약식재무 DB](03-nice-financial-db.md) — DART 재무 + 감사의견 → NICE 약식재무(ab08) 스키마
 - [04 공공데이터 MCP 생태계](04-public-data-mcp-ecosystem.md) — 휴폐업/국민연금/특허 companion 서버
 - [05 데이터셋](05-datasets.md) — dart_collected/ 수집물 목록
+- [06 재개 Runbook](06-resume-runbook.md) — 새 클론·새 세션의 환경 복원, 비추적 자산, 외부 의존성 점검
+- [07 로컬 아티팩트 인벤토리](07-local-artifact-inventory.md) — Git 제외 데이터의 스냅샷·행 수·SHA-256 복원 확인값
 
 ## 데이터 흐름 (큰 그림)
 ```

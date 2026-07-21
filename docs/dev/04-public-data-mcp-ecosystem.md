@@ -3,6 +3,16 @@
 NICE 데이터 중 DART가 못 채우는 것을 공개 API로 보완하는 **독립 MCP 저장소**들. 각 원천 = 별도 저장소
 (바운디드 컨텍스트·키·생명주기 분리). 조인은 **사업자번호**(DART 기업개황에서 확보)로 소비자가 수행.
 
+## 공식 사양 확인 기준 (2026-07-22)
+- **국세청 상태조회**: [공공데이터포털 API 명세](https://www.data.go.kr/data/15081808/openapi.do)를
+  이 문서의 상태조회 URL·최대 100건·일 100만건 제한의 권위로 삼는다.
+- **국민연금 사업장 내역**: [공공데이터포털 API 명세](https://www.data.go.kr/data/3046071/openapi.do)의
+  `NpsBplcInfoInqireServiceV2`와 3개 operation을 권위로 삼는다. 포털 메타데이터·제공 범위는
+  변경될 수 있으므로 라이브 검증 직전에 다시 확인한다.
+- **KIPRIS Plus**: [Open API 개발 가이드 (2024.03)](https://plus.kipris.or.kr/portal/bbs/view.do?bbsId=B0000001&nttId=1060)를
+  구현 전 기준 가이드로 사용한다. KIPRIS가 기능을 추가할 수 있으므로, 실제 서비스·파라미터는
+  스캐폴드 전 다시 확인하고 적용한 가이드 버전을 기록한다.
+
 ## nts-status-mcp — 국세청 사업자 휴폐업 ✅ 완성(로컬)
 `/data_raid/ruci_workspace/repo/mcp/nts-status-mcp` · 63 테스트 · 4 CLI + 1 MCP도구
 - **API**: `POST https://api.odcloud.kr/api/nts-businessman/v1/status?serviceKey=<KEY>`, body `{"b_no":[10자리…]}`(최대100). data.go.kr/data/15081808, 자동승인·무료, 100만/일.
