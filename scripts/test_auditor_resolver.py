@@ -71,3 +71,20 @@ def test_아무데서도_못찾으면_unresolved():
     resolved, source = resolve_auditor("<DOCUMENT><P>본문뿐</P></DOCUMENT>", "주식회사 어딘가")
     assert resolved == ""
     assert source == "unresolved"
+
+
+def test_표_셀에_한_글자씩_흩어진_서명도_찾는다():
+    # §13.4 실측: 서명란이 표 셀(TD)에 한 글자씩 흩어지는 경우 — 문단 경계
+    # 구분자가 TD-TD 사이에는 끼면 안 된다(끼면 상호가 글자 단위로 쪼개진다).
+    xml = (
+        "<DOCUMENT>"
+        "<TITLE>독립된 감사인의 감사보고서</TITLE>"
+        "<P>우리는 재무제표를 감사하였습니다.</P>"
+        "<P>서울특별시 강남구 테헤란로 123</P>"
+        "<TABLE><TR>"
+        "<TD>대</TD><TD>주</TD><TD>회</TD><TD>계</TD><TD>법</TD><TD>인</TD>"
+        "</TR></TABLE>"
+        "<TITLE>재 무 상 태 표</TITLE><P>자산총계</P>"
+        "</DOCUMENT>"
+    )
+    assert extract_tail_firm(xml) == "대주회계법인"
