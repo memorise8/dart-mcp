@@ -41,3 +41,18 @@ def test_부적정이_가장_먼저다():
 def test_아무_문구도_없으면_unknown():
     assert classify_opinion_fulltext("감사보고서 표지와 목차만 있는 문서") == "unknown"
     assert classify_opinion_fulltext("") == "unknown"
+
+
+def test_적정하게_표시_변형도_적정이다():
+    # 회계사 확인 (2026-08-17): "중요성의 관점에서 적정하게 표시 또는 공정하게 표시" = 적정의견
+    assert classify_opinion_fulltext(
+        "중요성의 관점에서 적정하게 표시하고 있습니다"
+    ) == "적정"
+    assert classify_opinion_fulltext(
+        "중요성의관점에서 적정하게 표시하고있습니다"
+    ) == "적정"
+
+
+def test_적정하게_변형도_한정이_이긴다():
+    text = "한정의견의 근거 ... 위 사항을 제외하고는 중요성의 관점에서 적정하게 표시하고 있습니다"
+    assert classify_opinion_fulltext(text) == "한정"
