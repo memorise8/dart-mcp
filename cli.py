@@ -62,6 +62,10 @@ from dart_search_mcp.tools.extract_facts import (
     emit_topic_cases_from_facts,
     extract_audit_facts,
 )
+from dart_search_mcp.tools.split_kam_cli import (
+    SplitKamSourceError,
+    run_split_kam,
+)
 from dart_search_mcp.tools.tag_kam_cli import (
     DEFAULT_BASE_URL as KAM_DEFAULT_BASE_URL,
 )
@@ -731,6 +735,43 @@ def merge_kam_tags_cmd(facts_path, tags_path, output_path):
     )
     if result["corrupt_facts_lines"] > 0:
         click.echo(f"주의: facts 파일에서 손상된 줄 {result['corrupt_facts_lines']}건을 건너뛰었습니다.")
+
+
+@cli.command("split-kam")
+@click.option(
+    "--facts",
+    "facts_path",
+    required=True,
+    help="kam_present 행을 담은 audit_facts.jsonl 경로 (--output과 같은 경로면 거부됩니다)",
+)
+@click.option(
+    "-o",
+    "--output",
+    "output_path",
+    required=True,
+    help="항목 단위 kam_items.jsonl을 쓸 파일 경로 (--facts와 달라야 함)",
+)
+def split_kam_cmd(facts_path, output_path):
+    """`dart extract-audit-facts`가 만든 audit_facts.jsonl에서 (회사,
+    회계연도)당 정본 공시 1건을 고르고, kam_present=true인 것만 골라
+    KAM(핵심감사사항) 원문을 항목 단위로 쪼개 item_kind를 붙인 뒤
+    OUTPUT(kam_items.jsonl)을 생성합니다.
+
+    LLM/네트워크/캐시/체크포인트가 필요 없는 순수 계산이라 전량이 몇 초에
+    끝납니다. 시계를 쓰지 않으므로 같은 입력이면 항상 같은 출력을 만듭니다.
+    """
+    try:
+        result = run_split_kam(facts_path, output_path)
+    except SplitKamSourceError as exc:
+        click.echo(f"오류: {exc}", err=True)
+        raise SystemExit(1)
+
+    kind_counts = result["kind_counts"]
+    click.echo(
+        f"분할 완료: 공시 {result['disclosures']}건 -> 항목 {result['items']}건 "
+        f"(kam {kind_counts.get('kam', 0)}, preamble {kind_counts.get('preamble', 0)}, "
+        f"going_concern_notice {kind_counts.get('going_concern_notice', 0)}) -> {output_path}"
+    )
 
 
 @cli.command()
