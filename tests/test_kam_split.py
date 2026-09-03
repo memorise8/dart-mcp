@@ -7,6 +7,13 @@ dart_kam_split.py`(92줄) + `tests/test_dart_kam_split.py`(93줄)의 분할
 더한다(`ItemKindClassificationTests` · `SplitKamItemsItemKindIntegrationTests`).
 분할 동작 자체(마커 우선순위·최소 길이·제목 규칙)는 원본과 동일해야 하므로
 옮긴 테스트도 기대값을 바꾸지 않는다.
+
+BRIEF-A(finov2 `.superpowers/sdd/2026-09-02-dart-chat-ui/
+BRIEF-A-kam-quality.md`) 작업①: 유형 E(「외부감사 실시내용」표, `kam`으로
+잘못 들어온 100건)에 `AUDIT_COMMUNICATION`을 붙이는 판정 테스트를 더한다
+(`AuditCommunicationClassificationTests`). 이 판정은 제목이 아니라
+본문(body)을 보므로 `classify_item_kind`는 `body` 매개변수를 새로 받는다
+— 기존 4종 판정(계속기업·A·C·D)은 제목만으로 이뤄져 그대로 유지된다.
 """
 
 from __future__ import annotations
@@ -35,6 +42,11 @@ CIRCLED_SAMPLE = (
 SINGLE_SAMPLE = PREAMBLE + (
     "임대료수익의 발생사실 재무제표에 대한 주석 24에서 설명한 바와 같이 회사는 당기 중 "
     "8,070백만원의 임대료수익을 인식하였습니다."
+)
+AUDIT_COMM_SAMPLE = (
+    "1. 회사측: 감사, 재무담당이사 등 3인 감사인측: 업무수행이사 외 1인 서면회의 "
+    "감사종료단계에서의 기말 감사결과 보고 "
+    "2. 회사측: 감사 등 2인 감사인측: 업무수행이사 외 1인 대면회의 내부통제 결과 보고"
 )
 
 
@@ -152,6 +164,44 @@ class ItemKindClassificationTests(unittest.TestCase):
         self.assertEqual(classify_item_kind(title), classify_item_kind(title))
 
 
+class AuditCommunicationClassificationTests(unittest.TestCase):
+    """`classify_item_kind`의 유형 E(「외부감사 실시내용」표) 판정 — finov2
+    BRIEF-A-kam-quality.md 작업①. 제목이 아니라 본문(body)을 본다.
+    """
+
+    def test_gwangnim_style_body_is_audit_communication(self) -> None:
+        # 광림(2026) 형태: 회사측:/감사인측:/업무수행이사/서면회의 4개 어휘.
+        title = "3 2026년 03월 06일 회사측: 감사감사인측: 업무수행이사 등 2인 서면회의"
+        body = title + " 감사종료단계에서의 기말 감사결과 보고"
+        self.assertEqual(classify_item_kind(title, body), ItemKind.AUDIT_COMMUNICATION)
+
+    def test_single_marker_body_is_not_audit_communication(self) -> None:
+        # 오탐 방지 고정 확인: 어휘 1개만으로는 판정하지 않는다(2개 이상
+        # 요구). "감사인측:" 같은 어휘가 진짜 KAM 본문에 인용될 수 있어서다.
+        title = "매출채권 손상평가"
+        body = "매출채권 손상평가와 관련하여 감사인측: 의 절차를 검토하였다"
+        self.assertEqual(classify_item_kind(title, body), ItemKind.KAM)
+
+    def test_going_concern_notice_takes_priority_over_audit_communication_markers(self) -> None:
+        # 판정 순서 고정 확인: 도입 문구(계속기업 등)가 유형 E보다 먼저다.
+        # 본문에 유형 E 어휘가 섞여 있어도 먼저 걸리는 규칙이 이긴다.
+        title = "우리는 계속기업 관련 중요한 불확실성 단락에 기술된 사항에 추가하여, 아래 사항을 핵심감사사항으로 결정하였습니다"
+        body = title + " 회사측: 감사인측: 업무수행이사 서면회의"
+        self.assertEqual(classify_item_kind(title, body), ItemKind.GOING_CONCERN_NOTICE)
+
+    def test_no_body_argument_never_classifies_as_audit_communication(self) -> None:
+        # body 를 생략하면(기본값 "") 제목만으로는 유형 E 를 판정할 수 없다
+        # — 실제 유형 E 는 제목이 정상 KAM 처럼 보이는 경우가 있어(예:
+        # "1115호 기준서에 따른 …") 본문을 봐야 하기 때문이다.
+        title = "회사측: 감사인측: 업무수행이사 서면회의"
+        self.assertEqual(classify_item_kind(title), ItemKind.KAM)
+
+    def test_is_deterministic(self) -> None:
+        title = "3 2026년 03월 06일 회사측: 감사감사인측: 업무수행이사 등 2인 서면회의"
+        body = title + " 감사종료단계에서의 기말 감사결과 보고"
+        self.assertEqual(classify_item_kind(title, body), classify_item_kind(title, body))
+
+
 class SplitKamItemsItemKindIntegrationTests(unittest.TestCase):
     """`split_kam_items`가 실제로 각 항목에 `kind`를 붙이는지 확인한다."""
 
@@ -162,6 +212,11 @@ class SplitKamItemsItemKindIntegrationTests(unittest.TestCase):
     def test_single_item_carries_kind_field(self) -> None:
         items = split_kam_items(SINGLE_SAMPLE)
         self.assertEqual(items[0].kind, ItemKind.KAM)
+
+    def test_split_items_carry_audit_communication_kind(self) -> None:
+        items = split_kam_items(AUDIT_COMM_SAMPLE)
+        self.assertEqual(len(items), 2)
+        self.assertTrue(all(item.kind == ItemKind.AUDIT_COMMUNICATION for item in items))
 
 
 if __name__ == "__main__":

@@ -55,6 +55,7 @@ class ItemKind(StrEnum):
     KAM = "kam"  # 실제 핵심감사사항
     PREAMBLE = "preamble"  # 도입 문구 (아래 유형 A · C)
     GOING_CONCERN_NOTICE = "going_concern_notice"  # 계속기업 경고 도입 문구 (유형 B)
+    AUDIT_COMMUNICATION = "audit_communication"  # 「외부감사 실시내용」 표(유형 E). KAM 이 아니다
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,7 +94,7 @@ def _split_by(
             continue
         title = _extract_title(body)
         items.append(
-            KamItem(item_no=to_no(match.group(1)), title=title, body=body, kind=classify_item_kind(title))
+            KamItem(item_no=to_no(match.group(1)), title=title, body=body, kind=classify_item_kind(title, body))
         )
     return items or None
 
@@ -126,7 +127,7 @@ def split_kam_items(kam_raw: str) -> list[KamItem]:
     if len(single) < _MIN_BODY_LEN:
         return []
     title = _extract_title(single)
-    return [KamItem(item_no=1, title=title, body=single, kind=classify_item_kind(title))]
+    return [KamItem(item_no=1, title=title, body=single, kind=classify_item_kind(title, single))]
 
 
 # ---------------------------------------------------------------------------
@@ -156,20 +157,47 @@ _KAM_DECLARATION_PREFIXES: Final[tuple[str, ...]] = ("핵심감사사항은", "�
 _COMMUNICATION_PREFIX: Final[str] = "우리는아래에기술된사항을"
 _COMMUNICATION_MARK: Final[str] = "커뮤니케이션할핵심감사사항"
 
+# 유형 E (「외부감사 실시내용」 표, 100건, finov2 BRIEF-A-kam-quality.md) —
+# 감사위원회 커뮤니케이션 내역 표가 KAM 으로 통째로 들어온 것. 도입 문구가
+# 아니라 아예 다른 절이라 제목만으로는 못 잡는다(제목이 정상 KAM 제목처럼
+# 보이는 경우가 있다) — 그래서 이 판정만 본문(body)을 본다. 아래 어휘 중
+# 2개 이상이 본문에 나오면 커뮤니케이션 표로 본다. 1개만 요구하면 "감사인
+# 측:" 같은 어휘가 진짜 KAM 본문 인용에 오탐할 수 있어 2개로 고정한다(공백
+# 정규화 없이, 원문 그대로 부분 문자열 매칭 — 실측으로 100건 확인, task
+# 지시서 참조).
+_AUDIT_COMMUNICATION_MARKERS: Final[tuple[str, ...]] = (
+    "회사측:",
+    "감사인측:",
+    "업무수행이사",
+    "대면회의",
+    "서면회의",
+    "구두회의",
+)
+_AUDIT_COMMUNICATION_MIN_MARKERS: Final[int] = 2
+
 
 def _strip_all_whitespace(text: str) -> str:
     return "".join(text.split())
 
 
-def classify_item_kind(title: str) -> ItemKind:
-    """항목 제목으로 `item_kind`를 판정한다.
+def _count_audit_communication_markers(body: str) -> int:
+    return sum(1 for marker in _AUDIT_COMMUNICATION_MARKERS if marker in body)
 
-    아래 순서대로 검사한다(공백을 모두 제거한 제목 기준):
-    1. 계속기업 관련 불확실성 단락 도입 문구 포함 -> GOING_CONCERN_NOTICE
-    2. 한정의견 근거 단락 도입 문구 포함 -> GOING_CONCERN_NOTICE
-    3. 핵심감사사항 선정 선언으로 시작 -> PREAMBLE
-    4. 커뮤니케이션 선언으로 시작하거나 그 표현을 포함 -> PREAMBLE
-    5. 그 외 -> KAM
+
+def classify_item_kind(title: str, body: str = "") -> ItemKind:
+    """항목 제목(및 본문)으로 `item_kind`를 판정한다.
+
+    아래 순서대로 검사한다:
+    1. 계속기업 관련 불확실성 단락 도입 문구 포함(제목, 공백 제거 기준) -> GOING_CONCERN_NOTICE
+    2. 한정의견 근거 단락 도입 문구 포함(제목, 공백 제거 기준) -> GOING_CONCERN_NOTICE
+    3. 핵심감사사항 선정 선언으로 시작(제목, 공백 제거 기준) -> PREAMBLE
+    4. 커뮤니케이션 선언으로 시작하거나 그 표현을 포함(제목, 공백 제거 기준) -> PREAMBLE
+    5. 「외부감사 실시내용」 표 어휘가 본문에 2개 이상(원문 그대로, 공백
+       제거 없이) -> AUDIT_COMMUNICATION — 도입 문구(1~4)보다 나중에 본다
+    6. 그 외 -> KAM
+
+    `body`를 생략하면(빈 문자열) 5번 검사는 항상 통과하지 못한다 — 제목만
+    으로는 유형 E를 판정할 수 없기 때문이다(위 이유 참조).
     """
     normalized = _strip_all_whitespace(title)
     if _GOING_CONCERN_UNCERTAINTY_MARK in normalized:
@@ -180,4 +208,6 @@ def classify_item_kind(title: str) -> ItemKind:
         return ItemKind.PREAMBLE
     if normalized.startswith(_COMMUNICATION_PREFIX) or _COMMUNICATION_MARK in normalized:
         return ItemKind.PREAMBLE
+    if _count_audit_communication_markers(body) >= _AUDIT_COMMUNICATION_MIN_MARKERS:
+        return ItemKind.AUDIT_COMMUNICATION
     return ItemKind.KAM
