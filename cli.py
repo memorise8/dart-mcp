@@ -774,6 +774,27 @@ def split_kam_cmd(facts_path, output_path):
     )
 
 
+@cli.command("extract-policy-stances")
+@click.option("--facts", default="dart_collected/audit_facts.jsonl", show_default=True)
+@click.option("--docs", default="dart_collected/docs", show_default=True)
+@click.option("-o", "--output", default="dart_collected/policy_stance.jsonl", show_default=True)
+@click.option("--topics", default="STD_EARLY_ADOPTION,PPE_MEASUREMENT,REVENUE_METHOD,IP_MEASUREMENT", show_default=True)
+@click.option("--llm/--no-llm", default=False, help="규칙이 못 가른 블록만 gpt-5.4-mini 에 묻는다")
+@click.option("--limit", type=int, default=None)
+def extract_policy_stances_cmd(facts: str, docs: str, output: str, topics: str, llm: bool, limit: int | None) -> None:
+    """회계정책 주석에서 회사의 선택(기준서 조기적용 등)을 판정해 policy_stance.jsonl 로 낸다."""
+    from dart_search_mcp.tools.policy_stance_cli import PolicyStanceSourceError, run_extract_policy_stances
+    try:
+        s = run_extract_policy_stances(facts_path=Path(facts), docs_dir=Path(docs), output_path=Path(output),
+                                       topics=tuple(t.strip() for t in topics.split(",") if t.strip()),
+                                       use_llm=llm, limit=limit)
+    except PolicyStanceSourceError as exc:
+        click.echo(f"오류: {exc}", err=True); raise SystemExit(1)
+    click.echo(f"추출 완료: 보고서 {s['reports']}건 -> 행 {s['rows']}건, LLM {s['llm_calls']}회, {s['elapsed_sec']}s")
+    for topic, dist in s["by_topic"].items():
+        click.echo(f"  {topic}: {dist} (상한 도달 {s['capped_ratio'].get(topic, 0):.1%})")
+
+
 @cli.command()
 def serve():
     """MCP 서버를 시작합니다."""
