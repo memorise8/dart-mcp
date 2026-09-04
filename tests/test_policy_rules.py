@@ -249,6 +249,19 @@ class IpRulesTests(unittest.TestCase):
         self.assertEqual(j.value, "FAIR_VALUE_MODEL")
         self.assertIn("공정가치모형으로 변경", j.evidence)
 
+    def test_변경한_사항_없다는_부정형은_긍정이_아니다_재리뷰_Important_2(self) -> None:
+        """재리뷰 Important #2 재현: "…변경한 사항은 없습니다"는 부정형인데 단정 어미 가드가
+        없으면 그대로 매치돼 FAIR_VALUE_MODEL 로 확정됐다(목록 맨 앞이라 최우선)."""
+        text = "당사는 투자부동산에 대하여 원가모형에서 공정가치모형으로 변경한 사항은 없습니다."
+        j = judge(self.spec, _blk(text, None, "투자부동산"))
+        self.assertEqual(j.value, UNDETERMINED)
+
+    def test_변경하는_경우_조건형은_긍정이_아니다_재리뷰_Important_2(self) -> None:
+        """재리뷰 Important #2 재현: "…변경하는 경우"는 조건형이라 회사의 확정된 선택이 아니다."""
+        text = "회사가 공정가치모형으로 변경하는 경우 이를 소급 적용합니다."
+        j = judge(self.spec, _blk(text, None, "투자부동산"))
+        self.assertNotEqual(j.value, "FAIR_VALUE_MODEL")
+
 
 class EvidenceSentenceTests(unittest.TestCase):
     """R1: 400자 넘는(문장 경계 없는 표) 텍스트에서도 pos 를 품은 구절이 살아남는다."""
