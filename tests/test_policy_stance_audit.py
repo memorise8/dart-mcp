@@ -220,6 +220,10 @@ class MissingXmlTests(unittest.TestCase):
             self.assertEqual(rep["totals"]["evidence_in_block"]["checked"], 0)
             self.assertEqual(rep["totals"]["evidence_in_block"]["violations"], 0)
             self.assertEqual(rep["violations"]["evidence_in_block"], [])
+            # N4: XML 결손은 "확인 못함"(unchecked) 이지 "설계상 적용 대상 아님"(not_applicable)
+            # 이 아니다 — foreign_standard 등 다른 플래그의 not_applicable 과 섞이면 안 된다.
+            self.assertEqual(rep["totals"]["evidence_in_block"]["unchecked"], 1)
+            self.assertEqual(rep["totals"]["evidence_in_block"]["not_applicable"], 0)
             md = (t / "audit.md").read_text(encoding="utf-8")
             self.assertIn("XML 없음", md)
 
@@ -411,11 +415,14 @@ class RowValidationTests(unittest.TestCase):
             self.assertIn("rcept_no", str(ctx.exception))
 
 
-class UncheckedFlagTests(unittest.TestCase):
-    """Q-M2: TOPICS 밖 주제 코드는 pattern_in_evidence 가 None(검사 제외)을 돌려준다 —
-    "위반 0" 과 구분되도록 totals[flag]["unchecked"] 로 드러나야 한다."""
+class NotApplicableVsUncheckedTests(unittest.TestCase):
+    """N4: `unchecked = total_rows - checked`(Q-M2) 는 "설계상 이 플래그가 이 행에 적용되지
+    않는다"(not_applicable — 예: T1 이 아닌 행의 foreign_standard, 미등록 주제의
+    pattern_in_evidence)와 "적용은 되는데 XML 을 못 읽어 확인 못했다"(unchecked)를 구분하지
+    못했다. T1 이 아닌 모든 행이 foreign_standard 의 "미검사"에 잡혀, 진짜 등록 누락 신호가
+    거대한 정상 수치에 묻혔다. 이제 둘을 분리한다."""
 
-    def test_알수없는_주제코드_행은_pattern_in_evidence가_unchecked로_잡힌다(self) -> None:
+    def test_TOPICS_밖_주제코드는_pattern_in_evidence가_not_applicable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             t = Path(tmp)
             docs = t / "docs"
@@ -434,9 +441,36 @@ class UncheckedFlagTests(unittest.TestCase):
 
             self.assertEqual(rep["totals"]["pattern_in_evidence"]["checked"], 0)
             self.assertEqual(rep["totals"]["pattern_in_evidence"]["violations"], 0)
-            self.assertEqual(rep["totals"]["pattern_in_evidence"]["unchecked"], 1)
+            self.assertEqual(rep["totals"]["pattern_in_evidence"]["not_applicable"], 1)
+            self.assertEqual(rep["totals"]["pattern_in_evidence"]["unchecked"], 0)
             md = (t / "audit.md").read_text(encoding="utf-8")
+            self.assertIn("미적용", md)
             self.assertIn("미검사", md)
+
+    def test_T1이_아닌_행은_foreign_standard가_not_applicable(self) -> None:
+        """재리뷰가 직접 지적한 예시(PPE 1행: foreign_standard checked=0)를 그대로 고정한다 —
+        이제는 unchecked 가 아니라 not_applicable 이어야 한다(T1 전용 플래그를 T1 아닌 행에
+        적용 안 하는 것은 설계이지, XML 을 못 읽은 게 아니다)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            docs = t / "docs"
+            body = "유형자산은 원가모형을 적용합니다."
+            _write_doc(docs, "P1", body)
+            rows = [
+                {
+                    "rcept_no": "P1", "corp_code": "1", "fiscal_year": 2025,
+                    "topic": "PPE_MEASUREMENT", "subject": None, "value": "COST_MODEL",
+                    "evidence": body, "method": "rule",
+                    "confidence": 1.0, "block_offset": 0, "parser_version": "ps-v1",
+                },
+            ]
+            stances = t / "policy_stance.jsonl"
+            _write_stances(stances, rows)
+            rep = run_policy_stance_audit(stances_path=stances, docs_dir=docs, report_path=t / "audit.md")
+
+            self.assertEqual(rep["totals"]["foreign_standard"]["checked"], 0)
+            self.assertEqual(rep["totals"]["foreign_standard"]["not_applicable"], 1)
+            self.assertEqual(rep["totals"]["foreign_standard"]["unchecked"], 0)
 
 
 if __name__ == "__main__":

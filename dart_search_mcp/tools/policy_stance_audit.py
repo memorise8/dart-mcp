@@ -44,6 +44,12 @@ FLAGS: tuple[str, ...] = ("evidence_in_block", "pattern_in_evidence", "foreign_s
 # foreign_standard·table_fragment·capped 는 그 자체(True)가 이상 징후라 True 일 때 위반이다.
 _VIOLATION_WHEN_FALSE = frozenset({"evidence_in_block", "pattern_in_evidence"})
 
+# N4: "이 플래그는 이 행에 설계상 적용되지 않는다"(not_applicable) 와 "적용은 되는데 XML 을
+# 못 읽어 확인 못했다"(unchecked) 를 구분하는 표지. 문자열 두 값 다 bool 과 절대 같아지지 않아
+# (`False == "not_applicable"` 은 False) `_row_flags`/집계에서 안전하게 분기할 수 있다.
+_NOT_APPLICABLE = "not_applicable"
+_UNCHECKED = "unchecked"
+
 
 class PolicyStanceAuditRowError(Exception):
     """stances jsonl 행에 필수 키(rcept_no·topic)가 없을 때(Q-M1) — policy_stance_gate.
@@ -149,31 +155,48 @@ def _effective_method(row: dict[str, Any]) -> str:
     return "combo" if _is_combo_row(row) else (row.get("method") or "")
 
 
-def _row_flags(row: dict[str, Any], text: str | None) -> dict[str, bool]:
+def _row_flags(row: dict[str, Any], text: str | None) -> dict[str, bool | str]:
+    """행마다 5개 플래그를 계산한다. 값은 셋 중 하나다:
+    - True/False — 검사됨(위반 여부)
+    - `_NOT_APPLICABLE` — 설계상 이 method/주제에는 이 플래그가 아예 적용되지 않는다
+      (예: method=="none" 행의 pattern_in_evidence·foreign_standard·table_fragment·capped,
+      T1 이 아닌 행의 foreign_standard, TOPICS/_AUDIT_KEYWORDS 에 없는 주제의 pattern_in_evidence)
+    - `_UNCHECKED` — 플래그는 적용 대상이지만 rcept_no 의 XML 을 못 읽어 확인할 수 없다
+      (evidence_in_block, 콤보 행의 pattern_in_evidence)
+
+    N4: 이 둘을 구분하지 않으면 "설계상 정상"인 거대한 숫자(예: T1 이 아닌 모든 행의
+    foreign_standard)에 "주제를 추가하고 등록을 잊었다"는 신호가 묻힌다."""
     evidence = row.get("evidence") or ""
     method = row.get("method") or ""
     topic = row.get("topic")
     subject = row.get("subject")
     value = row.get("value")
-    flags: dict[str, bool] = {}
+
     eib = _evidence_in_block(evidence, method, text, row.get("block_offset"))
-    if eib is not None:
-        flags["evidence_in_block"] = eib
+    flags: dict[str, bool | str] = {"evidence_in_block": _UNCHECKED if eib is None else eib}
+
     if method == "none":
-        return flags  # 판단 불가 행은 evidence_in_block 만 본다 — 나머지는 판정 자체가 없어 무의미
+        # 판단 불가 행은 evidence_in_block 만 본다 — 나머지는 판정 자체가 없어 무의미(설계상
+        # 적용 대상이 아니다).
+        for flag in ("pattern_in_evidence", "foreign_standard", "table_fragment", "capped"):
+            flags[flag] = _NOT_APPLICABLE
+        return flags
+
     if _is_combo_row(row):
         pie = _pattern_in_evidence_combo(topic, text, row.get("block_offset"))
+        flags["pattern_in_evidence"] = _UNCHECKED if pie is None else pie
     elif method == "rule":
         pie = _pattern_in_evidence_rule(topic, value, evidence)
+        flags["pattern_in_evidence"] = _NOT_APPLICABLE if pie is None else pie
     elif method in ("llm", "llm_verified"):
         pie = _pattern_in_evidence_llm(topic, evidence)
+        flags["pattern_in_evidence"] = _NOT_APPLICABLE if pie is None else pie
     else:
-        pie = None
-    if pie is not None:
-        flags["pattern_in_evidence"] = pie
+        flags["pattern_in_evidence"] = _NOT_APPLICABLE
+
     fs = _foreign_standard(topic, subject, evidence)
-    if fs is not None:
-        flags["foreign_standard"] = fs
+    flags["foreign_standard"] = _NOT_APPLICABLE if fs is None else fs
+
     flags["table_fragment"] = _table_fragment(evidence)
     flags["capped"] = _capped(evidence)
     return flags
@@ -226,7 +249,9 @@ def run_policy_stance_audit(
         return _last_text
 
     group_rows: dict[tuple[str, str], int] = defaultdict(int)
-    group_flags: dict[tuple[str, str], dict[str, dict[str, int]]] = defaultdict(lambda: defaultdict(lambda: {"checked": 0, "violations": 0}))
+    group_flags: dict[tuple[str, str], dict[str, dict[str, int]]] = defaultdict(
+        lambda: defaultdict(lambda: {"checked": 0, "violations": 0, "not_applicable": 0, "unchecked": 0})
+    )
     violations: dict[str, list[list[Any]]] = defaultdict(list)
     samples: dict[str, list[dict[str, Any]]] = defaultdict(list)
     missing_xml = 0
@@ -240,9 +265,16 @@ def run_policy_stance_audit(
         flags = _row_flags(row, text)
         key = (topic, _effective_method(row))
         group_rows[key] += 1
-        for flag, ok in flags.items():
-            is_violation = (not ok) if flag in _VIOLATION_WHEN_FALSE else ok
+        for flag, val in flags.items():
             fstat = group_flags[key][flag]
+            if val == _NOT_APPLICABLE:
+                fstat["not_applicable"] += 1
+                continue
+            if val == _UNCHECKED:
+                fstat["unchecked"] += 1
+                continue
+            ok = val
+            is_violation = (not ok) if flag in _VIOLATION_WHEN_FALSE else ok
             fstat["checked"] += 1
             if is_violation:
                 fstat["violations"] += 1
@@ -272,23 +304,29 @@ def run_policy_stance_audit(
                     "checked": fs["checked"],
                     "violations": fs["violations"],
                     "ratio": (fs["violations"] / fs["checked"]) if fs["checked"] else 0.0,
+                    "not_applicable": fs["not_applicable"],
+                    "unchecked": fs["unchecked"],
                 }
                 for flag, fs in flags_map.items()
             },
         }
 
-    total_rows = len(rows)
     totals: dict[str, dict[str, Any]] = {}
     for flag in FLAGS:
         checked = sum(g["flags"].get(flag, {}).get("checked", 0) for g in by_group.values())
         viol = sum(g["flags"].get(flag, {}).get("violations", 0) for g in by_group.values())
+        not_applicable = sum(g["flags"].get(flag, {}).get("not_applicable", 0) for g in by_group.values())
+        unchecked = sum(g["flags"].get(flag, {}).get("unchecked", 0) for g in by_group.values())
         totals[flag] = {
             "checked": checked,
             "violations": viol,
             "ratio": (viol / checked) if checked else 0.0,
-            # 주제를 새로 추가하고 _AUDIT_KEYWORDS 등록을 잊는 등, 플래그가 조용히 검사 대상에서
-            # 빠지면 "위반 0" 과 구분이 안 된다(Q-M2) — unchecked 로 드러낸다.
-            "unchecked": total_rows - checked,
+            # Q-M2 가 원한 신호("주제를 추가하고 _AUDIT_KEYWORDS 등록을 잊었다")는 not_applicable
+            # (설계상 이 플래그가 이 행에 적용되지 않음 — 예: T1 아닌 행의 foreign_standard)과
+            # unchecked(XML 을 못 읽어 확인 불가)를 구분해야 드러난다(N4) — 섞으면 "설계상 정상"인
+            # 거대한 not_applicable 숫자에 진짜 등록 누락 신호가 묻힌다.
+            "not_applicable": not_applicable,
+            "unchecked": unchecked,
         }
 
     result: dict[str, Any] = {
@@ -313,10 +351,13 @@ def _write_report(report_path: Path, result: dict[str, Any], samples: dict[str, 
             "evidence_in_block 검사·종료코드 판정에서 제외했다(Q-I4)."
         )
     lines += ["", "## 전체 플래그 요약", ""]
-    lines += ["| 플래그 | 검사 | 위반 | 비율 | 미검사 |", "|---|---|---|---|---|"]
+    lines += ["| 플래그 | 검사 | 위반 | 비율 | 미적용 | 미검사 |", "|---|---|---|---|---|---|"]
     for flag in FLAGS:
         t = result["totals"][flag]
-        lines.append(f"| {flag} | {t['checked']} | {t['violations']} | {t['ratio']:.1%} | {t['unchecked']} |")
+        lines.append(
+            f"| {flag} | {t['checked']} | {t['violations']} | {t['ratio']:.1%} | "
+            f"{t['not_applicable']} | {t['unchecked']} |"
+        )
 
     lines += ["", "## (주제, 판정방식) 별", ""]
     for key, g in sorted(result["by_group"].items()):
