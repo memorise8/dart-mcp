@@ -355,6 +355,38 @@ class RevenueRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk(text, None, "수익인식"))
         self.assertEqual(j.value, "OVER_TIME")
 
+    def test_시점에_수익을_인식과_기간에_걸쳐_BOTH는_회귀하지_않는다_재리뷰_I3(self) -> None:
+        """재리뷰 Important #3 가드 추가 후에도 브리프의 원래 BOTH 시나리오(POINT_IN_TIME 이
+        OVER_TIME 보다 문장 순서상 먼저 나옴)는 그대로 BOTH 여야 한다 — "기간에 걸쳐" 가
+        "시점에 수익을 인식" 보다 뒤에 나오므로 신규 strip_fn(같은 문장에서 "기간에 걸쳐" 가
+        먼저 나올 때만 뒤의 POINT 구절을 지움)이 적용되지 않는다."""
+        text = "Food service 수입에 대하여 시점에 수익을 인식하고 있습니다. 임대수입에 대하여 기간에 걸쳐 수익을 인식하고 있습니다."
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, "BOTH")
+
+    def test_기간에_걸쳐_뒤의_시점에_수익을_인식하지_않습니다는_OVER_TIME_재리뷰_I3(self) -> None:
+        """재리뷰 Important #3(b) 재현: "공사수익은 진행률에 따라 기간에 걸쳐 인식합니다.
+        통제가 이전되지 않는 시점에 수익을 인식하지 않습니다."는 OVER_TIME 단독 회사인데,
+        부정 가드 없는 "시점에 수익을 인식"이 그대로 매치돼 BOTH 로 잘못 승격됐었다."""
+        text = "공사수익은 진행률에 따라 기간에 걸쳐 인식합니다. 통제가 이전되지 않는 시점에 수익을 인식하지 않습니다."
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, "OVER_TIME")
+
+    def test_기간에_걸쳐_뒤의_시점에_수익을_인식은_부정_없어도_OVER_TIME_재리뷰_I3b(self) -> None:
+        """재리뷰 Important #3(b) 단독 검증(부정어 없이도): 같은 문장 안에서 "기간에 걸쳐"가
+        먼저 나오고 그 뒤에 "시점에 수익을 인식"이 이어지면(부정형이 아니어도) POINT_IN_TIME
+        으로 승격하지 않는다 — strip_point_after_over_time 전처리가 이 케이스를 지운다."""
+        text = "공사수익은 기간에 걸쳐 인식하고 있으며, 참고로 다른 시점에 수익을 인식하기도 합니다."
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, "OVER_TIME")
+
+    def test_시점에_수익을_인식하지_않습니다_단독은_UNDETERMINED_재리뷰_I3a(self) -> None:
+        """재리뷰 Important #3(a) 단독 검증("기간에 걸쳐" 없이도): 부정형 "시점에 수익을
+        인식하지 않습니다"만 있으면 POINT_IN_TIME 으로 잡히지 않아야 한다."""
+        text = "회사는 특정 조건이 충족되는 시점에 수익을 인식하지 않습니다."
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, UNDETERMINED)
+
 
 class IpRulesTests(unittest.TestCase):
     spec = TOPICS["IP_MEASUREMENT"]

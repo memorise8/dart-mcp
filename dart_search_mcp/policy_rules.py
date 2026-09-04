@@ -50,6 +50,11 @@ class TopicSpec:
     positive: tuple[tuple[re.Pattern[str], str], ...]
     fallback: tuple[tuple[re.Pattern[str], str], ...]
     combo_value: str | None = None
+    # 재리뷰 Important #3(I3): 일반 strip(spec.strip)은 매치 전체를 지운다 — "기간에 걸쳐 …
+    # 시점에 수익을 인식" 처럼 앞쪽 구절(OVER_TIME 트리거)은 보존하고 뒤쪽 구절(POINT_IN_TIME
+    # 트리거)만 지워야 하는 경우는 표현할 수 없다. 그런 "부분만 지우는" 전처리가 필요한 주제만
+    # 이 훅을 쓴다(기본 None — 대부분 주제는 영향 없음).
+    strip_fn: Callable[[str], str] | None = None
 
 
 def evidence_sentence(text: str, pos: int) -> str:
@@ -124,6 +129,8 @@ def judge(spec: TopicSpec, block: PolicyBlock) -> Judgement:
             # 3,929 문서·16,876 행 중 값이 바뀐 행 0건이라 컨트롤러가 이번 라운드에서는 보류하기로
             # 했다. 회귀 테스트도 이번 라운드 범위 밖).
             stripped = pat.sub(lambda m: " " * len(m.group(0)), stripped)
+        if spec.strip_fn is not None:
+            stripped = spec.strip_fn(stripped)
         for group in (spec.positive, spec.fallback):
             hit = _first_in_order(group, stripped)
             if hit is not None:
@@ -207,7 +214,29 @@ _T2_POS = (
 
 # ---- T4 수익인식 방법 ---------------------------------------------------------
 # 평서체("~한다.")로 끝나는 문장은 기준서 인용·정의문으로 본다 — 회사 진술문은 합쇼체("~합니다.")다.
-_T4_STRIP = (_p(r"[^.]*(?:한다|된다|있다|없다)\."),)
+_T4_STRIP = (
+    _p(r"[^.]*(?:한다|된다|있다|없다)\."),
+    # 재리뷰 Important #3(a)(I3): "시점에 수익을 인식" 은 V6 R3 에서 추가됐는데 부정 가드가
+    # 없다 — "…시점에 수익을 인식하지 않습니다"(부정)도 그대로 매치돼 OVER_TIME 단독 회사를
+    # BOTH 로 잘못 승격시킨다(합성 재현: "공사수익은 진행률에 따라 기간에 걸쳐 인식합니다.
+    # 통제가 이전되지 않는 시점에 수익을 인식하지 않습니다." → 정답 OVER_TIME). 부정형 구절만
+    # 지운다.
+    _p(r"시점에\s*수익(?:을|으로)\s*인식하지\s*(?:않|아니)"),
+)
+_POINT_AFTER_OVER_TIME_RE = re.compile(r"(기간에\s*걸쳐[^.]{0,80}?)(시점에\s*수익(?:을|으로)\s*인식)")
+
+
+def _strip_point_after_over_time(text: str) -> str:
+    """재리뷰 Important #3(b): "기간에 걸쳐 … 시점에 수익을 인식" 처럼 OVER_TIME 트리거
+    ("기간에 걸쳐")가 먼저 나오고 같은 문장 안에서 뒤이어 "시점에 수익을 인식" 이 나오면, 그
+    POINT_IN_TIME 구절만 지운다(OVER_TIME 트리거는 보존) — 실측(표본 A `OVER_TIME → BOTH`
+    9건 중 4건)은 동일 부수수익(배당수익) 보일러플레이트가 "…확정되는 시점에 수익을 인식"
+    으로 끝나 OVER_TIME 단독 회사를 잘못 BOTH 로 승격시켰다. 일반 spec.strip(매치 전체를
+    지움)으로는 "기간에 걸쳐"(앞쪽, 보존해야 함)와 "시점에 수익을 인식"(뒤쪽, 지워야 함)을
+    분리할 수 없어 별도 전처리 함수로 둔다 — 길이 보존(Q-I2, group 2 만 같은 길이 공백으로)."""
+    return _POINT_AFTER_OVER_TIME_RE.sub(lambda m: m.group(1) + " " * len(m.group(2)), text)
+
+
 _T4_POS = (
     (_p(
         r"진행(?:기준|률)(?:에|을|로)?\s*(?:따라|의해|적용|기준으로)|투입법|기간에\s*걸쳐\s*(?:수익을\s*)?인식"
@@ -320,7 +349,7 @@ TOPICS: dict[str, TopicSpec] = {
         applies=_by_topic("수익인식"),
         subject_of=lambda b: None,
         negative=(), strip=_T4_STRIP, positive=_T4_POS, fallback=(),
-        combo_value="BOTH",
+        combo_value="BOTH", strip_fn=_strip_point_after_over_time,
     ),
     "IP_MEASUREMENT": TopicSpec(
         code="IP_MEASUREMENT",
