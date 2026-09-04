@@ -92,6 +92,26 @@ class EarlyAdoptionRulesTests(unittest.TestCase):
                 j = judge(self.spec, _blk(sent + " 조기적용이 허용됩니다.", "1118"))
                 self.assertEqual(j.value, "NOT_ADOPTED")
 
+    def test_의무_소급_적용_시기_서술_2문장은_NOT_ADOPTED_round3_addendum(self) -> None:
+        """Round 3 addendum(item 7, T1): 중간 실행에서 1118호 PERMITTED_ONLY 로 남은 4건이
+        전부 이 두 시기 서술(의무/소급 적용) 변형을 놓쳐서였다."""
+        sentences = [
+            "기업회계기준서 제1118호는 2027년 1월 1일 이후 시작하는 회계연도부터 의무 적용되며, "
+            "2026년 1월 1일 이후 개시하는 회계연도에 조기 적용이 가능합니다.",
+            "기업회계기준서 제1118호는 2027년 1월 1일 이후 개시하는 연차 보고기간의 시작일부터 "
+            "소급적용되며 조기적용이 허용됩니다.",
+        ]
+        for sent in sentences:
+            with self.subTest(sent=sent):
+                j = judge(self.spec, _blk(sent, "1118"))
+                self.assertEqual(j.value, "NOT_ADOPTED")
+
+    def test_조기적용이_허용됩니다_단독은_여전히_PERMITTED_ONLY_round3_addendum(self) -> None:
+        """Round 3 addendum 회귀 확인: 새 시기 서술 가드가 "부터"·"의무"·"소급" 토큰이 아예
+        없는 순수 "조기적용이 허용됩니다." 단독 문장까지 NOT_ADOPTED 로 끌어내리면 안 된다."""
+        j = judge(self.spec, _blk("조기적용이 허용됩니다.", "1118"))
+        self.assertEqual(j.value, "PERMITTED_ONLY")
+
     def test_파_악_중_띄어쓰기_실측도_NOT_ADOPTED_V7_R1(self) -> None:
         """실측: 원문에 "파 악 중"처럼 글자 사이에 띄어쓰기가 있는 경우도 잡아야 한다."""
         j = judge(self.spec, _blk("회사는 동 기준서 적용에 따른 영향을 파 악 중입니다.", "1118"))
