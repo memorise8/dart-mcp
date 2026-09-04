@@ -211,6 +211,17 @@ class IpRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk(text, None, "투자부동산"))
         self.assertEqual(j.value, UNDETERMINED)
 
+    def test_범주_대체_각주_앞에_마침표_없어도_진술이_삼켜지지_않는다_재리뷰_Important_1(self) -> None:
+        """재리뷰 Important #1 재현: 정책 진술이 표 셀처럼 마침표 없이 각주 앞에 바로 붙으면,
+        문장 확장형(선두 [^.]*) strip 은 그 진술까지 거꾸로 삼켜 COST_MODEL 이 UNDETERMINED 로
+        뒤집혔다. phrase-bounded strip 은 "범주에서" 앞을 건드리지 않아야 한다."""
+        text = (
+            "(6) 투자부동산 당사는 투자부동산에 대하여 원가모형을 적용하고 있습니다 (주1) 원가모형을 "
+            "적용하는 투자부동산 범주에서 공정가치모형을 적용하는 투자부동산의 범주로 대체한 사항은 없습니다."
+        )
+        j = judge(self.spec, _blk(text, None, "투자부동산"))
+        self.assertEqual(j.value, "COST_MODEL")
+
     def test_범주_대체_상용문_옆에_원가모형_단정이_있으면_COST_MODEL(self) -> None:
         text = (
             "(주1) 원가모형을 적용하는 투자부동산 범주에서 공정가치모형을 적용하는 투자부동산의 범주로 대체한 사항은 없습니다. "
