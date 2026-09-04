@@ -525,5 +525,76 @@ class EvidenceSentenceTests(unittest.TestCase):
         self.assertTrue(result.startswith("(4) 연결회사는"))
 
 
+class NegativeControlTests(unittest.TestCase):
+    """재리뷰 Important #4(I4): V6 R1~R3 신규 패턴은 전부 "발화하는가"만 확인하는 긍정
+    테스트였다 — 각 패턴마다 "발화하면 안 되는 근접 문구" 하나씩을 짝지어 고정한다. 일부는
+    이번 라운드에서 실제 오탐으로 확인돼 가드/좁히기를 같이 했다(재리뷰 Minor #1, #3)."""
+
+    ppe = TOPICS["PPE_MEASUREMENT"]
+    rev = TOPICS["REVENUE_METHOD"]
+
+    # --- R1 ---------------------------------------------------------------
+    def test_쉼표_REVAL_뒤에_바로_부정이_오면_발화하지_않는다_재리뷰_Minor_1(self) -> None:
+        """재리뷰 Minor #1 재현: 가드 없는 "재평가모형을," 쉼표는 바로 뒤가 부정("적용하지
+        않고")이어도 매치돼 COST_MODEL 단독 회사를 MIXED 로 잘못 승격시켰다."""
+        text = "당사는 유형자산 중 재평가모형을, 적용하지 않고 원가모형을 적용하고 있습니다."
+        j = judge(self.ppe, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, "COST_MODEL")
+
+    def test_원가모형_토큰_없이_평가_동사만_있으면_발화하지_않는다(self) -> None:
+        """R1 의 COST 확장 동사(평가/측정)는 "원가모형" 토큰 없이 "유형자산"·"평가"만 근처에
+        있어도 발화하면 안 된다 — 패턴은 "원가모형" 리터럴을 요구한다."""
+        text = "유형자산의 손상 여부를 매 보고기간말에 평가하고 있습니다."
+        j = judge(self.ppe, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, UNDETERMINED)
+
+    def test_재평가모형으로_변경하는_경우_조건형은_발화하지_않는다(self) -> None:
+        """R1 의 정책변경 REVAL 패턴은 단정 어미(하였|했|하기로)를 요구한다 — "변경하는 경우"
+        조건형은 회사의 확정된 선택이 아니므로 발화하면 안 된다."""
+        text = "회사가 향후 재평가모형으로 변경하는 경우 그 영향을 공시할 예정입니다."
+        j = judge(self.ppe, _blk(text, None, "유형자산"))
+        self.assertNotEqual(j.value, "REVALUATION_MODEL")
+
+    # --- R2(가정형·손상정책 strip 의 부정 대조) -----------------------------
+    def test_원가모형을_적용하여_측정하고_있습니다는_진짜_진술이라_strip되지_않는다(self) -> None:
+        """R2 확장 strip("적용하여 측정하였을/하는 경우" 등 가정형 어미)이 진짜 현재형 진술
+        "적용하여 측정하고 있습니다"(가정형 어미 없음)까지 지우면 안 된다."""
+        text = "(5) 유형자산 당사는 원가모형을 적용하여 측정하고 있습니다."
+        j = judge(self.ppe, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, "COST_MODEL")
+
+    def test_적용하는_자산은_토지이며_뒤에_재평가_실시가_이어지면_strip되지_않는다_재리뷰_Minor_3(
+        self,
+    ) -> None:
+        """재리뷰 Minor #3 재현: "재평가모형을 적용하는 자산은 토지이며, 매 보고기간말
+        재평가를 실시합니다"는 진짜 REVAL 진술("자산은"으로 이어짐)인데, 가드 없는 strip 이
+        "적용하는 자산으로서"(손상정책 문구)와 구분하지 못하고 지워 UNDETERMINED 로
+        뒤집었다 — "자산으로서" 표면형일 때만 지우도록 좁힌다."""
+        text = "당사가 재평가모형을 적용하는 자산은 토지이며, 매 보고기간말 재평가를 실시합니다."
+        j = judge(self.ppe, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, "REVALUATION_MODEL")
+
+    # --- R3 -----------------------------------------------------------------
+    def test_진행률_언급만_있고_트리거_동사가_없으면_발화하지_않는다(self) -> None:
+        text = "(12) 수익인식 진행률 산정 방식은 매년 재검토합니다."
+        j = judge(self.rev, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, UNDETERMINED)
+
+    def test_통제가_이전되는_뒤에_시점이_없으면_발화하지_않는다(self) -> None:
+        """R3 의 "통제가 (고객에게)? 이전되는 시점" 은 "시점" 토큰을 요구한다 — "이전되는 방식"
+        처럼 다른 명사가 오면 발화하면 안 된다."""
+        text = "재화에 대한 통제가 이전되는 방식은 계약별로 다릅니다."
+        j = judge(self.rev, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, UNDETERMINED)
+
+    def test_인도_일정_검토는_인도_시점에_수익_인식이_아니다(self) -> None:
+        """R3 의 "(인도|이전) 시점에 수익(을|으로)? 인식" 은 "인도" 뒤에 곧바로 "시점에 수익
+        …인식" 이 이어져야 한다 — "인도 일정에 따라 향후 시점을 검토" 처럼 수익 인식 서술이
+        없으면 발화하면 안 된다."""
+        text = "(12) 수익인식 제품 인도 일정에 따라 향후 시점을 검토하고 있습니다."
+        j = judge(self.rev, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, UNDETERMINED)
+
+
 if __name__ == "__main__":
     unittest.main()
