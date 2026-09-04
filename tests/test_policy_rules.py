@@ -160,6 +160,16 @@ class IpRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk(text, None, "투자부동산"))
         self.assertEqual(j.value, "COST_MODEL")
 
+    def test_정책_변경_문장은_변경_후_모형이다(self) -> None:
+        """R3: "과거에 원가모형이었으나 …으로 변경하기로 선택하였습니다"는 변경 후 모형이 맞다."""
+        text = (
+            "연결기업은 과거에 모든 투자부동산을 원가모형을 적용하여 측정하였습니다. "
+            "2025년 1월 1일에 연결기업은 투자부동산의 회계처리방법을 공정가치모형으로 변경하기로 선택하였습니다."
+        )
+        j = judge(self.spec, _blk(text, None, "투자부동산"))
+        self.assertEqual(j.value, "FAIR_VALUE_MODEL")
+        self.assertIn("공정가치모형으로 변경", j.evidence)
+
 
 class EvidenceSentenceTests(unittest.TestCase):
     """R1: 400자 넘는(문장 경계 없는 표) 텍스트에서도 pos 를 품은 구절이 살아남는다."""
