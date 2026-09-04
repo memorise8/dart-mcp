@@ -231,6 +231,25 @@ class RevenueRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk(text, None, "수익인식"))
         self.assertEqual(j.value, "OVER_TIME")
 
+    def test_시점에_수익을_인식과_기간에_걸쳐는_BOTH_V6_R3(self) -> None:
+        """V6 R3: "시점에 수익을 인식"(통제·인도 언급 없이 "시점에"만)도 POINT_IN_TIME 트리거다."""
+        text = "Food service 수입에 대하여 시점에 수익을 인식하고 있습니다. 임대수입에 대하여 기간에 걸쳐 수익을 인식하고 있습니다."
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, "BOTH")
+
+    def test_통제가_고객에게_이전되는_시점은_POINT_IN_TIME_V6_R3(self) -> None:
+        """V6 R3: 기존 패턴은 "통제가"와 "이전"이 바로 붙어야 했다 — "통제가 고객에게 이전되는
+        시점"처럼 사이에 "고객에게"가 끼는 변형을 놓쳤다."""
+        text = "재화의 통제가 고객에게 이전되는 시점에 수익으로 인식하고 있습니다."
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, "POINT_IN_TIME")
+
+    def test_진행률을_곱하여_인식은_OVER_TIME_V6_R3(self) -> None:
+        """V6 R3: "진행률을 곱하여"는 기존 "진행률에 따라/의해/적용/기준으로" 목록에 없던 동사다."""
+        text = "도급공사에 대한 수익은 도급금액에 공사진행률을 곱하여 인식하고 있습니다."
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, "OVER_TIME")
+
 
 class IpRulesTests(unittest.TestCase):
     spec = TOPICS["IP_MEASUREMENT"]
