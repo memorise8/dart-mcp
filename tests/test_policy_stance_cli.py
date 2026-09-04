@@ -140,6 +140,49 @@ class RunExtractPolicyStancesTests(unittest.TestCase):
             self.assertEqual(len(calls), 1)
             self.assertEqual(s2["llm_calls"], 1)
 
+    def test_llm_model_base_url이_judge_with_llm까지_전달된다(self) -> None:
+        seen: dict = {}
+        def fake(messages, **kw):
+            seen["model"] = kw.get("model")
+            seen["base_url"] = kw.get("base_url")
+            return json.dumps({"label": "NOT_ADOPTED", "evidence": "중간합계"})
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "policy_stance.jsonl"
+            summary = run_extract_policy_stances(
+                facts_path=FIX / "audit_facts.jsonl", docs_dir=FIX / "docs", output_path=out,
+                topics=("STD_EARLY_ADOPTION",), use_llm=True, call_fn=fake,
+                llm_model="custom-model", llm_base_url="http://gw.local/v1")
+            self.assertEqual(seen["model"], "custom-model")
+            self.assertEqual(seen["base_url"], "http://gw.local/v1")
+            self.assertEqual(summary["llm_model"], "custom-model")
+            self.assertEqual(summary["llm_base_url"], "http://gw.local/v1")
+
+    def test_summary에_llm_model_base_url_unanchored_키가_있다(self) -> None:
+        def fake(messages, **kw):
+            return json.dumps({"label": "NOT_ADOPTED", "evidence": "중간합계"})
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "policy_stance.jsonl"
+            summary = run_extract_policy_stances(
+                facts_path=FIX / "audit_facts.jsonl", docs_dir=FIX / "docs", output_path=out,
+                topics=("STD_EARLY_ADOPTION",), use_llm=True, call_fn=fake)
+            self.assertIn("llm_model", summary)
+            self.assertIn("llm_base_url", summary)
+            self.assertIn("llm_unanchored", summary)
+            self.assertEqual(summary["llm_unanchored"], 0)
+
+    def test_LLM_근거가_블록에_없으면_앵커_실패로_센다(self) -> None:
+        def fake(messages, **kw):
+            return json.dumps({"label": "NOT_ADOPTED", "evidence": "블록에는 없는 완전히 다른 구절입니다"})
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "policy_stance.jsonl"
+            summary = run_extract_policy_stances(
+                facts_path=FIX / "audit_facts.jsonl", docs_dir=FIX / "docs", output_path=out,
+                topics=("STD_EARLY_ADOPTION",), use_llm=True, call_fn=fake)
+            self.assertEqual(summary["llm_unanchored"], 1)
+            self.assertEqual(summary["llm_failures"], 0)
+            row = next(r for r in _rows(out) if r["rcept_no"] == "20260001000002")
+            self.assertEqual((row["value"], row["method"]), ("UNDETERMINED", "none"))
+
     def test_llm_workers_병렬도_같은_결과를_낸다(self) -> None:
         def fake(messages, **kw):
             return json.dumps({"label": "NOT_ADOPTED", "evidence": "중간합계"})

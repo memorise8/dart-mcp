@@ -783,11 +783,14 @@ def split_kam_cmd(facts_path, output_path):
 @click.option("--limit", type=int, default=None)
 @click.option("--llm-subjects", default=None, help="콤마 구분 subject 목록(예: 1118,1109) — 지정 시 그 대상만 LLM 에 보낸다. 기본: 전부")
 @click.option("--llm-workers", type=click.IntRange(1, 16), default=1, show_default=True, help="LLM 판정 병렬 스레드 수")
+@click.option("--llm-model", default=None, help="LLM 모델명 (기본: policy_llm.DEFAULT_MODEL)")
+@click.option("--llm-base-url", default=None, help="LLM 게이트웨이 base URL (기본: policy_llm.DEFAULT_BASE_URL)")
 def extract_policy_stances_cmd(
     facts: str, docs: str, output: str, topics: str, llm: bool, limit: int | None,
-    llm_subjects: str | None, llm_workers: int,
+    llm_subjects: str | None, llm_workers: int, llm_model: str | None, llm_base_url: str | None,
 ) -> None:
     """회계정책 주석에서 회사의 선택(기준서 조기적용 등)을 판정해 policy_stance.jsonl 로 낸다."""
+    from dart_search_mcp.policy_llm import DEFAULT_BASE_URL, DEFAULT_MODEL
     from dart_search_mcp.policy_rules import TOPICS
     from dart_search_mcp.tools.policy_stance_cli import PolicyStanceSourceError, run_extract_policy_stances
     topic_codes = tuple(t.strip() for t in topics.split(",") if t.strip())
@@ -801,12 +804,13 @@ def extract_policy_stances_cmd(
     try:
         s = run_extract_policy_stances(facts_path=Path(facts), docs_dir=Path(docs), output_path=Path(output),
                                        topics=topic_codes,
-                                       use_llm=llm, limit=limit, llm_subjects=subjects, llm_workers=llm_workers)
+                                       use_llm=llm, limit=limit, llm_subjects=subjects, llm_workers=llm_workers,
+                                       llm_model=llm_model or DEFAULT_MODEL, llm_base_url=llm_base_url or DEFAULT_BASE_URL)
     except PolicyStanceSourceError as exc:
         click.echo(f"오류: {exc}", err=True); raise SystemExit(1)
     click.echo(
         f"추출 완료: facts {s['facts']}건 · 보고서 {s['reports']}건(XML 없음 {s['skipped_no_xml']}건) "
-        f"-> 행 {s['rows']}건, LLM {s['llm_calls']}회(실패 {s['llm_failures']}), {s['elapsed_sec']}s "
+        f"-> 행 {s['rows']}건, LLM {s['llm_calls']}회(실패 {s['llm_failures']}) 모델 {s['llm_model']} 앵커 실패 {s['llm_unanchored']}, {s['elapsed_sec']}s "
         f"· LLM 대상 {', '.join(s['llm_subjects']) if s['llm_subjects'] else '전체'} · workers {s['llm_workers']}"
     )
     if s["llm_subjects_note"]:

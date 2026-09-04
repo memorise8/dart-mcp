@@ -14,7 +14,7 @@ from typing import Any
 
 from dart_search_mcp.audit_xml_parser import _strip_tags_to_text
 from dart_search_mcp.policy_blocks import PolicyBlock, split_policy_blocks
-from dart_search_mcp.policy_llm import judge_with_llm
+from dart_search_mcp.policy_llm import DEFAULT_BASE_URL, DEFAULT_MODEL, judge_with_llm
 from dart_search_mcp.policy_rules import TOPICS, UNDETERMINED, Judgement, judge
 from dart_search_mcp.tools.extract_facts import select_xml_path
 from dart_search_mcp.tools.kam_tagger import CallFn, call_llm
@@ -76,6 +76,8 @@ def run_extract_policy_stances(
     call_fn: CallFn = call_llm,
     llm_subjects: frozenset[str] | None = None,
     llm_workers: int = 1,
+    llm_model: str = DEFAULT_MODEL,
+    llm_base_url: str = DEFAULT_BASE_URL,
 ) -> dict[str, Any]:
     """`llm_subjects` 가 주어지면 UNDETERMINED 블록 중 `j.subject` 가 그 집합에 속한 것만 LLM 에 보낸다.
     subject 가 없는 주제(PPE_MEASUREMENT·REVENUE_METHOD·IP_MEASUREMENT — subject_of 가 항상 None) 는
@@ -121,13 +123,14 @@ def run_extract_policy_stances(
     # 프로세스를 통째로 죽이는 사고(OOM·강제종료 등)를 내더라도 이 파일은 남는다. 최종 결과가 덮어쓴다.
     _write_atomic(output_path, by_key.values())
     llm_failures = 0
+    llm_unanchored = 0
     if pending:
         def _judge_one(item: tuple[dict[str, Any], Any, PolicyBlock, tuple[str, str, str | None]]) -> tuple[Judgement, bool]:
             """개별 LLM 호출 실패(타임아웃·게이트웨이 오류 등 예상 밖 예외 포함)가 전체 실행을
             멈추지 않게 격리한다 — UNDETERMINED/"none" 으로 낮추고 실패로 센다."""
             _, spec, block, _ = item
             try:
-                return judge_with_llm(spec, block, call_fn=call_fn), False
+                return judge_with_llm(spec, block, model=llm_model, base_url=llm_base_url, call_fn=call_fn), False
             except Exception:
                 subject = spec.subject_of(block)
                 return Judgement(spec.code, subject, UNDETERMINED, "", "none"), True
@@ -138,6 +141,9 @@ def run_extract_policy_stances(
             with ThreadPoolExecutor(max_workers=llm_workers) as executor:
                 results = list(executor.map(_judge_one, pending))
         llm_failures = sum(1 for _, failed in results if failed)
+        # R2에서 judge_with_llm 이 원문에서 확인 못한 근거를 UNDETERMINED/"none"/빈 evidence 로
+        # 낮춘다 — 그 경우를 앵커 실패로 센다(호출 자체가 실패한 llm_failures 와는 별개 카운터).
+        llm_unanchored = sum(1 for j, failed in results if not failed and j.evidence == "" and j.method == "none")
         for (fact, spec, block, key), (j, _failed) in zip(pending, results):
             prev = by_key.get(key)
             if prev is None or _RANK[j.method] > _RANK[prev["method"]]:
@@ -155,6 +161,9 @@ def run_extract_policy_stances(
         "capped_ratio": {t: (sum(v) / len(v) if v else 0.0) for t, v in capped.items()},
         "llm_calls": llm_calls,
         "llm_failures": llm_failures,
+        "llm_unanchored": llm_unanchored,
+        "llm_model": llm_model,
+        "llm_base_url": llm_base_url,
         "llm_subjects": sorted(llm_subjects) if llm_subjects is not None else None,
         "llm_subjects_note": (
             "subject 없는 주제(PPE_MEASUREMENT 등)는 --llm-subjects 지정 시 LLM 판정에서 제외된다"
