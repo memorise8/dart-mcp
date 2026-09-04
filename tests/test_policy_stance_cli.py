@@ -2,7 +2,11 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from dart_search_mcp.tools.policy_stance_cli import PARSER_VERSION, run_extract_policy_stances
+from dart_search_mcp.tools.policy_stance_cli import (
+    PARSER_VERSION,
+    PolicyStanceSourceError,
+    run_extract_policy_stances,
+)
 
 FIX = Path(__file__).parent / "fixtures" / "policy"
 
@@ -55,6 +59,35 @@ class RunExtractPolicyStancesTests(unittest.TestCase):
             keys = [(r["rcept_no"], r["topic"], r["subject"]) for r in _rows(out)]
             self.assertEqual(len(keys), len(set(keys)))
             self.assertFalse((Path(tmp) / "policy_stance.jsonl.tmp").exists())
+
+    def test_limit_0_은_아무것도_처리하지_않는다(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "policy_stance.jsonl"
+            summary = run_extract_policy_stances(
+                facts_path=FIX / "audit_facts.jsonl", docs_dir=FIX / "docs", output_path=out,
+                topics=("STD_EARLY_ADOPTION",), use_llm=False, limit=0)
+            self.assertEqual(summary["reports"], 0)
+            self.assertEqual(_rows(out), [])
+
+    def test_XML_없는_보고서는_skipped_no_xml_로_센다(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            facts_lines = FIX.joinpath("audit_facts.jsonl").read_text(encoding="utf-8").splitlines()
+            facts_lines.append(json.dumps({"rcept_no": "20260001000099", "corp_code": "00000099", "fiscal_year": "2025"}))
+            facts_path = Path(tmp) / "audit_facts.jsonl"
+            facts_path.write_text("\n".join(facts_lines) + "\n", encoding="utf-8")
+            out = Path(tmp) / "policy_stance.jsonl"
+            summary = run_extract_policy_stances(
+                facts_path=facts_path, docs_dir=FIX / "docs", output_path=out,
+                topics=("STD_EARLY_ADOPTION",), use_llm=False)
+            self.assertEqual(summary["facts"], 3)
+            self.assertEqual(summary["reports"], 2)
+            self.assertEqual(summary["skipped_no_xml"], 1)
+
+    def test_출력_경로가_입력과_같으면_거부한다(self) -> None:
+        with self.assertRaises(PolicyStanceSourceError):
+            run_extract_policy_stances(
+                facts_path=FIX / "audit_facts.jsonl", docs_dir=FIX / "docs", output_path=FIX / "audit_facts.jsonl",
+                topics=("STD_EARLY_ADOPTION",), use_llm=False)
 
 
 if __name__ == "__main__":

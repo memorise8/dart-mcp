@@ -12,9 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from dart_search_mcp.audit_xml_parser import _strip_tags_to_text
-from dart_search_mcp.policy_blocks import split_policy_blocks
+from dart_search_mcp.policy_blocks import PolicyBlock, split_policy_blocks
 from dart_search_mcp.policy_llm import judge_with_llm
-from dart_search_mcp.policy_blocks import PolicyBlock
 from dart_search_mcp.policy_rules import TOPICS, UNDETERMINED, Judgement, judge
 from dart_search_mcp.tools.extract_facts import select_xml_path
 from dart_search_mcp.tools.kam_tagger import CallFn, call_llm
@@ -71,16 +70,20 @@ def run_extract_policy_stances(
     if output_path.resolve() == facts_path.resolve():
         raise PolicyStanceSourceError("출력 경로가 입력 facts 와 같다")
     specs = [TOPICS[t] for t in topics]
-    facts = _read_facts(facts_path)[: limit or None]
+    facts = _read_facts(facts_path)
+    if limit is not None:
+        facts = facts[:limit]
     by_key: dict[tuple[str, str, str | None], dict[str, Any]] = {}
     by_topic: dict[str, Counter[str]] = defaultdict(Counter)
     capped: dict[str, list[int]] = defaultdict(list)
     llm_calls = 0
     reports = 0
+    skipped_no_xml = 0
     started = time.time()
     for fact in facts:
         xml_path = select_xml_path(docs_dir, fact["rcept_no"])
         if xml_path is None:
+            skipped_no_xml += 1
             continue
         reports += 1
         text = _strip_tags_to_text(xml_path.read_bytes())
@@ -105,7 +108,9 @@ def run_extract_policy_stances(
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     tmp.replace(output_path)
     summary = {
+        "facts": len(facts),
         "reports": reports,
+        "skipped_no_xml": skipped_no_xml,
         "rows": len(by_key),
         "by_topic": {t: dict(c) for t, c in by_topic.items()},
         "capped_ratio": {t: (sum(v) / len(v) if v else 0.0) for t, v in capped.items()},

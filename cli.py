@@ -790,7 +790,10 @@ def extract_policy_stances_cmd(facts: str, docs: str, output: str, topics: str, 
                                        use_llm=llm, limit=limit)
     except PolicyStanceSourceError as exc:
         click.echo(f"오류: {exc}", err=True); raise SystemExit(1)
-    click.echo(f"추출 완료: 보고서 {s['reports']}건 -> 행 {s['rows']}건, LLM {s['llm_calls']}회, {s['elapsed_sec']}s")
+    click.echo(
+        f"추출 완료: facts {s['facts']}건 · 보고서 {s['reports']}건(XML 없음 {s['skipped_no_xml']}건) "
+        f"-> 행 {s['rows']}건, LLM {s['llm_calls']}회, {s['elapsed_sec']}s"
+    )
     for topic, dist in s["by_topic"].items():
         click.echo(f"  {topic}: {dist} (상한 도달 {s['capped_ratio'].get(topic, 0):.1%})")
 
