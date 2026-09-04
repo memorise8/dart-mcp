@@ -119,6 +119,25 @@ def run_extract_policy_stances(
                 prev = by_key.get(key)
                 if prev is None or _RANK[j.method] > _RANK[prev["method"]]:
                     by_key[key] = _record(fact, j, block)
+    # V6 R5: 블록 루프가 끝나 by_key 가 전부 확정된 뒤 pending 을 필터링한다. 같은 키에 블록이
+    # 여러 개일 때, 다른 블록이 이미 규칙으로 판정해 by_key[key]["value"] != UNDETERMINED 이면
+    # (rank 비교상 그 값이 최종값이므로) 이 UNDETERMINED 블록을 LLM 에 보내도 결과에 반영되지
+    # 않는다 — 제거한다. 같은 키에 UNDETERMINED 블록이 여럿 남으면(다른 블록도 전부 규칙 판정
+    # 실패) 가장 긴 블록 하나만 남긴다 — 문맥이 더 많은 블록이 LLM 판정에 유리하고, 나머지는
+    # 중복 호출일 뿐이다.
+    llm_pending_raw = len(pending)
+    if pending:
+        best: dict[
+            tuple[str, str, str | None], tuple[dict[str, Any], Any, PolicyBlock, tuple[str, str, str | None]]
+        ] = {}
+        for item in pending:
+            _fact, _spec, block, key = item
+            if by_key[key]["value"] != UNDETERMINED:
+                continue
+            cur = best.get(key)
+            if cur is None or len(block.text) > len(cur[2].text):
+                best[key] = item
+        pending = list(best.values())
     # LLM 단계 진입 전, 규칙만으로 낸 결과를 먼저 원자적으로 써 둔다 — LLM 단계(게이트웨이 호출)가
     # 프로세스를 통째로 죽이는 사고(OOM·강제종료 등)를 내더라도 이 파일은 남는다. 최종 결과가 덮어쓴다.
     _write_atomic(output_path, by_key.values())
@@ -170,6 +189,7 @@ def run_extract_policy_stances(
         "rows": len(by_key),
         "by_topic": {t: dict(c) for t, c in by_topic.items()},
         "capped_ratio": {t: (sum(v) / len(v) if v else 0.0) for t, v in capped.items()},
+        "llm_pending_raw": llm_pending_raw,
         "llm_calls": llm_calls,
         "llm_failures": llm_failures,
         "llm_gateway": llm_gateway,

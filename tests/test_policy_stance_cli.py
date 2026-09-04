@@ -240,6 +240,83 @@ class RunExtractPolicyStancesTests(unittest.TestCase):
             self.assertEqual(a.read_text(encoding="utf-8"), b.read_text(encoding="utf-8"))
             self.assertEqual(s["llm_workers"], 4)
 
+    def test_같은_키가_규칙으로_이미_판정됐으면_UNDET_블록이_있어도_LLM_호출_0회_V6_R5(self) -> None:
+        """V6 R5: 같은 (rcept_no, topic, subject) 키에 블록이 여러 개일 때, 한 블록이 규칙으로
+        판정됐으면(EARLY_ADOPTED) 다른 블록이 UNDETERMINED 라도 그 블록을 LLM 에 보낼 필요가
+        없다 — 최종 by_key 값이 이미 확정됐기 때문이다."""
+        xml = (
+            "<DOCUMENT><BODY><P>2. 중요한 회계정책</P>"
+            "<P>(3) 기업회계기준서 제1109호 '금융상품' 개정 위험회피회계 요건을 변경합니다. "
+            "조기적용이 허용됨에 따라 당사는 동 기준서를 조기적용하였습니다.</P>"
+            "<P>(4) 기업회계기준서 제1118호 '재무제표 표시와 공시' 제정 기업회계기준서 제1118호는 "
+            "제1001호 '재무제표 표시'를 대체합니다. 회사는 제1118호를 아직 채택하지 않았으며 영향을 평가 중입니다.</P>"
+            "<P>(9) 기업회계기준서 제1109호 '금융상품' 추가 개정 위험회피회계 표시를 보완합니다. "
+            "손익계산서에 새로운 중간합계를 도입합니다.</P></BODY></DOCUMENT>"
+        )
+        calls: list[str] = []
+
+        def fake(messages, **kw):
+            calls.append(messages[-1]["content"])
+            return json.dumps({"label": "NOT_ADOPTED", "evidence": "중간합계"})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rcept = "20260005000001"
+            docs_dir = Path(tmp) / "docs" / rcept
+            docs_dir.mkdir(parents=True)
+            (docs_dir / f"{rcept}_00760.xml").write_text(xml, encoding="utf-8")
+            facts_path = Path(tmp) / "audit_facts.jsonl"
+            facts_path.write_text(
+                json.dumps({"rcept_no": rcept, "corp_code": "00000009", "fiscal_year": "2025"}) + "\n",
+                encoding="utf-8",
+            )
+            out = Path(tmp) / "policy_stance.jsonl"
+            summary = run_extract_policy_stances(
+                facts_path=facts_path, docs_dir=Path(tmp) / "docs", output_path=out,
+                topics=("STD_EARLY_ADOPTION",), use_llm=True, call_fn=fake)
+            self.assertEqual(len(calls), 0)
+            self.assertEqual(summary["llm_calls"], 0)
+            self.assertEqual(summary["llm_pending_raw"], 1)
+            row = next(r for r in _rows(out) if r["subject"] == "1109")
+            self.assertEqual((row["value"], row["method"]), ("EARLY_ADOPTED", "rule"))
+
+    def test_같은_키에_UNDET_블록_두_개면_가장_긴_블록만_LLM에_보낸다_V6_R5(self) -> None:
+        """V6 R5: 같은 키에 UNDETERMINED 블록이 둘이면(규칙으로 못 가른 채 남으면) LLM 호출은
+        1회만 — 그중 가장 긴 블록 하나만 보낸다."""
+        filler0 = "당사는 매 분기 정기 이사회를 통해 내부통제 절차를 점검하고 그 결과를 문서로 남깁니다. " * 20
+        filler1 = "이 부분은 후속 보완 설명이 이어지는 참고 문단으로 별도의 판단 근거가 되지 않는 일반 서술입니다. " * 25
+        xml = (
+            "<DOCUMENT><BODY><P>2. 중요한 회계정책</P>"
+            "<P>(3) 기업회계기준서 제1101호 '한국채택국제회계기준의 최초채택' 개정 최초채택 관련 규정을 보완합니다. "
+            "이 개정은 손익계산서 표시 방법을 조정합니다. " + filler0 + "</P>"
+            "<P>(9) 기업회계기준서 제1101호 '한국채택국제회계기준의 최초채택' 추가 개정 최초채택 관련 규정을 재차 "
+            "보완하며 주석 공시 항목을 세분화하고 비교 표시 방법을 명확히 하는 내용을 포함하는 종합적인 개정입니다. "
+            "이 부분은 특유마커B 참고 사항입니다. " + filler1 + "</P></BODY></DOCUMENT>"
+        )
+        calls: list[str] = []
+
+        def fake(messages, **kw):
+            calls.append(messages[-1]["content"])
+            return json.dumps({"label": "NOT_ADOPTED", "evidence": "특유마커B 참고 사항"})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rcept = "20260005000002"
+            docs_dir = Path(tmp) / "docs" / rcept
+            docs_dir.mkdir(parents=True)
+            (docs_dir / f"{rcept}_00760.xml").write_text(xml, encoding="utf-8")
+            facts_path = Path(tmp) / "audit_facts.jsonl"
+            facts_path.write_text(
+                json.dumps({"rcept_no": rcept, "corp_code": "00000010", "fiscal_year": "2025"}) + "\n",
+                encoding="utf-8",
+            )
+            out = Path(tmp) / "policy_stance.jsonl"
+            summary = run_extract_policy_stances(
+                facts_path=facts_path, docs_dir=Path(tmp) / "docs", output_path=out,
+                topics=("STD_EARLY_ADOPTION",), use_llm=True, call_fn=fake)
+            self.assertEqual(len(calls), 1)
+            self.assertIn("특유마커B", calls[0])
+            self.assertEqual(summary["llm_calls"], 1)
+            self.assertEqual(summary["llm_pending_raw"], 2)
+
 
 class CliLlmWiringTests(unittest.TestCase):
     """Q-I6: --llm-model/--llm-base-url 의 CLI 배선은 지금까지 어떤 테스트도 지나지 않았다.
