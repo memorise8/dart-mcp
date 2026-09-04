@@ -38,6 +38,14 @@ def _read_facts(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _write_atomic(output_path: Path, records: Any) -> None:
+    tmp = output_path.with_name(output_path.name + ".tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        for rec in sorted(records, key=lambda r: (r["rcept_no"], r["topic"], r["subject"] or "")):
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    tmp.replace(output_path)
+
+
 def _record(fact: dict[str, Any], j: Judgement, block: PolicyBlock) -> dict[str, Any]:
     """UNDETERMINED 도 행으로 남긴다 — 분포 고지에 '판단불가 N' 을 보이기 위해. 근거 자리엔 블록 첫 120자."""
     fy = fact.get("fiscal_year")
@@ -109,28 +117,35 @@ def run_extract_policy_stances(
                 prev = by_key.get(key)
                 if prev is None or _RANK[j.method] > _RANK[prev["method"]]:
                     by_key[key] = _record(fact, j, block)
+    # LLM 단계 진입 전, 규칙만으로 낸 결과를 먼저 원자적으로 써 둔다 — LLM 단계(게이트웨이 호출)가
+    # 프로세스를 통째로 죽이는 사고(OOM·강제종료 등)를 내더라도 이 파일은 남는다. 최종 결과가 덮어쓴다.
+    _write_atomic(output_path, by_key.values())
+    llm_failures = 0
     if pending:
-        def _judge_one(item: tuple[dict[str, Any], Any, PolicyBlock, tuple[str, str, str | None]]) -> Judgement:
+        def _judge_one(item: tuple[dict[str, Any], Any, PolicyBlock, tuple[str, str, str | None]]) -> tuple[Judgement, bool]:
+            """개별 LLM 호출 실패(타임아웃·게이트웨이 오류 등 예상 밖 예외 포함)가 전체 실행을
+            멈추지 않게 격리한다 — UNDETERMINED/"none" 으로 낮추고 실패로 센다."""
             _, spec, block, _ = item
-            return judge_with_llm(spec, block, call_fn=call_fn)
+            try:
+                return judge_with_llm(spec, block, call_fn=call_fn), False
+            except Exception:
+                subject = spec.subject_of(block)
+                return Judgement(spec.code, subject, UNDETERMINED, "", "none"), True
 
         if llm_workers <= 1:
             results = [_judge_one(item) for item in pending]
         else:
             with ThreadPoolExecutor(max_workers=llm_workers) as executor:
                 results = list(executor.map(_judge_one, pending))
-        for (fact, spec, block, key), j in zip(pending, results):
+        llm_failures = sum(1 for _, failed in results if failed)
+        for (fact, spec, block, key), (j, _failed) in zip(pending, results):
             prev = by_key.get(key)
             if prev is None or _RANK[j.method] > _RANK[prev["method"]]:
                 by_key[key] = _record(fact, j, block)
     llm_calls = len(pending)
     for rec in by_key.values():
         by_topic[rec["topic"]][rec["value"]] += 1
-    tmp = output_path.with_name(output_path.name + ".tmp")
-    with tmp.open("w", encoding="utf-8") as fh:
-        for rec in sorted(by_key.values(), key=lambda r: (r["rcept_no"], r["topic"], r["subject"] or "")):
-            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    tmp.replace(output_path)
+    _write_atomic(output_path, by_key.values())
     summary = {
         "facts": len(facts),
         "reports": reports,
@@ -139,6 +154,7 @@ def run_extract_policy_stances(
         "by_topic": {t: dict(c) for t, c in by_topic.items()},
         "capped_ratio": {t: (sum(v) / len(v) if v else 0.0) for t, v in capped.items()},
         "llm_calls": llm_calls,
+        "llm_failures": llm_failures,
         "llm_subjects": sorted(llm_subjects) if llm_subjects is not None else None,
         "llm_subjects_note": (
             "subject 없는 주제(PPE_MEASUREMENT 등)는 --llm-subjects 지정 시 LLM 판정에서 제외된다"
@@ -149,7 +165,8 @@ def run_extract_policy_stances(
         "parser_version": PARSER_VERSION,
         "elapsed_sec": round(time.time() - started, 1),
     }
-    output_path.with_name(output_path.name + ".summary.json").write_text(
-        json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8"
-    )
+    summary_path = output_path.with_name(output_path.name + ".summary.json")
+    summary_tmp = summary_path.with_name(summary_path.name + ".tmp")
+    summary_tmp.write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
+    summary_tmp.replace(summary_path)
     return summary

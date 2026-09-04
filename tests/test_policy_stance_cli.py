@@ -51,6 +51,31 @@ class RunExtractPolicyStancesTests(unittest.TestCase):
             self.assertEqual((row["value"], row["method"], row["confidence"]), ("NOT_ADOPTED", "llm", 0.6))
             self.assertEqual(summary["llm_calls"], 1)
 
+    def test_LLM_호출이_예외를_던져도_실행이_끝나고_UNDETERMINED로_남는다(self) -> None:
+        def boom(messages, **kw):
+            raise RuntimeError("gateway timeout")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "policy_stance.jsonl"
+            summary = run_extract_policy_stances(
+                facts_path=FIX / "audit_facts.jsonl", docs_dir=FIX / "docs", output_path=out,
+                topics=("STD_EARLY_ADOPTION",), use_llm=True, call_fn=boom)
+            self.assertEqual(summary["llm_failures"], 1)
+            row = next(r for r in _rows(out) if r["rcept_no"] == "20260001000002")
+            self.assertEqual((row["value"], row["method"]), ("UNDETERMINED", "none"))
+
+    def test_LLM_단계_진입_전에_규칙_결과만으로도_출력이_존재한다(self) -> None:
+        def boom(messages, **kw):
+            raise RuntimeError("gateway timeout")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "policy_stance.jsonl"
+            run_extract_policy_stances(
+                facts_path=FIX / "audit_facts.jsonl", docs_dir=FIX / "docs", output_path=out,
+                topics=("STD_EARLY_ADOPTION",), use_llm=True, call_fn=boom)
+            self.assertTrue(out.exists())
+            rows = _rows(out)
+            self.assertTrue(any(r["rcept_no"] == "20260001000001" for r in rows))
+            self.assertFalse(out.with_name(out.name + ".tmp").exists())
+
     def test_출력이_원자적이고_같은_키가_두_번_안_나온다(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "policy_stance.jsonl"
@@ -59,6 +84,15 @@ class RunExtractPolicyStancesTests(unittest.TestCase):
             keys = [(r["rcept_no"], r["topic"], r["subject"]) for r in _rows(out)]
             self.assertEqual(len(keys), len(set(keys)))
             self.assertFalse((Path(tmp) / "policy_stance.jsonl.tmp").exists())
+
+    def test_summary_json도_원자적으로_쓴다(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "policy_stance.jsonl"
+            run_extract_policy_stances(facts_path=FIX / "audit_facts.jsonl", docs_dir=FIX / "docs",
+                                       output_path=out, topics=("STD_EARLY_ADOPTION",), use_llm=False)
+            summary_path = Path(tmp) / "policy_stance.jsonl.summary.json"
+            self.assertTrue(summary_path.exists())
+            self.assertFalse(summary_path.with_name(summary_path.name + ".tmp").exists())
 
     def test_limit_0_은_아무것도_처리하지_않는다(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

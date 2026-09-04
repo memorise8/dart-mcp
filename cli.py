@@ -788,17 +788,25 @@ def extract_policy_stances_cmd(
     llm_subjects: str | None, llm_workers: int,
 ) -> None:
     """회계정책 주석에서 회사의 선택(기준서 조기적용 등)을 판정해 policy_stance.jsonl 로 낸다."""
+    from dart_search_mcp.policy_rules import TOPICS
     from dart_search_mcp.tools.policy_stance_cli import PolicyStanceSourceError, run_extract_policy_stances
+    topic_codes = tuple(t.strip() for t in topics.split(",") if t.strip())
+    invalid = [t for t in topic_codes if t not in TOPICS]
+    if invalid:
+        raise click.BadParameter(
+            f"알 수 없는 주제 코드: {', '.join(invalid)} (유효: {', '.join(sorted(TOPICS))})",
+            param_hint="--topics",
+        )
     subjects = frozenset(s.strip() for s in llm_subjects.split(",") if s.strip()) if llm_subjects else None
     try:
         s = run_extract_policy_stances(facts_path=Path(facts), docs_dir=Path(docs), output_path=Path(output),
-                                       topics=tuple(t.strip() for t in topics.split(",") if t.strip()),
+                                       topics=topic_codes,
                                        use_llm=llm, limit=limit, llm_subjects=subjects, llm_workers=llm_workers)
     except PolicyStanceSourceError as exc:
         click.echo(f"오류: {exc}", err=True); raise SystemExit(1)
     click.echo(
         f"추출 완료: facts {s['facts']}건 · 보고서 {s['reports']}건(XML 없음 {s['skipped_no_xml']}건) "
-        f"-> 행 {s['rows']}건, LLM {s['llm_calls']}회, {s['elapsed_sec']}s "
+        f"-> 행 {s['rows']}건, LLM {s['llm_calls']}회(실패 {s['llm_failures']}), {s['elapsed_sec']}s "
         f"· LLM 대상 {', '.join(s['llm_subjects']) if s['llm_subjects'] else '전체'} · workers {s['llm_workers']}"
     )
     if s["llm_subjects_note"]:
