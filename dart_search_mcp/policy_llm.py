@@ -30,6 +30,15 @@ _LABEL_HELP = {
 }
 _SUBJECT_LINE = {"STD_EARLY_ADOPTION": "기업회계기준서 제{subject}호를 다룬 항목입니다. 다른 기준서에 대한 서술은 무시하세요."}
 
+# V7 R2: 비긍정 라벨(값이 spec.positive_values 밖이고 UNDETERMINED 도 아님) 채택 전 최소 근거
+# 키워드 가드. 1118호 표본 판독(PERMITTED_ONLY 30건 중 정확 0건)에서, LLM 이 근거 없이 라벨만
+# 붙인 행이 다수였다 — (주제 코드, 값) 이 여기 없으면 가드를 건너뛴다(PPE_MEASUREMENT·
+# IP_MEASUREMENT·REVENUE_METHOD 의 비긍정 값은 UNDETERMINED 뿐이라 표에 없다).
+_LABEL_SUPPORT: dict[tuple[str, str], str] = {
+    ("STD_EARLY_ADOPTION", "PERMITTED_ONLY"): r"허용|가능",
+    ("STD_EARLY_ADOPTION", "NOT_ADOPTED"): r"않|아니|아직|검토|평가|파\s*악|영향|예정|적용|시행|재작성|차이",
+}
+
 
 def build_prompt(spec: TopicSpec, block: PolicyBlock, subject: str | None) -> str:
     head = _SUBJECT_LINE.get(spec.code, "").format(subject=subject or "?")
@@ -165,6 +174,12 @@ def judge_with_llm(
         if trace is not None:
             trace["reason"] = "ok"
         return Judgement(spec.code, subject, value, evidence[:400], "llm_verified")
+    # V7 R2 — 비긍정 라벨 키워드 가드: block.text 에 그 값을 뒷받침하는 키워드가 하나도 없으면
+    # 채택하지 않는다(어휘 §1 "근거 없는 행은 만들지 않는다"). (spec.code, value) 가 표에 없으면
+    # (PPE_MEASUREMENT 등) 가드 없이 통과한다.
+    support = _LABEL_SUPPORT.get((spec.code, value))
+    if support is not None and not re.search(support, block.text):
+        return _none("unsupported")
     evidence = evidence_sentence(block.text, index)
     if trace is not None:
         trace["reason"] = "ok"

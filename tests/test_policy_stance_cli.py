@@ -37,17 +37,38 @@ class RunExtractPolicyStancesTests(unittest.TestCase):
             self.assertTrue((Path(tmp) / "policy_stance.jsonl.summary.json").exists())
 
     def test_LLM은_UNDETERMINED_블록에만_호출된다(self) -> None:
+        """V7 R2 가드가 들어온 뒤에도 성공 경로(규칙이 못 가른 블록만 LLM 에 가고, 근거
+        키워드가 블록에 있어 llm 로 채택됨)를 그대로 확인한다 — 가드가 거부하는 경로는
+        test_R2_키워드_가드_거부는_llm_unsupported로_센다 가 별도로 담당한다. 공유 fixture
+        (FIX/docs/20260001000002)의 1118호 블록은 "손익계산서에 새로운 중간합계를 도입합니다"
+        뿐이라 R2 가드의 NOT_ADOPTED 근거 키워드가 전혀 없어(그래서 가드 거부 테스트가 그
+        fixture 를 그대로 쓴다), 이 테스트는 근거 키워드("검토", "영향", "적용")가 있는
+        전용 fixture 를 따로 둔다."""
+        xml = (
+            "<DOCUMENT><BODY><P>(4) 기업회계기준서 제1118호 '재무제표 표시와 공시' 제정 "
+            "손익계산서에 새로운 중간합계를 도입합니다. 회사는 동 기준서의 적용 영향을 "
+            "검토하고 있습니다.</P></BODY></DOCUMENT>"
+        )
         calls: list[str] = []
         def fake(messages, **kw):
             calls.append(messages[-1]["content"]); return json.dumps({"label": "NOT_ADOPTED", "evidence": "중간합계"})
         with tempfile.TemporaryDirectory() as tmp:
+            rcept = "20260001000002"
+            docs_dir = Path(tmp) / "docs" / rcept
+            docs_dir.mkdir(parents=True)
+            (docs_dir / f"{rcept}_00760.xml").write_text(xml, encoding="utf-8")
+            facts_path = Path(tmp) / "audit_facts.jsonl"
+            facts_path.write_text(
+                json.dumps({"rcept_no": rcept, "corp_code": "00000002", "fiscal_year": "2025"}) + "\n",
+                encoding="utf-8",
+            )
             out = Path(tmp) / "policy_stance.jsonl"
             summary = run_extract_policy_stances(
-                facts_path=FIX / "audit_facts.jsonl", docs_dir=FIX / "docs", output_path=out,
+                facts_path=facts_path, docs_dir=Path(tmp) / "docs", output_path=out,
                 topics=("STD_EARLY_ADOPTION",), use_llm=True, call_fn=fake)
             self.assertEqual(len(calls), 1)
             self.assertIn("중간합계", calls[0])
-            row = next(r for r in _rows(out) if r["rcept_no"] == "20260001000002")
+            row = next(r for r in _rows(out) if r["rcept_no"] == rcept)
             self.assertEqual((row["value"], row["method"], row["confidence"]), ("NOT_ADOPTED", "llm", 0.6))
             self.assertEqual(summary["llm_calls"], 1)
 
@@ -225,6 +246,25 @@ class RunExtractPolicyStancesTests(unittest.TestCase):
                 topics=("STD_EARLY_ADOPTION",), use_llm=True, call_fn=fake)
             self.assertEqual(summary["llm_unverified"], 1)
             self.assertEqual(summary["llm_unanchored"], 0)
+            row = next(r for r in _rows(out) if r["rcept_no"] == "20260001000002")
+            self.assertEqual((row["value"], row["method"]), ("UNDETERMINED", "none"))
+
+    def test_R2_키워드_가드_거부는_llm_unsupported로_센다(self) -> None:
+        """V7 R2: 비긍정 라벨(NOT_ADOPTED)인데 블록에 그 값을 뒷받침하는 키워드가 하나도
+        없으면(공유 fixture 20260001000002 의 1118호 블록은 "손익계산서에 새로운 중간합계를
+        도입합니다" 뿐이라 NOT_ADOPTED 근거 키워드가 전혀 없다) 채택하지 않는다 — R18 가드
+        (단정 패턴 미검증)와는 다른 사유이므로 llm_unsupported 로 별도로 센다."""
+        def fake(messages, **kw):
+            return json.dumps({"label": "NOT_ADOPTED", "evidence": "중간합계"})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "policy_stance.jsonl"
+            summary = run_extract_policy_stances(
+                facts_path=FIX / "audit_facts.jsonl", docs_dir=FIX / "docs", output_path=out,
+                topics=("STD_EARLY_ADOPTION",), use_llm=True, call_fn=fake)
+            self.assertEqual(summary["llm_unsupported"], 1)
+            self.assertEqual(summary["llm_unanchored"], 0)
+            self.assertEqual(summary["llm_unverified"], 0)
             row = next(r for r in _rows(out) if r["rcept_no"] == "20260001000002")
             self.assertEqual((row["value"], row["method"]), ("UNDETERMINED", "none"))
 
@@ -428,6 +468,61 @@ class CliConsoleGatewayVisibilityTests(unittest.TestCase):
                 self.assertIn("게이트웨이 실패 1", result.output)
                 self.assertIn("파싱 실패 0", result.output)
                 self.assertIn("실패 0", result.output)  # llm_failures — 예외가 아니라 정상 흐름
+        finally:
+            httpx.Client = original_client  # type: ignore[assignment]
+
+
+class CliConsoleUnsupportedVisibilityTests(unittest.TestCase):
+    """V7 R2: 비긍정 라벨 키워드 가드(unsupported)로 거부된 건수도 콘솔 요약에 보여야 한다."""
+
+    def test_근거어_없음_건수가_콘솔에_보인다(self) -> None:
+        import httpx
+        import server  # noqa: F401
+        import cli
+        from click.testing import CliRunner
+
+        class _FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "choices": [
+                        {"message": {"content": json.dumps({"label": "NOT_ADOPTED", "evidence": "중간합계"})}}
+                    ]
+                }
+
+        class _FakeClient:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            def __enter__(self) -> "_FakeClient":
+                return self
+
+            def __exit__(self, *exc_info) -> bool:
+                return False
+
+            def post(self, url: str, json: dict):
+                return _FakeResponse()
+
+        original_client = httpx.Client
+        httpx.Client = _FakeClient  # type: ignore[assignment]
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp) / "s.jsonl"
+                runner = CliRunner()
+                result = runner.invoke(
+                    cli.cli,
+                    [
+                        "extract-policy-stances",
+                        "--facts", str(FIX / "audit_facts.jsonl"),
+                        "--docs", str(FIX / "docs"),
+                        "-o", str(out),
+                        "--topics", "STD_EARLY_ADOPTION",
+                        "--llm",
+                    ],
+                )
+                self.assertEqual(result.exit_code, 0, result.output)
+                self.assertIn("근거어 없음 1", result.output)
         finally:
             httpx.Client = original_client  # type: ignore[assignment]
 

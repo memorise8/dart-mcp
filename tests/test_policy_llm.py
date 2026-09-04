@@ -147,5 +147,30 @@ class EvidenceAnchoringTests(unittest.TestCase):
         self.assertEqual((j.value, j.method), (UNDETERMINED, "none"))
 
 
+class LabelSupportGuardTests(unittest.TestCase):
+    """V7 R2: 비긍정 라벨(값이 spec.positive_values 밖이고 UNDETERMINED 도 아님)은 block.text 에
+    그 값을 뒷받침하는 키워드가 하나도 없으면 채택하지 않는다."""
+
+    spec = TOPICS["STD_EARLY_ADOPTION"]
+
+    def test_뒷받침_키워드가_블록에_없으면_unsupported(self) -> None:
+        fake = lambda messages, **kw: json.dumps(
+            {"label": "PERMITTED_ONLY", "evidence": "이 기준서의 제정에따라"}
+        )
+        block = _blk("이 기준서의 제정에따라")
+        tr: dict = {}
+        j = judge_with_llm(self.spec, block, call_fn=fake, trace=tr)
+        self.assertEqual((j.value, j.method, j.evidence), (UNDETERMINED, "none", ""))
+        self.assertEqual(tr.get("reason"), "unsupported")
+
+    def test_뒷받침_키워드가_블록에_있으면_llm_채택(self) -> None:
+        fake = lambda messages, **kw: json.dumps(
+            {"label": "PERMITTED_ONLY", "evidence": "이 기준서의 제정에따라"}
+        )
+        block = _blk("이 기준서의 제정에따라 조기적용이 허용됩니다.")
+        j = judge_with_llm(self.spec, block, call_fn=fake)
+        self.assertEqual((j.value, j.method), ("PERMITTED_ONLY", "llm"))
+
+
 if __name__ == "__main__":
     unittest.main()

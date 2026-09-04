@@ -146,6 +146,7 @@ def run_extract_policy_stances(
     llm_parse = 0
     llm_unanchored = 0
     llm_unverified = 0
+    llm_unsupported = 0
     if pending:
         def _judge_one(
             item: tuple[dict[str, Any], Any, PolicyBlock, tuple[str, str, str | None]]
@@ -174,6 +175,7 @@ def run_extract_policy_stances(
         llm_parse = reason_counts.get("parse", 0)
         llm_unanchored = reason_counts.get("unanchored", 0)
         llm_unverified = reason_counts.get("unverified", 0)
+        llm_unsupported = reason_counts.get("unsupported", 0)
         for (fact, spec, block, key), (j, _failed, _reason) in zip(pending, results):
             prev = by_key.get(key)
             if prev is None or _RANK[j.method] > _RANK[prev["method"]]:
@@ -196,6 +198,7 @@ def run_extract_policy_stances(
         "llm_parse": llm_parse,
         "llm_unanchored": llm_unanchored,
         "llm_unverified": llm_unverified,
+        "llm_unsupported": llm_unsupported,
         "llm_model": llm_model,
         "llm_base_url": llm_base_url,
         "llm_subjects": sorted(llm_subjects) if llm_subjects is not None else None,

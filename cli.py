@@ -817,7 +817,8 @@ def extract_policy_stances_cmd(
         f"추출 완료: facts {s['facts']}건 · 보고서 {s['reports']}건(XML 없음 {s['skipped_no_xml']}건) "
         f"-> 행 {s['rows']}건, LLM {s['llm_calls']}회(실패 {s['llm_failures']}) 모델 {s['llm_model']} "
         f"게이트웨이 실패 {s['llm_gateway']} · 파싱 실패 {s['llm_parse']} "
-        f"앵커 실패 {s['llm_unanchored']} 미검증 {s['llm_unverified']}, {s['elapsed_sec']}s "
+        f"앵커 실패 {s['llm_unanchored']} 미검증 {s['llm_unverified']} 근거어 없음 {s['llm_unsupported']}, "
+        f"{s['elapsed_sec']}s "
         f"· LLM 대상 {', '.join(s['llm_subjects']) if s['llm_subjects'] else '전체'} · workers {s['llm_workers']}"
     )
     if s["llm_subjects_note"]:
