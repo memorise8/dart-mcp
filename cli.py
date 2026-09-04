@@ -801,6 +801,8 @@ def extract_policy_stances_cmd(
         f"-> 행 {s['rows']}건, LLM {s['llm_calls']}회, {s['elapsed_sec']}s "
         f"· LLM 대상 {', '.join(s['llm_subjects']) if s['llm_subjects'] else '전체'} · workers {s['llm_workers']}"
     )
+    if s["llm_subjects_note"]:
+        click.echo(f"  {s['llm_subjects_note']}")
     for topic, dist in s["by_topic"].items():
         click.echo(f"  {topic}: {dist} (상한 도달 {s['capped_ratio'].get(topic, 0):.1%})")
 

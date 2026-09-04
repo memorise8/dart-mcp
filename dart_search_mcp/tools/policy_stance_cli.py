@@ -69,6 +69,11 @@ def run_extract_policy_stances(
     llm_subjects: frozenset[str] | None = None,
     llm_workers: int = 1,
 ) -> dict[str, Any]:
+    """`llm_subjects` 가 주어지면 UNDETERMINED 블록 중 `j.subject` 가 그 집합에 속한 것만 LLM 에 보낸다.
+    subject 가 없는 주제(PPE_MEASUREMENT·REVENUE_METHOD·IP_MEASUREMENT — subject_of 가 항상 None) 는
+    `j.subject`(=None) 가 그 집합에 속할 수 없으므로, `llm_subjects` 를 지정하면 이 주제들은 LLM 판정에서
+    통째로 제외된다. 의도된 동작이다 — 이 주제들은 UNDETERMINED 가 수만 건 규모라 전량 LLM 판정이
+    비현실적이고, subject 단위로 좁힐 대상 축도 없다."""
     facts_path, docs_dir, output_path = Path(facts_path), Path(docs_dir), Path(output_path)
     if output_path.resolve() == facts_path.resolve():
         raise PolicyStanceSourceError("출력 경로가 입력 facts 와 같다")
@@ -135,6 +140,11 @@ def run_extract_policy_stances(
         "capped_ratio": {t: (sum(v) / len(v) if v else 0.0) for t, v in capped.items()},
         "llm_calls": llm_calls,
         "llm_subjects": sorted(llm_subjects) if llm_subjects is not None else None,
+        "llm_subjects_note": (
+            "subject 없는 주제(PPE_MEASUREMENT 등)는 --llm-subjects 지정 시 LLM 판정에서 제외된다"
+            if llm_subjects is not None
+            else None
+        ),
         "llm_workers": llm_workers,
         "parser_version": PARSER_VERSION,
         "elapsed_sec": round(time.time() - started, 1),

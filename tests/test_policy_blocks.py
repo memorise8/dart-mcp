@@ -64,6 +64,28 @@ class SplitPolicyBlocksTests(unittest.TestCase):
         std = next(b for b in blocks if b.standard_no == "1118")
         self.assertNotIn("원가모형", std.text)
 
+    def test_본문_안의_원문자_나열은_경계가_아니다(self) -> None:
+        text = ("(4) 기업회계기준서 제1118호 '재무제표 표시와 공시' 이 기준서는 재무제표의 구성요소로 "
+                "① 손익계산서 ② 현금흐름표 ③ 자본변동표 등을 표시하도록 요구합니다. "
+                "회사는 동 기준서를 아직 채택하지 않았습니다. (5) 유형자산 당사는 원가모형을 적용합니다.")
+        std = next(b for b in split_policy_blocks(text) if b.standard_no == "1118")
+        self.assertIn("아직 채택하지 않았습니다", std.text)
+        self.assertNotIn("원가모형", std.text)
+
+    def test_한글점_헤더_블록은_본문_괄호숫자에서_끊기지_않는다(self) -> None:
+        text = ("가. 유형자산 유형자산의 분류는 다음과 같습니다: (1) 토지 (2) 건물. "
+                "당사는 토지에 대해 재평가모형을 적용하고 있습니다. 나. 무형자산 무형자산은 취득원가로 측정합니다.")
+        ppe = next(b for b in split_policy_blocks(text) if b.topic_heading == "유형자산")
+        self.assertIn("재평가모형", ppe.text)
+        self.assertNotIn("무형자산은 취득원가", ppe.text)
+
+    def test_같은_양식의_다음_항목에서만_끝난다(self) -> None:
+        text = ("(5) 유형자산 당사는 유형자산에 대해 ① 토지 ② 건물 ③ 기계장치를 보유하며 "
+                "토지에 대해 재평가모형을 적용하고 있습니다. (6) 무형자산 무형자산은 취득원가로 측정합니다.")
+        ppe = next(b for b in split_policy_blocks(text) if b.topic_heading == "유형자산")
+        self.assertIn("재평가모형", ppe.text)
+        self.assertNotIn("취득원가", ppe.text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -100,6 +100,7 @@ class RunExtractPolicyStancesTests(unittest.TestCase):
             self.assertEqual(len(calls), 0)
             self.assertEqual(s["llm_calls"], 0)
             self.assertEqual(s["llm_subjects"], ["9999"])
+            self.assertIsNotNone(s["llm_subjects_note"])
             s2 = run_extract_policy_stances(facts_path=FIX / "audit_facts.jsonl", docs_dir=FIX / "docs", output_path=out,
                                             topics=("STD_EARLY_ADOPTION",), use_llm=True, call_fn=fake, llm_subjects=frozenset({"1118"}))
             self.assertEqual(len(calls), 1)
