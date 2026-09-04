@@ -42,6 +42,10 @@ class EarlyAdoptionRulesTests(unittest.TestCase):
     def test_기준서_블록이_아니면_적용_대상이_아니다(self) -> None:
         self.assertFalse(self.spec.applies(_blk("(5) 유형자산 재평가모형", None, "유형자산")))
 
+    def test_허용_문장이_앞에_있어도_미적용이_이긴다(self) -> None:
+        j = judge(self.spec, _blk("동 기준서는 조기 적용이 허용되며, 회사는 아직 채택하지 않았습니다.", "1118"))
+        self.assertEqual(j.value, "NOT_ADOPTED")
+
 
 class PpeRulesTests(unittest.TestCase):
     spec = TOPICS["PPE_MEASUREMENT"]
@@ -58,6 +62,10 @@ class PpeRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk("(5) 유형자산 유형자산은 원가모형 또는 재평가모형 중 하나를 선택하여 적용할 수 있습니다.", None, "유형자산"))
         self.assertEqual(j.value, UNDETERMINED)
 
+    def test_둘_다_단정하면_MIXED(self) -> None:
+        j = judge(self.spec, _blk("(5) 유형자산 토지는 재평가모형을 적용하고 건물과 기계장치는 원가모형을 적용하고 있습니다.", None, "유형자산"))
+        self.assertEqual(j.value, "MIXED")
+
 
 class RevenueRulesTests(unittest.TestCase):
     spec = TOPICS["REVENUE_METHOD"]
@@ -73,6 +81,26 @@ class RevenueRulesTests(unittest.TestCase):
     def test_둘_다면_BOTH(self) -> None:
         j = judge(self.spec, _blk("(12) 수익인식 공사수익은 진행률에 따라 인식하고 제품매출은 인도시점에 인식합니다.", None, "수익인식"))
         self.assertEqual(j.value, "BOTH")
+
+    def test_기준서_인용문은_회사_선택이_아니다(self) -> None:
+        j = judge(self.spec, _blk("기업회계기준서 제1115호에 따르면, 기간에 걸쳐 이행하는 수행의무는 진행기준에 따라 수익을 인식한다.", None, "수익인식"))
+        self.assertEqual(j.value, UNDETERMINED)
+
+
+class IpRulesTests(unittest.TestCase):
+    spec = TOPICS["IP_MEASUREMENT"]
+
+    def test_공정가치모형(self) -> None:
+        j = judge(self.spec, _blk("(6) 투자부동산 당사는 투자부동산을 공정가치모형으로 측정하고 있습니다.", None, "투자부동산"))
+        self.assertEqual(j.value, "FAIR_VALUE_MODEL")
+
+    def test_원가모형(self) -> None:
+        j = judge(self.spec, _blk("(6) 투자부동산 당사는 투자부동산에 대하여 원가모형을 적용합니다.", None, "투자부동산"))
+        self.assertEqual(j.value, "COST_MODEL")
+
+    def test_기준서_설명형_선택지는_UNDETERMINED(self) -> None:
+        j = judge(self.spec, _blk("(6) 투자부동산 투자부동산은 원가모형 또는 공정가치모형 중 하나를 선택하여 적용할 수 있습니다.", None, "투자부동산"))
+        self.assertEqual(j.value, UNDETERMINED)
 
 
 if __name__ == "__main__":

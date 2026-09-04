@@ -36,6 +36,7 @@ class TopicSpec:
     strip: tuple[re.Pattern[str], ...]
     positive: tuple[tuple[re.Pattern[str], str], ...]
     fallback: tuple[tuple[re.Pattern[str], str], ...]
+    combo_value: str | None = None
 
 
 def evidence_sentence(text: str, pos: int) -> str:
@@ -49,36 +50,36 @@ def evidence_sentence(text: str, pos: int) -> str:
     return text[start:].strip()[:_EVIDENCE_MAX] or text[max(0, pos - 200) : pos + 200].strip()
 
 
-def _first(patterns: tuple[tuple[re.Pattern[str], str], ...], text: str) -> tuple[str, int] | None:
-    best: tuple[str, int] | None = None
+def _first_in_order(patterns: tuple[tuple[re.Pattern[str], str], ...], text: str) -> tuple[str, int] | None:
+    """목록 순서가 우선순위 — 먼저 나열된 패턴이 어디에 있든 먼저 이긴다."""
     for pat, value in patterns:
         m = pat.search(text)
-        if m and (best is None or m.start() < best[1]):
-            best = (value, m.start())
-    return best
+        if m:
+            return (value, m.start())
+    return None
 
 
 def judge(spec: TopicSpec, block: PolicyBlock) -> Judgement:
     subject = spec.subject_of(block)
     text = block.text
-    hit = _first(spec.negative, text)
+    hit = _first_in_order(spec.negative, text)
     if hit is None:
         stripped = text
         for pat in spec.strip:
             stripped = pat.sub(" ", stripped)
         for group in (spec.positive, spec.fallback):
-            hit = _first(group, stripped)
+            hit = _first_in_order(group, stripped)
             if hit is not None:
                 text = stripped
                 break
     if hit is None:
         return Judgement(spec.code, subject, UNDETERMINED, "", "none")
     value, pos = hit
-    # BOTH 승격: 긍정값이 둘 이상 단정되면(수익인식)
-    if spec.code == "REVENUE_METHOD":
+    # 복수 긍정값 승격: 긍정 패턴이 둘 이상 단정되면 조합값으로(수익인식 BOTH, 유형자산 MIXED)
+    if spec.combo_value:
         found = {v for pat, v in spec.positive if pat.search(text)}
-        if {"OVER_TIME", "POINT_IN_TIME"} <= found:
-            value = "BOTH"
+        if len(found) >= 2:
+            value = spec.combo_value
     return Judgement(spec.code, subject, value, evidence_sentence(text, pos), "rule")
 
 
@@ -105,13 +106,14 @@ _T1_FALLBACK = (
 )
 
 # ---- T2 유형자산 측정모형 ------------------------------------------------------
-_PPE_CHOICE_RE = _p(r"(?:원가|재평가)\s*(?:모형|모델)\s*(?:또는|이나|중)")
 _T2_POS = (
     (_p(r"재평가\s*(?:모형|모델)(?:을|를)?\s*(?:적용|채택|사용)"), "REVALUATION_MODEL"),
     (_p(r"원가\s*(?:모형|모델)(?:을|를)?\s*(?:적용|채택|사용)"), "COST_MODEL"),
 )
 
 # ---- T4 수익인식 방법 ---------------------------------------------------------
+# 평서체("~한다.")로 끝나는 문장은 기준서 인용·정의문으로 본다 — 회사 진술문은 합쇼체("~합니다.")다.
+_T4_STRIP = (_p(r"[^.]*(?:한다|된다|있다|없다)\."),)
 _T4_POS = (
     (_p(r"진행(?:기준|률)(?:에|을|로)?\s*(?:따라|의해|적용|기준으로)|투입법|기간에\s*걸쳐\s*(?:수익을\s*)?인식"), "OVER_TIME"),
     (_p(r"인도(?:시점|기준)|통제(?:가|를)\s*이전(?:하는|되는)\s*시점에\s*(?:수익을\s*)?인식"), "POINT_IN_TIME"),
@@ -149,6 +151,7 @@ TOPICS: dict[str, TopicSpec] = {
         subject_of=lambda b: None,
         negative=(), strip=(_p(r"[^.]*(?:원가|재평가)\s*(?:모형|모델)\s*(?:또는|이나|중)[^.]*\."),),
         positive=_T2_POS, fallback=(),
+        combo_value="MIXED",
     ),
     "REVENUE_METHOD": TopicSpec(
         code="REVENUE_METHOD",
@@ -156,7 +159,8 @@ TOPICS: dict[str, TopicSpec] = {
         positive_values=frozenset({"OVER_TIME", "POINT_IN_TIME", "BOTH"}),
         applies=_by_topic("수익인식"),
         subject_of=lambda b: None,
-        negative=(), strip=(), positive=_T4_POS, fallback=(),
+        negative=(), strip=_T4_STRIP, positive=_T4_POS, fallback=(),
+        combo_value="BOTH",
     ),
     "IP_MEASUREMENT": TopicSpec(
         code="IP_MEASUREMENT",
