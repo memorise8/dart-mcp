@@ -60,6 +60,19 @@ class EarlyAdoptionRulesTests(unittest.TestCase):
         self.assertIn(j.evidence, text)
         self.assertEqual(j.evidence, "회사는 동 기준서의 조기적용이 허용됨을 확인하였습니다.")
 
+    def test_적용하되_조기적용_허용은_NOT_ADOPTED(self) -> None:
+        """R5: "…부터 적용하되 조기적용이 허용됩니다"는 미적용 서술이지 허용만이 아니다."""
+        j = judge(self.spec, _blk("새로운 기준서는 2027년 1월 1일 이후 최초로 시작되는 회계연도부터 적용하되 조기적용이 허용됩니다.", "1118"))
+        self.assertEqual(j.value, "NOT_ADOPTED")
+
+    def test_영향_미치지_않을_것으로_예상은_NOT_ADOPTED(self) -> None:
+        j = judge(self.spec, _blk("동 개정사항이 재무제표에 중요한 영향을 미치지 않을 것으로 예상됩니다. 조기적용이 허용됩니다.", "1118"))
+        self.assertEqual(j.value, "NOT_ADOPTED")
+
+    def test_조기적용_허용_단독은_여전히_PERMITTED_ONLY(self) -> None:
+        j = judge(self.spec, _blk("조기적용이 허용됩니다.", "1118"))
+        self.assertEqual(j.value, "PERMITTED_ONLY")
+
 
 class PpeRulesTests(unittest.TestCase):
     spec = TOPICS["PPE_MEASUREMENT"]
