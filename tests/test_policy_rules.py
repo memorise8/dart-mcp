@@ -73,6 +73,29 @@ class EarlyAdoptionRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk("조기적용이 허용됩니다.", "1118"))
         self.assertEqual(j.value, "PERMITTED_ONLY")
 
+    def test_시기_영향_변형_6문장은_NOT_ADOPTED_V7_R1(self) -> None:
+        """V7 R1: 1118호 표본 140건 판독(NOT_ADOPTED 80/80 정확, PERMITTED_ONLY 30건 중 0건 정확)
+        에서 나온 실제 시기·영향 서술 변형. 조기적용 허용 문구가 뒤에 붙어도 미적용 서술이
+        이긴다(NOT_ADOPTED 대안이 목록에서 PERMITTED_ONLY 보다 앞이라 순서상 이긴다)."""
+        sentences = [
+            "최초 적용 시에 연결기업의 연결재무제표에 중요한 영향을 미칠 것으로 예상되는 항목은 다음과 같습니다.",
+            "회사가 기업회계기준서 제1118호를 적용하여 재무제표를 작성하는 경우 현행 재무제표와 유의적인 "
+            "차이를 발생시킬 것으로 예상되는 주요 회계정책은 다음과 같습니다.",
+            "2027년 1월 1일 이후에 시작되는 보고기간에 적용됩니다.",
+            "2027년 1월 1일 이후 시작하는 회계연도에 적용해야 하며, 조기적용이 허용됩니다.",
+            "2026년 12월 31일로 종료되는 회계연도의 비교정보는 제1118호에 따라 재작성됩니다.",
+            "표시와 공시에 미치는 영향은 광범위할 것으로 예상합니다.",
+        ]
+        for sent in sentences:
+            with self.subTest(sent=sent):
+                j = judge(self.spec, _blk(sent + " 조기적용이 허용됩니다.", "1118"))
+                self.assertEqual(j.value, "NOT_ADOPTED")
+
+    def test_파_악_중_띄어쓰기_실측도_NOT_ADOPTED_V7_R1(self) -> None:
+        """실측: 원문에 "파 악 중"처럼 글자 사이에 띄어쓰기가 있는 경우도 잡아야 한다."""
+        j = judge(self.spec, _blk("회사는 동 기준서 적용에 따른 영향을 파 악 중입니다.", "1118"))
+        self.assertEqual(j.value, "NOT_ADOPTED")
+
 
 class PpeRulesTests(unittest.TestCase):
     spec = TOPICS["PPE_MEASUREMENT"]
