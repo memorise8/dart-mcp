@@ -224,6 +224,40 @@ class PpeRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk(text, None, "유형자산"))
         self.assertEqual(j.value, UNDETERMINED)
 
+    def test_재평가하여_계상하고_있습니다는_REVALUATION_MODEL_재리뷰_N1_20260407000993(
+        self,
+    ) -> None:
+        """재리뷰 Critical N1 재현(20260407000993, dart_collected 실측): I1 가드의 첫 버전이
+        피동·연결형("재평가하여 … 계상하고 있습니다")을 놓쳐 진짜 REVAL 진술을 UNDETERMINED
+        로 잃었다."""
+        text = (
+            "5-4. 토지의 재평가당사는 유형자산의 인식시점 후 재평가모형에 따라 주기적으로 공정가치로 "
+            "토지를 재평가하여 재평가액을 장부가액으로 계상하고 있습니다."
+        )
+        j = judge(self.spec, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, "REVALUATION_MODEL")
+
+    def test_평가되었으며는_REVALUATION_MODEL_재리뷰_N1_20251110000027(self) -> None:
+        """재리뷰 Critical N1 재현(20251110000027, dart_collected 실측): "재평가모형에 따라
+        평가되었으며 원가모형으로 평가되었을 경우의 장부금액은 …"(IAS 16.77(e) 비교표 도입문)도
+        잃었던 진짜 REVAL 진술."""
+        text = (
+            "(3) 토지 및 건물은 재평가모형에 따라 평가되었으며 원가모형으로 평가되었을 경우의 "
+            "장부금액은 다음과 같습니다(주석15 참조)."
+        )
+        j = judge(self.spec, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, "REVALUATION_MODEL")
+
+    def test_평가되었으며는_REVALUATION_MODEL_재리뷰_N1_20260407003334(self) -> None:
+        """재리뷰 Critical N1 재현(20260407003334, dart_collected 실측): 위와 같은 결함의 세
+        번째 실측."""
+        text = (
+            "(2) 토지 및 건물은 재평가모형에 따라 평가되었으며 당기말 현재 원가모형으로 평가되었을 "
+            "경우의 장부금액은 다음과 같습니다(단위:원)."
+        )
+        j = judge(self.spec, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, "REVALUATION_MODEL")
+
     def test_원가모형_적용하여_측정하였을_경우도_가정형_strip_V6_R2(self) -> None:
         """V6 R2: 기존 가정형 strip("원가모형으로 평가되었을 경우")은 동사와 어미 사이에
         "하여 측정"이 끼는 변형("적용하여 측정하였을 경우")을 못 잡아 COST_MODEL 로 오판했다."""
