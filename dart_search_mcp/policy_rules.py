@@ -214,7 +214,10 @@ TOPICS: dict[str, TopicSpec] = {
         positive_values=frozenset({"FAIR_VALUE_MODEL", "COST_MODEL"}),
         applies=_by_topic("투자부동산"),
         subject_of=lambda b: None,
-        negative=(), strip=(_p(r"[^.]*(?:원가|공정가치)\s*(?:모형|모델)\s*(?:또는|이나|중)[^.]*\."),),
+        negative=(), strip=(
+            _p(r"[^.]*(?:원가|공정가치)\s*(?:모형|모델)\s*(?:또는|이나|중)[^.]*\."),
+            _p(r"[^.]*범주에서[^.]*범주로\s*대체[^.]*\.?"),
+        ),
         positive=_T3_POS, fallback=(),
     ),
 }

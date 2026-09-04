@@ -146,6 +146,20 @@ class IpRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk("(6) 투자부동산 투자부동산은 원가모형 또는 공정가치모형 중 하나를 선택하여 적용할 수 있습니다.", None, "투자부동산"))
         self.assertEqual(j.value, UNDETERMINED)
 
+    def test_범주_대체_상용문은_회사의_선택이_아니다(self) -> None:
+        """R2: "(주1) …범주에서…범주로 대체한 사항은 없습니다"는 표 각주 상용문이다."""
+        text = "(주1) 원가모형을 적용하는 투자부동산 범주에서 공정가치모형을 적용하는 투자부동산의 범주로 대체한 사항은 없습니다."
+        j = judge(self.spec, _blk(text, None, "투자부동산"))
+        self.assertEqual(j.value, UNDETERMINED)
+
+    def test_범주_대체_상용문_옆에_원가모형_단정이_있으면_COST_MODEL(self) -> None:
+        text = (
+            "(주1) 원가모형을 적용하는 투자부동산 범주에서 공정가치모형을 적용하는 투자부동산의 범주로 대체한 사항은 없습니다. "
+            "당사는 투자부동산에 대하여 원가모형을 적용하고 있습니다."
+        )
+        j = judge(self.spec, _blk(text, None, "투자부동산"))
+        self.assertEqual(j.value, "COST_MODEL")
+
 
 class EvidenceSentenceTests(unittest.TestCase):
     """R1: 400자 넘는(문장 경계 없는 표) 텍스트에서도 pos 를 품은 구절이 살아남는다."""
