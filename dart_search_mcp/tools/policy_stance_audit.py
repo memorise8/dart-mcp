@@ -66,18 +66,34 @@ def _value_patterns(spec: Any, value: str) -> list[re.Pattern[str]]:
 
 
 def _pattern_in_evidence_rule(topic: str, value: str, evidence: str) -> bool | None:
-    """rule 행: 그 value 를 내는 패턴(negative∪positive∪fallback) 중 하나라도 evidence 에 매치되면
-    확인됨. combo_value(MIXED/BOTH) 는 positive 패턴이 2개 이상 매치해야 한다."""
+    """rule 행(콤보값 제외 — 콤보는 _pattern_in_evidence_combo 가 블록 창 전체를 본다): 그 value 를
+    내는 패턴(negative∪positive∪fallback) 중 하나라도 evidence 에 매치되면 확인됨."""
     spec = TOPICS.get(topic)
     if spec is None:
         return None
-    if spec.combo_value and value == spec.combo_value:
-        matched = {pat for pat, _v in spec.positive if pat.search(evidence)}
-        return len(matched) >= 2
     pats = _value_patterns(spec, value)
     if not pats:
         return None
     return any(p.search(evidence) for p in pats)
+
+
+def _pattern_in_evidence_combo(topic: str, text: str | None, block_offset: Any) -> bool | None:
+    """콤보값(MIXED/BOTH) 행 전용(Q-I3): `policy_rules.judge` 는 블록 전체(최대 3,000자)에서
+    서로 다른 긍정값 2개가 잡히면 콤보로 승격하지만, 저장되는 evidence 는 그 중 한 값 주변의
+    문장(≤400자)뿐이다 — 그 문장 안에서만 positive 패턴 2개를 요구하면 두 모형 언급이 400자
+    이상 떨어져 있을 때 구조적으로 위반이 난다. 그래서 콤보 행은 evidence_in_block 과 같은 창
+    (text[block_offset:block_offset+_WINDOW])에서, "패턴"이 아니라 서로 다른 "값"이 2개 이상
+    매치되는지를 본다 — judge 의 승격 조건(서로 다른 값 2개)과 의미를 맞춘다."""
+    spec = TOPICS.get(topic)
+    if spec is None or not spec.combo_value:
+        return None
+    if text is None:
+        return None  # XML 없음 — missing_xml 로 이미 별도 집계, 여기서는 검사 제외
+    if not isinstance(block_offset, int) or block_offset < 0 or block_offset >= len(text):
+        return False
+    window = text[block_offset : block_offset + _WINDOW]
+    matched_values = {v for pat, v in spec.positive if pat.search(window)}
+    return len(matched_values) >= 2
 
 
 def _pattern_in_evidence_llm(topic: str, evidence: str) -> bool | None:
@@ -103,18 +119,33 @@ def _capped(evidence: str) -> bool:
     return len(evidence) >= 400
 
 
+def _is_combo_row(row: dict[str, Any]) -> bool:
+    spec = TOPICS.get(row.get("topic"))
+    return bool(spec and spec.combo_value and row.get("method") == "rule" and row.get("value") == spec.combo_value)
+
+
+def _effective_method(row: dict[str, Any]) -> str:
+    """리포트 그룹핑용(Q-I3) — 콤보값 rule 행은 "combo" 로 따로 묶는다. 판정 근거(블록 전체)가
+    보통 rule 행(문장 하나)과 다르므로, 같은 (topic, "rule") 그룹에 섞으면 pattern_in_evidence
+    위반율을 잘못 읽는다(콤보 비중만큼 그대로 찍혀 "근거가 부실하다"는 잘못된 결론을 낸다)."""
+    return "combo" if _is_combo_row(row) else (row.get("method") or "")
+
+
 def _row_flags(row: dict[str, Any], text: str | None) -> dict[str, bool]:
     evidence = row.get("evidence") or ""
     method = row.get("method") or ""
     topic = row.get("topic")
     subject = row.get("subject")
     value = row.get("value")
-    flags: dict[str, bool] = {
-        "evidence_in_block": _evidence_in_block(evidence, method, text, row.get("block_offset"))
-    }
+    flags: dict[str, bool] = {}
+    eib = _evidence_in_block(evidence, method, text, row.get("block_offset"))
+    if eib is not None:
+        flags["evidence_in_block"] = eib
     if method == "none":
         return flags  # 판단 불가 행은 evidence_in_block 만 본다 — 나머지는 판정 자체가 없어 무의미
-    if method == "rule":
+    if _is_combo_row(row):
+        pie = _pattern_in_evidence_combo(topic, text, row.get("block_offset"))
+    elif method == "rule":
         pie = _pattern_in_evidence_rule(topic, value, evidence)
     elif method in ("llm", "llm_verified"):
         pie = _pattern_in_evidence_llm(topic, evidence)
@@ -152,10 +183,9 @@ def run_policy_stance_audit(
     for row in rows:
         rcept_no = row["rcept_no"]
         topic = row["topic"]
-        method = row.get("method") or ""
         text = _doc_text(rcept_no)
         flags = _row_flags(row, text)
-        key = (topic, method)
+        key = (topic, _effective_method(row))
         group_rows[key] += 1
         for flag, ok in flags.items():
             is_violation = (not ok) if flag in _VIOLATION_WHEN_FALSE else ok
