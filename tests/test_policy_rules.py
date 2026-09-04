@@ -130,6 +130,24 @@ class RevenueRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk("기업회계기준서 제1115호에 따르면, 기간에 걸쳐 이행하는 수행의무는 진행기준에 따라 수익을 인식한다.", None, "수익인식"))
         self.assertEqual(j.value, UNDETERMINED)
 
+    def test_용역_제공시점과_인도기준은_POINT_IN_TIME(self) -> None:
+        text = (
+            "당사는 객실료, 스키ㆍ골프장ㆍ워터파크 수입, 봉사료 수입 및 회원권사용수익은 용역의 제공시점에 따라 "
+            "수익으로 인식하고 있으며, 상품 등의 매출은 인도기준에 따라 수익을 인식하고 있습니다."
+        )
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, "POINT_IN_TIME")
+
+    def test_통제_이전_시점과_제공하는_기간에_걸쳐는_BOTH(self) -> None:
+        text = "재화의 판매는 통제가 이전되는 시점에 수익을 인식하고 있습니다. 용역은 제공하는 기간에 걸쳐 수익을 인식하고 있습니다."
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, "BOTH")
+
+    def test_위험과_보상_이전_시점과_진행률은_BOTH(self) -> None:
+        text = "재화의 소유에 따른 위험과 보상이 구매자에게 이전되는 시점에 수익을 인식하고 있습니다. 공사계약은 거래의 진행률에 따라 수익을 인식하고 있습니다."
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, "BOTH")
+
 
 class IpRulesTests(unittest.TestCase):
     spec = TOPICS["IP_MEASUREMENT"]
