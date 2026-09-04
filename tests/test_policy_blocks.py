@@ -42,6 +42,11 @@ class SplitPolicyBlocksTests(unittest.TestCase):
         blocks = split_policy_blocks(text)
         self.assertEqual([b.standard_no for b in blocks], ["1118"])
 
+    def test_곧은따옴표_제목도_헤더다(self) -> None:
+        text = "회사는 새로운 기준서를 검토하였다  기업회계기준서 제1118호 '재무제표 표시와 이연법인세 및 기타포괄손익 공시에 관한 종합기준서'는 2027년부터 적용된다."
+        blocks = split_policy_blocks(text)
+        self.assertEqual([b.standard_no for b in blocks], ["1118"])
+
 
 if __name__ == "__main__":
     unittest.main()
