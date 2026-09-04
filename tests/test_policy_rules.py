@@ -206,6 +206,64 @@ class PpeRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk(text, None, "유형자산"))
         self.assertEqual(j.value, UNDETERMINED)
 
+    def test_C1_repro_20260409002974_측정하는_경우는_COST가_아니다(self) -> None:
+        """재리뷰 Critical #1 재현(20260409002974): R1 이 COST 긍정 동사에 "평가|측정"을
+        추가했는데 R2 가정형 strip 의 동사는 "적용|평가" 뿐이라 "원가모형으로 측정하는 경우"가
+        strip 을 통과해 COST_MODEL 로 오판됐다 — 재평가모형 회사의 IAS 16.77(e) 의무 공시표
+        열 제목이 트리거가 된 사례다."""
+        text = (
+            "다. 재평가된 유형자산이 원가모형으로 측정하는 경우의 장부가액 "
+            "(단위 : 천원) 구 분 재평가금액 원가모형으로 측정하는 경우 장부가액 토 지 63,171,840 21,930,172"
+        )
+        j = judge(self.spec, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, UNDETERMINED)
+
+    def test_C1_repro_20260213000544_측정하는_경우는_COST가_아니다(self) -> None:
+        """재리뷰 Critical #1 재현(20260213000544): 위와 같은 결함의 두 번째 실측."""
+        text = "구 분 재평가금액 원가모형으로 측정하는 경우 장부금액 토 지 10,858,000 3,797,622"
+        j = judge(self.spec, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, UNDETERMINED)
+
+    def test_C1_repro_20260429000737_표_제목이_REVAL_진술을_MIXED로_강등하지_않는다(self) -> None:
+        """재리뷰 Critical #1 재현(20260429000737): 조사·어미 없이 표 열 제목으로만 나오는
+        "원가모형 평가 장부가액"(가정형 strip 의 시/했을/하였을/…/하는 경우 어미를 아예 안
+        가짐)이 같은 블록의 정확한 REVALUATION_MODEL 진술("재평가모델을 적용하고 있으며")을
+        MIXED 로 강등시켰다 — 표 열 제목 형태 전용 strip 으로 고친다."""
+        text = (
+            "연결회사는 토지의 인식시점 이후의 측정과 관련하여 재평가모델을 적용하고 있으며, "
+            "④ 재평가된 유형자산이 원가모형으로 평가되었을 경우의 장부가액 분류별 유형자산 재평가금액 "
+            "원가모형 평가 장부가액"
+        )
+        j = judge(self.spec, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, "REVALUATION_MODEL")
+
+
+class PpeCostVerbSyncInvariantTests(unittest.TestCase):
+    """C1/I4: R1(positive 동사 확장)과 R2(가정형 strip)가 서로 다른 동사 집합을 쓰면, positive
+    가 strip 보다 넓은 동사를 인정하는 순간 그 동사로만 나오는 표 열 제목·가정형 문구가
+    strip 을 통과해 COST 트리거로 오판된다(C1 이 실측한 사고). 이 불변식을 고정한다:
+    "유형자산…원가모형(을|를|으로|로)?<동사>" 로 COST_MODEL 이 되는 모든 동사는, 같은 동사가
+    가정형 어미(…하는 경우 등)와 결합했을 때도 반드시 strip 되어 UNDETERMINED 가 되어야 한다.
+    이 목록(`_COST_VERBS`)은 `dart_search_mcp/policy_rules.py` 의 COST 확장 positive 패턴
+    (`_T2_POS`)의 동사 집합과 정확히 같아야 한다 — 둘 중 하나만 바뀌면 이 테스트가 깨진다."""
+
+    spec = TOPICS["PPE_MEASUREMENT"]
+    _COST_VERBS = ("적용", "채택", "사용", "평가", "측정")
+
+    def test_모든_COST_동사가_긍정에서_발화한다(self) -> None:
+        for verb in self._COST_VERBS:
+            with self.subTest(verb=verb):
+                text = f"(5) 유형자산 당사는 원가모형을 {verb}하고 있습니다."
+                j = judge(self.spec, _blk(text, None, "유형자산"))
+                self.assertEqual(j.value, "COST_MODEL")
+
+    def test_모든_COST_동사가_가정형_strip에서도_제거된다(self) -> None:
+        for verb in self._COST_VERBS:
+            with self.subTest(verb=verb):
+                text = f"(5) 유형자산 원가모형을 {verb}하는 경우의 장부금액입니다."
+                j = judge(self.spec, _blk(text, None, "유형자산"))
+                self.assertEqual(j.value, UNDETERMINED)
+
 
 class RevenueRulesTests(unittest.TestCase):
     spec = TOPICS["REVENUE_METHOD"]
