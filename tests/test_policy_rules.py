@@ -785,6 +785,32 @@ class RevenueRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk(text, None, "수익인식"))
         self.assertEqual(j.value, UNDETERMINED)
 
+    def test_위탁판매_위험과_효익_미이전_부정문은_BOTH로_새지_않는다_재리뷰_V10_Critical2(
+        self,
+    ) -> None:
+        """재리뷰 Critical #2 재현: V9 가 어미 요구를 없애면서 형제 패턴(`위험과\\s*보상이…
+        이전(?!되지…)`, 재리뷰 Minor #4)이 이미 막았던 부정 가드까지 같이 사라졌다 —
+        "위험과 효익의 대부분이 구매자에게 이전되지 않는 경우에는 수익을 인식하지
+        않습니다"(위탁판매, 수익 미인식 서술)가 그대로 매치돼 OVER_TIME 단독 회사를 BOTH 로
+        잘못 승격시켰다."""
+        text = (
+            "위탁판매의 경우 수탁자에게 재화가 인도되었더라도 위험과 효익의 대부분이 "
+            "구매자에게 이전되지 않는 경우에는 수익을 인식하지 않습니다. 용역의 제공은 "
+            "진행기준에 따라 인식하고 있습니다."
+        )
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, "OVER_TIME")
+
+    def test_위험과_효익_이전되지_아니하는_때_단독은_UNDETERMINED_재리뷰_V10_Critical2(
+        self,
+    ) -> None:
+        """재리뷰 Critical #2 재현: 부정문 단독("위험과 효익의 대부분이 구매자에게 이전되지
+        아니하는 때에는 수익을 인식하지 아니합니다")은 수익을 인식하지 않는다는 서술인데
+        가드 없는 패턴이 POINT_IN_TIME 으로 정반대 오판했다."""
+        text = "위험과 효익의 대부분이 구매자에게 이전되지 아니하는 때에는 수익을 인식하지 아니합니다."
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, UNDETERMINED)
+
     def test_제품이_고객에게_이전되어_고객이_인수한_때_실측(self) -> None:
         """V8 실측(batch-01.md 원문): "제품이 고객에게 이전되어 고객이 인수한 때 수익을
         인식합니다."는 K-IFRS 1115 식 시점기준 표면형이다."""
