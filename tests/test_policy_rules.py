@@ -92,6 +92,24 @@ class PpeRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk("(5) 유형자산 당사는 원가모형을 사용합니다.", None, "유형자산"))
         self.assertEqual(j.value, "COST_MODEL")
 
+    def test_원가모형적용_시_비교표는_회사의_선택이_아니다(self) -> None:
+        """R1: 재평가 내역 표의 '원가모형적용 시 장부금액'은 비교 표시일 뿐 회사 선택이 아니다."""
+        table = (
+            "4) 재평가된 유형자산이 원가모형으로 평가되었을 경우의 장부금액 "
+            "(단위 : 천원) 분류별 유형자산 재평가금액 원가모형적용 시 장부금액 토 지 2,348,650 975,509"
+        )
+        j = judge(self.spec, _blk(table, None, "유형자산"))
+        self.assertEqual(j.value, UNDETERMINED)
+
+    def test_원가모형적용_시_비교표_옆에_재평가모형_단정이_있으면_REVALUATION_MODEL(self) -> None:
+        table = (
+            "4) 재평가된 유형자산이 원가모형으로 평가되었을 경우의 장부금액 "
+            "(단위 : 천원) 분류별 유형자산 재평가금액 원가모형적용 시 장부금액 토 지 2,348,650 975,509"
+        )
+        text = "당사는 토지에 대하여 재평가모형을 적용하고 있습니다. " + table
+        j = judge(self.spec, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, "REVALUATION_MODEL")
+
 
 class RevenueRulesTests(unittest.TestCase):
     spec = TOPICS["REVENUE_METHOD"]

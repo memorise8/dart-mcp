@@ -192,7 +192,10 @@ TOPICS: dict[str, TopicSpec] = {
         positive_values=frozenset({"REVALUATION_MODEL", "COST_MODEL"}),
         applies=_by_topic("유형자산"),
         subject_of=lambda b: None,
-        negative=(), strip=(_p(r"[^.]*(?:원가|재평가)\s*(?:모형|모델)\s*(?:또는|이나|중)[^.]*\."),),
+        negative=(), strip=(
+            _p(r"[^.]*(?:원가|재평가)\s*(?:모형|모델)\s*(?:또는|이나|중)[^.]*\."),
+            _p(r"[^.]*원가\s*(?:모형|모델)\s*(?:을|를|으로)?\s*(?:적용|평가)\s*(?:시|했을|하였을|되었을|할\s*경우|하는\s*경우)[^.]*\.?"),
+        ),
         positive=_T2_POS, fallback=(),
         combo_value="MIXED",
     ),
