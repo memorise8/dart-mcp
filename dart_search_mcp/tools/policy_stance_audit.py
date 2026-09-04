@@ -180,19 +180,22 @@ def _row_flags(row: dict[str, Any], text: str | None) -> dict[str, bool]:
 
 
 def _read_rows(stances_path: Path) -> list[dict[str, Any]]:
-    """행마다 필수 키(rcept_no·topic)를 확인하고, 없으면 몇 번째 줄인지 담아 바로 에러를
-    낸다(Q-M1) — 조용히 죽는 bare KeyError 대신 사람이 읽을 수 있는 오류로."""
+    """행마다 필수 키(rcept_no·topic·value)가 있고 문자열인지 확인하고, 아니면 몇 번째 줄인지
+    담아 바로 에러를 낸다(Q-M1) — 조용히 죽는 bare KeyError 대신 사람이 읽을 수 있는 오류로.
+    타입까지 보는 이유(N3): 키 존재만 보면, 다른 도구가 만든 jsonl 에서 rcept_no 가 따옴표 없는
+    숫자(정수)로 들어와도 통과한다 — 그러면 아래 `rows.sort(key=...)` 가 str/int 혼재로
+    `TypeError` 를 던져, Q-M1 이 없애려던 바로 그 "리포트 없이 맨 트레이스백"이 되살아난다."""
     rows: list[dict[str, Any]] = []
     for lineno, raw_line in enumerate(stances_path.read_text(encoding="utf-8").splitlines(), start=1):
         line = raw_line.strip()
         if not line:
             continue
         row = json.loads(line)
-        for key in ("rcept_no", "topic"):
-            if key not in row:
+        for key in ("rcept_no", "topic", "value"):
+            if not isinstance(row.get(key), str):
                 raise PolicyStanceAuditRowError(
-                    f"{stances_path}: {lineno}번째 줄에 필수 키 '{key}' 가 없다"
-                    f"(rcept_no={row.get('rcept_no')!r}, topic={row.get('topic')!r})"
+                    f"{stances_path}: {lineno}번째 줄의 '{key}' 가 문자열이 아니다"
+                    f"(rcept_no={row.get('rcept_no')!r}, topic={row.get('topic')!r}, value={row.get('value')!r})"
                 )
         rows.append(row)
     return rows
@@ -206,7 +209,7 @@ def run_policy_stance_audit(
     # rcept_no 로 정렬(Q-I5) — jsonl 은 이미 이 순서로 쓰이지만(_write_atomic 의 정렬 키) 그 보장에
     # 기대지 않고 한 번 더 정렬한다. 아래 단일 문서 캐시가 "직전 rcept_no 하나만" 기억해도 문서당
     # 1회만 파싱되려면 같은 rcept_no 행이 반드시 인접해야 한다.
-    rows.sort(key=lambda r: r["rcept_no"])
+    rows.sort(key=lambda r: str(r["rcept_no"]))
 
     # rcept_no 별 무제한 dict 캐시는 실코퍼스(4.8만 문서, 문서당 평균 약 60KB 텍스트)에서 캐시가
     # 2.7GB 까지 상주한다(Q-I5) — 재파싱 방지 효과는 없다(행이 정렬돼 있어 같은 rcept_no 가 이미

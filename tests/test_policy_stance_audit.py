@@ -388,6 +388,28 @@ class RowValidationTests(unittest.TestCase):
             self.assertIn("2번째 줄", str(ctx.exception))
             self.assertIn("topic", str(ctx.exception))
 
+    def test_rcept_no가_정수면_줄번호와_함께_에러_N3(self) -> None:
+        """재리뷰 N3 재현: Q-M1 은 키 존재만 봐서, rcept_no 가 따옴표 없는 숫자(정수)로 들어온
+        행은 그대로 통과시켰다. 그러면 rows.sort(key=lambda r: r["rcept_no"]) 가 str/int 혼재로
+        bare TypeError 를 던져 Q-M1 이 없애려던 실패 양상이 되살아난다. 이제 타입까지 확인해
+        줄번호가 담긴 명확한 오류를 낸다."""
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            stances = t / "policy_stance.jsonl"
+            stances.write_text(
+                json.dumps({"rcept_no": "A1", "topic": "STD_EARLY_ADOPTION", "subject": None,
+                            "value": "NOT_ADOPTED", "evidence": "x", "method": "rule", "block_offset": 0})
+                + "\n"
+                + json.dumps({"rcept_no": 20260001000, "topic": "STD_EARLY_ADOPTION", "subject": None,
+                              "value": "NOT_ADOPTED", "evidence": "x", "method": "rule", "block_offset": 0})
+                + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(PolicyStanceAuditRowError) as ctx:
+                run_policy_stance_audit(stances_path=stances, docs_dir=t / "docs", report_path=t / "audit.md")
+            self.assertIn("2번째 줄", str(ctx.exception))
+            self.assertIn("rcept_no", str(ctx.exception))
+
 
 class UncheckedFlagTests(unittest.TestCase):
     """Q-M2: TOPICS 밖 주제 코드는 pattern_in_evidence 가 None(검사 제외)을 돌려준다 —
