@@ -47,6 +47,23 @@ class SplitPolicyBlocksTests(unittest.TestCase):
         blocks = split_policy_blocks(text)
         self.assertEqual([b.standard_no for b in blocks], ["1118"])
 
+    def test_일반_항목_기호에서_주제_블록이_끝난다(self) -> None:
+        text = ("(5) 유형자산 당사는 토지에 대해 재평가모형을 적용하고 있습니다. "
+                "(6) 무형자산 무형자산은 취득원가로 측정합니다. "
+                "(7) 투자부동산 당사는 투자부동산을 원가모형으로 측정합니다.")
+        blocks = split_policy_blocks(text)
+        ppe = next(b for b in blocks if b.topic_heading == "유형자산")
+        self.assertNotIn("무형자산", ppe.text)
+        self.assertNotIn("원가모형", ppe.text)
+        self.assertFalse(ppe.capped)
+
+    def test_기준서_블록도_다음_항목_기호에서_끝난다(self) -> None:
+        text = ("(4) 기업회계기준서 제1118호 '재무제표 표시와 공시' 제정 2027년부터 적용됩니다. "
+                "(5) 유형자산 당사는 원가모형을 적용합니다.")
+        blocks = split_policy_blocks(text)
+        std = next(b for b in blocks if b.standard_no == "1118")
+        self.assertNotIn("원가모형", std.text)
+
 
 if __name__ == "__main__":
     unittest.main()

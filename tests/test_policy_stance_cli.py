@@ -89,6 +89,34 @@ class RunExtractPolicyStancesTests(unittest.TestCase):
                 facts_path=FIX / "audit_facts.jsonl", docs_dir=FIX / "docs", output_path=FIX / "audit_facts.jsonl",
                 topics=("STD_EARLY_ADOPTION",), use_llm=False)
 
+    def test_llm_subjects_가_있으면_그_대상만_LLM_에_보낸다(self) -> None:
+        calls: list[str] = []
+        def fake(messages, **kw):
+            calls.append(messages[-1]["content"]); return json.dumps({"label": "NOT_ADOPTED", "evidence": "중간합계"})
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "s.jsonl"
+            s = run_extract_policy_stances(facts_path=FIX / "audit_facts.jsonl", docs_dir=FIX / "docs", output_path=out,
+                                           topics=("STD_EARLY_ADOPTION",), use_llm=True, call_fn=fake, llm_subjects=frozenset({"9999"}))
+            self.assertEqual(len(calls), 0)
+            self.assertEqual(s["llm_calls"], 0)
+            self.assertEqual(s["llm_subjects"], ["9999"])
+            s2 = run_extract_policy_stances(facts_path=FIX / "audit_facts.jsonl", docs_dir=FIX / "docs", output_path=out,
+                                            topics=("STD_EARLY_ADOPTION",), use_llm=True, call_fn=fake, llm_subjects=frozenset({"1118"}))
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(s2["llm_calls"], 1)
+
+    def test_llm_workers_병렬도_같은_결과를_낸다(self) -> None:
+        def fake(messages, **kw):
+            return json.dumps({"label": "NOT_ADOPTED", "evidence": "중간합계"})
+        with tempfile.TemporaryDirectory() as tmp:
+            a = Path(tmp) / "a.jsonl"; b = Path(tmp) / "b.jsonl"
+            run_extract_policy_stances(facts_path=FIX / "audit_facts.jsonl", docs_dir=FIX / "docs", output_path=a,
+                                       topics=("STD_EARLY_ADOPTION",), use_llm=True, call_fn=fake, llm_workers=1)
+            s = run_extract_policy_stances(facts_path=FIX / "audit_facts.jsonl", docs_dir=FIX / "docs", output_path=b,
+                                           topics=("STD_EARLY_ADOPTION",), use_llm=True, call_fn=fake, llm_workers=4)
+            self.assertEqual(a.read_text(encoding="utf-8"), b.read_text(encoding="utf-8"))
+            self.assertEqual(s["llm_workers"], 4)
+
 
 if __name__ == "__main__":
     unittest.main()

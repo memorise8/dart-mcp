@@ -26,6 +26,18 @@ _TOPIC_HDR_RE = re.compile(
     r"(?:\(\s*\d+\s*\)|\d+\s*\)|[①-⑳]|[가-힣]\.|\d+\.)\s*(유형자산|투자부동산|수익\s*인식|수익)(?![가-힣])"
 )
 _TOPIC_CANON = {"수익 인식": "수익인식", "수익": "수익인식"}
+# 알려진 시작점(기준서 헤더·주제 표제) 외에, "일반 항목 기호 + 한글 표제" 위치도 블록 종료 경계로 본다.
+_GENERIC_ITEM_RE = re.compile(
+    r"(?:\(\s*\d{1,2}\s*\)|\(\s*[가-힣]\s*\)|\d{1,2}\s*\)|[①-⑳㉠-㉭]|\d{1,2}\.)\s*[가-힣][가-힣A-Za-z0-9·ㆍ\s]{1,30}(?=\s)"
+)
+
+
+def _generic_boundary(text: str, pos: int) -> int | None:
+    """pos 이후 첫 _GENERIC_ITEM_RE 매치 시작 위치. 시작점 자신의 표제가 이 정규식에도 걸리면(예: "(5) 유형자산")
+    자기 자신을 종료 지점으로 오인하므로, 그 자기 매치의 끝까지는 건너뛰고 찾는다."""
+    self_m = _GENERIC_ITEM_RE.match(text, pos)
+    m = _GENERIC_ITEM_RE.search(text, self_m.end() if self_m else pos)
+    return m.start() if m is not None else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,9 +80,12 @@ def split_policy_blocks(text: str) -> list[PolicyBlock]:
         j = i + 1
         while j < len(starts) and std is not None and starts[j][1] == std:
             j += 1
-        end = starts[j][0] if j < len(starts) else len(text)
-        capped = end - pos > BLOCK_CAP
-        body = text[pos : min(end, pos + BLOCK_CAP)]
+        known_end = starts[j][0] if j < len(starts) else len(text)
+        generic_pos = _generic_boundary(text, pos)
+        natural_end = min(known_end, generic_pos) if generic_pos is not None else known_end
+        end = min(natural_end, pos + BLOCK_CAP)
+        capped = natural_end > pos + BLOCK_CAP
+        body = text[pos:end]
         blocks.append(
             PolicyBlock(
                 heading=body[:60],

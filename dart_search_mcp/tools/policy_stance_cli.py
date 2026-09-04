@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import time
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +66,8 @@ def run_extract_policy_stances(
     use_llm: bool,
     limit: int | None = None,
     call_fn: CallFn = call_llm,
+    llm_subjects: frozenset[str] | None = None,
+    llm_workers: int = 1,
 ) -> dict[str, Any]:
     facts_path, docs_dir, output_path = Path(facts_path), Path(docs_dir), Path(output_path)
     if output_path.resolve() == facts_path.resolve():
@@ -76,7 +79,9 @@ def run_extract_policy_stances(
     by_key: dict[tuple[str, str, str | None], dict[str, Any]] = {}
     by_topic: dict[str, Counter[str]] = defaultdict(Counter)
     capped: dict[str, list[int]] = defaultdict(list)
-    llm_calls = 0
+    # 규칙 판정은 먼저 순차로 전부 끝낸다. UNDETERMINED 이고 LLM 대상(llm_subjects)인 블록만
+    # (fact, spec, block, key) 로 모아 두었다가 아래에서 한 번에(순차 또는 병렬) 판정한다.
+    pending: list[tuple[dict[str, Any], Any, PolicyBlock, tuple[str, str, str | None]]] = []
     reports = 0
     skipped_no_xml = 0
     started = time.time()
@@ -92,19 +97,33 @@ def run_extract_policy_stances(
                 if not spec.applies(block):
                     continue
                 j = judge(spec, block)
-                if j.value == UNDETERMINED and use_llm:
-                    llm_calls += 1
-                    j = judge_with_llm(spec, block, call_fn=call_fn)
                 capped[spec.code].append(1 if block.capped else 0)
                 key = (fact["rcept_no"], spec.code, j.subject)
+                if j.value == UNDETERMINED and use_llm and (llm_subjects is None or j.subject in llm_subjects):
+                    pending.append((fact, spec, block, key))
                 prev = by_key.get(key)
                 if prev is None or _RANK[j.method] > _RANK[prev["method"]]:
                     by_key[key] = _record(fact, j, block)
+    if pending:
+        def _judge_one(item: tuple[dict[str, Any], Any, PolicyBlock, tuple[str, str, str | None]]) -> Judgement:
+            _, spec, block, _ = item
+            return judge_with_llm(spec, block, call_fn=call_fn)
+
+        if llm_workers <= 1:
+            results = [_judge_one(item) for item in pending]
+        else:
+            with ThreadPoolExecutor(max_workers=llm_workers) as executor:
+                results = list(executor.map(_judge_one, pending))
+        for (fact, spec, block, key), j in zip(pending, results):
+            prev = by_key.get(key)
+            if prev is None or _RANK[j.method] > _RANK[prev["method"]]:
+                by_key[key] = _record(fact, j, block)
+    llm_calls = len(pending)
     for rec in by_key.values():
         by_topic[rec["topic"]][rec["value"]] += 1
     tmp = output_path.with_name(output_path.name + ".tmp")
     with tmp.open("w", encoding="utf-8") as fh:
-        for rec in by_key.values():
+        for rec in sorted(by_key.values(), key=lambda r: (r["rcept_no"], r["topic"], r["subject"] or "")):
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     tmp.replace(output_path)
     summary = {
@@ -115,6 +134,8 @@ def run_extract_policy_stances(
         "by_topic": {t: dict(c) for t, c in by_topic.items()},
         "capped_ratio": {t: (sum(v) / len(v) if v else 0.0) for t, v in capped.items()},
         "llm_calls": llm_calls,
+        "llm_subjects": sorted(llm_subjects) if llm_subjects is not None else None,
+        "llm_workers": llm_workers,
         "parser_version": PARSER_VERSION,
         "elapsed_sec": round(time.time() - started, 1),
     }
