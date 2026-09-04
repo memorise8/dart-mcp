@@ -803,11 +803,61 @@ class RevenueRulesTests(unittest.TestCase):
     def test_수행의무_이행_한_시점_또는_기간에_걸쳐_정의문은_UNDETERMINED_V8(self) -> None:
         """V8: 5단계 수익인식모형의 일반 정의문("…수행의무를 이행할 때 한 시점 또는 기간에
         걸쳐 수익을 인식합니다")은 시점기준·진행기준 둘 다를 포괄하는 일반 서술이지 회사의
-        확정된 선택이 아니다 — "수행의무를 이행할 때"(신규 POINT_IN_TIME 트리거) 뒤에 이
-        일반 어구가 바로 이어지면 앞 트리거까지 함께 지운다."""
+        확정된 선택이 아니다. (V10 갱신: "수행의무를 이행(할|하는) 때" 트리거는 리뷰 Critical
+        #1 로 완전히 제거됐다 — 이 테스트는 이제 그 트리거 없이도, strip 만으로도
+        UNDETERMINED 임을 확인한다.)"""
         text = "고객에게 약속한 재화나 용역을 이전하여 수행의무를 이행할 때 한 시점 또는 기간에 걸쳐 수익을 인식합니다."
         j = judge(self.spec, _blk(text, None, "수익인식"))
         self.assertEqual(j.value, UNDETERMINED)
+
+    def test_계약별_판단_서술은_UNDETERMINED_재리뷰_V10_Critical1(self) -> None:
+        """재리뷰 Critical #1 재현(실데이터 48,373건 전수 스캔, 20건 이상 rcept_no 확인): "…
+        수행의무를 이행할 때 수익을 인식할지 또는 수행의무를 이행하는 기간에 걸쳐 수익을
+        인식할지 여부를 판단하고 있습니다."는 계약별로 어느 방식이 적용되는지 "판단한다"는
+        서술일 뿐 확정된 선택이 아니다 — "수행의무를 이행(할|하는) 때" 트리거 제거 후에도
+        안의 "기간에 걸쳐 …인식"이 OVER_TIME 트리거로 리터럴 매치돼 BOTH 로 오판됐다(이번에
+        strip 으로 막는다)."""
+        text = (
+            "당사는 계약개시 시점에 해당 계약과 관련하여 수행의무를 이행할 때 수익을 인식할지 "
+            "또는 수행의무를 이행하는 기간에 걸쳐 수익을 인식할지 여부를 판단하고 있습니다."
+        )
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, UNDETERMINED)
+
+    def test_계약별_판단_서술_뒤에_진행기준_문장이_있으면_OVER_TIME_재리뷰_V10_Critical1(
+        self,
+    ) -> None:
+        """재리뷰 Critical #1: 위 계약별 판단 서술 뒤에 진짜 진행기준 진술이 이어지면
+        OVER_TIME 단독이어야 한다(BOTH 로 오판되면 안 된다)."""
+        text = (
+            "당사는 계약개시 시점에 해당 계약과 관련하여 수행의무를 이행할 때 수익을 인식할지 "
+            "또는 수행의무를 이행하는 기간에 걸쳐 수익을 인식할지 여부를 판단하고 있습니다. "
+            "공사수익은 진행기준에 따라 인식하고 있습니다."
+        )
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, "OVER_TIME")
+
+    def test_거래가격_배분_인용문은_POINT_IN_TIME이_아니다_재리뷰_V10_Critical1(self) -> None:
+        """재리뷰 Critical #1 재현(실측 20260312000533 등): "수익금액은 수행의무를 이행할
+        때 또는 이행하는 대로 그 수행의무에 배분된 거래가격으로 측정하고 있습니다."는
+        거래가격 배분 조항이지 시점기준 선언이 아니다."""
+        text = "수익금액은 수행의무를 이행할 때 또는 이행하는 대로 그 수행의무에 배분된 거래가격으로 측정하고 있습니다."
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertNotEqual(j.value, "POINT_IN_TIME")
+
+    def test_기준서_인용문_수행의무_이행할_때_또는_이행하는_대로는_POINT가_아니다_재리뷰_V10_Critical1(
+        self,
+    ) -> None:
+        """재리뷰 Critical #1 재현(실측 20260313000815 등): "기업회계기준서 제1115호에서는
+        …수행의무를 이행할 때 또는 이행하는 대로 그 수행의무에 배분된 거래가격으로 수익을
+        인식하고 있습니다."는 기준서 인용문이지 회사의 선택 진술이 아니다."""
+        text = (
+            "(6) 수익 인식 기업회계기준서 제1115호에서는 연결회사가 고객에게 수행의무를 "
+            "이행할 때 또는 이행하는 대로 그 수행의무에 배분된 거래가격으로 수익을 인식하고 "
+            "있습니다."
+        )
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertNotEqual(j.value, "POINT_IN_TIME")
 
 
 class IpRulesTests(unittest.TestCase):
