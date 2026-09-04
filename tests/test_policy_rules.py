@@ -1,6 +1,6 @@
 import unittest
 from dart_search_mcp.policy_blocks import PolicyBlock
-from dart_search_mcp.policy_rules import TOPICS, UNDETERMINED, judge, positive_pattern_matches
+from dart_search_mcp.policy_rules import TOPICS, UNDETERMINED, evidence_sentence, judge, positive_pattern_matches
 
 
 def _blk(text: str, std: str | None = None, topic: str | None = None) -> PolicyBlock:
@@ -113,6 +113,27 @@ class IpRulesTests(unittest.TestCase):
     def test_기준서_설명형_선택지는_UNDETERMINED(self) -> None:
         j = judge(self.spec, _blk("(6) 투자부동산 투자부동산은 원가모형 또는 공정가치모형 중 하나를 선택하여 적용할 수 있습니다.", None, "투자부동산"))
         self.assertEqual(j.value, UNDETERMINED)
+
+
+class EvidenceSentenceTests(unittest.TestCase):
+    """R1: 400자 넘는(문장 경계 없는 표) 텍스트에서도 pos 를 품은 구절이 살아남는다."""
+
+    def test_400자_이하_문장은_기존과_동일(self) -> None:
+        text = "앞 문장입니다. 당사는 토지에 대해 재평가모형을 적용하고 있습니다. 뒤 문장입니다."
+        pos = text.index("재평가모형")
+        result = evidence_sentence(text, pos)
+        self.assertEqual(result, "당사는 토지에 대해 재평가모형을 적용하고 있습니다.")
+
+    def test_문장_경계_없는_표_뒤_구절도_400자_창_안에_포함된다(self) -> None:
+        table = "1,234,567 " * 130  # 문장 경계(다./니다./음.) 없는 표 나열 — 1,300자
+        phrase = "재평가모형을 적용하고 있습니다."
+        text = table + phrase
+        self.assertGreater(len(text), 400)
+        pos = text.index(phrase)
+        result = evidence_sentence(text, pos)
+        self.assertIn("재평가모형을 적용", result)
+        self.assertLessEqual(len(result), 400)
+        self.assertIn(text[pos], result)
 
 
 if __name__ == "__main__":

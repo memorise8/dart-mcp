@@ -40,14 +40,28 @@ class TopicSpec:
 
 
 def evidence_sentence(text: str, pos: int) -> str:
-    """pos 를 포함한 문장 하나. 문장 경계를 못 찾으면 pos 앞뒤 200자."""
+    """pos 를 포함한 문장 하나. 문장 경계를 못 찾으면 pos 앞뒤 200자.
+
+    표(숫자 나열)처럼 문장 경계가 없어 "문장"이 400자를 넘으면, 문장 전체를 그대로 자르는 대신
+    pos 를 중심으로 400자 창을 잡는다 — 그래야 매치 구절(pos)이 창 밖으로 밀려나지 않는다(R1).
+    반환값은 항상 pos 위치의 글자를 포함한다."""
     start = 0
+    end = len(text)
     for m in _SENT_SPLIT_RE.finditer(text):
         if m.end() <= pos:
             start = m.end()
         else:
-            return text[start : m.start()].strip()[:_EVIDENCE_MAX]
-    return text[start:].strip()[:_EVIDENCE_MAX] or text[max(0, pos - 200) : pos + 200].strip()
+            end = m.start()
+            break
+    sent = text[start:end]
+    if len(sent) <= _EVIDENCE_MAX:
+        stripped = sent.strip()
+        return stripped or text[max(0, pos - 200) : pos + 200].strip()
+    lo = max(start, pos - 150)
+    hi = min(end, lo + _EVIDENCE_MAX)
+    if hi - lo < _EVIDENCE_MAX:
+        lo = max(start, hi - _EVIDENCE_MAX)
+    return text[lo:hi].strip()
 
 
 def _first_in_order(patterns: tuple[tuple[re.Pattern[str], str], ...], text: str) -> tuple[str, int] | None:
