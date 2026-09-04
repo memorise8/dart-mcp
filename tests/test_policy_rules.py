@@ -112,6 +112,31 @@ class EarlyAdoptionRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk("조기적용이 허용됩니다.", "1118"))
         self.assertEqual(j.value, "PERMITTED_ONLY")
 
+    def test_소급_적용합니다는_UNDETERMINED_재리뷰_X2_20260316001380(self) -> None:
+        """재리뷰 Important X2 재현(20260316001380/1008, dart_collected 실측): "기업회계기준서
+        제1008호에 따라 소급 적용합니다."는 회계정책을 소급 **적용한다**는 진술이지 미적용
+        선언이 아니다 — Round 3 addendum 의 첫 대안이 "합니다" 어미까지 허용해 2,000 보고서
+        표본 21건 중 14건을 오발화시켰다. "합니다" 를 뺀다."""
+        text = (
+            "기업회계기준서 제1008호에 따라 소급 적용합니다. 위험회피회계 요구사항에 대한 "
+            "개정사항은 최초 적용일 이후 지정된 새로운 위험회피관계에 전진적으로 적용합니다."
+        )
+        j = judge(self.spec, _blk(text, "1008"))
+        self.assertEqual(j.value, UNDETERMINED)
+
+    def test_부터_적용한_회계정책은_UNDETERMINED_재리뷰_X2_20260331002049(self) -> None:
+        """재리뷰 Important X2 재현(20260331002049/1017, dart_collected 실측): "1) 2019년
+        1월 1일부터 적용한 회계정책"은 회사가 2019년부터 이미 적용해 왔다는 서술인데, 둘째
+        대안이 어미를 전혀 요구하지 않아 과거·현재형("적용한")까지 NOT_ADOPTED 로 잡았다 —
+        형제 대안들처럼 미래·피동 어미를 요구한다."""
+        text = (
+            "기업회계기준서 제1017호와 기업회계기준서 제1116호 하에서 적용한 회계정책의 세부 "
+            "내용은 아래와 같습니다. 1) 2019년 1월 1일부터 적용한 회계정책 1-1) 당사가 리스이용자인 "
+            "경우 당사는 계약 약정일에 계약이 리스인지 또는 계약에 리스가 포함되어 있는지를 평가합니다."
+        )
+        j = judge(self.spec, _blk(text, "1017"))
+        self.assertEqual(j.value, UNDETERMINED)
+
     def test_파_악_중_띄어쓰기_실측도_NOT_ADOPTED_V7_R1(self) -> None:
         """실측: 원문에 "파 악 중"처럼 글자 사이에 띄어쓰기가 있는 경우도 잡아야 한다."""
         j = judge(self.spec, _blk("회사는 동 기준서 적용에 따른 영향을 파 악 중입니다.", "1118"))
