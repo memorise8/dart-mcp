@@ -174,6 +174,16 @@ class RevenueRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk(text, None, "수익인식"))
         self.assertEqual(j.value, "BOTH")
 
+    def test_위험과_보상이_이전되지_않는다는_부정절은_BOTH로_승격하지_않는다_재리뷰_Minor_4(self) -> None:
+        """재리뷰 Minor #4 재현: "위험과 보상이 …이전되지 않"(리스 분류·수익 미인식 서술)에도
+        부정 가드 없이 매치돼, OVER_TIME 단독 회사가 잘못 BOTH 로 승격됐다."""
+        text = (
+            "공사계약은 거래의 진행률에 따라 수익을 인식하고 있습니다. "
+            "자산의 소유에 따른 위험과 보상이 대부분 이전되지 않기 때문에 운용리스로 분류하고 있습니다."
+        )
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, "OVER_TIME")
+
 
 class IpRulesTests(unittest.TestCase):
     spec = TOPICS["IP_MEASUREMENT"]
