@@ -380,6 +380,22 @@ class PpeRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk(text, None, "유형자산"))
         self.assertEqual(j.value, "MIXED")
 
+    def test_토지를_공정가치로_평가하는_경우_손상차손_조건절은_REVAL이_아니다_재리뷰_V10_Important(
+        self,
+    ) -> None:
+        """재리뷰 Important 재현: 같은 커밋의 형제 패턴(선택/도입)은 손상 문맥 배제
+        룩어헤드를 받았는데 이 "토지…공정가치로 측정/평가" 패턴은 못 받았다 — "토지를
+        공정가치로 평가하는 경우 재평가되는 자산의 손상차손은 …"은 I1/X4 가 이미 닫은
+        손상 조건절과 같은 모양(트리거만 바뀜)인데 REVALUATION_MODEL 로 오판돼 MIXED 가
+        됐다."""
+        text = (
+            "다.유형자산 토지를 공정가치로 평가하는 경우 재평가되는 자산의 손상차손은 당해 "
+            "사업연도의 손익으로 인식합니다. 그 외 유형자산은 취득원가로 평가하고 있습니다."
+        )
+        j = judge(self.spec, _blk(text, None, "유형자산"))
+        self.assertNotEqual(j.value, "REVALUATION_MODEL")
+        self.assertNotEqual(j.value, "MIXED")
+
     def test_원가모형_적용하여_측정하였을_경우도_가정형_strip_V6_R2(self) -> None:
         """V6 R2: 기존 가정형 strip("원가모형으로 평가되었을 경우")은 동사와 어미 사이에
         "하여 측정"이 끼는 변형("적용하여 측정하였을 경우")을 못 잡아 COST_MODEL 로 오판했다."""
