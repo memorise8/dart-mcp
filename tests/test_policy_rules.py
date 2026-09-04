@@ -422,6 +422,32 @@ class RevenueRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk(text, None, "수익인식"))
         self.assertEqual(j.value, "OVER_TIME")
 
+    def test_리스기간에_걸쳐는_OVER_TIME_트리거가_아니라_뒤의_POINT를_지우지_않는다_재리뷰_N2(
+        self,
+    ) -> None:
+        """재리뷰 N2 재현: "리스기간에 걸쳐"는 OVER_TIME 트리거가 아닌 복합어인데, 앵커가 맨
+        문자열 "기간에 걸쳐"였던 첫 버전은 이것도 앵커로 잡아 뒤의 진짜 POINT 진술("검수가
+        완료되는 시점에 수익을 인식")을 지워 UNDETERMINED 로 뒤집었다."""
+        text = "용역수익은 리스기간에 걸쳐 정액 배분하며, 상품매출은 검수가 완료되는 시점에 수익을 인식합니다."
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, "POINT_IN_TIME")
+
+    def test_보증기간에_걸쳐는_OVER_TIME_트리거가_아니라_뒤의_POINT를_지우지_않는다_재리뷰_N2(
+        self,
+    ) -> None:
+        """재리뷰 N2 재현: "보증기간에 걸쳐"도 같은 종류의 오탐 앵커였다."""
+        text = "제품보증은 보증기간에 걸쳐 배분하고, 재화의 판매는 고객에게 인도되는 시점에 수익을 인식합니다."
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, "POINT_IN_TIME")
+
+    def test_상각기간에_걸쳐는_OVER_TIME_트리거가_아니라_뒤의_POINT를_지우지_않는다_재리뷰_N2(
+        self,
+    ) -> None:
+        """재리뷰 N2 재현: "상각기간에 걸쳐"도 같은 종류의 오탐 앵커였다."""
+        text = "개발비는 상각기간에 걸쳐 배분하며, 제품 매출은 출고되는 시점에 수익을 인식합니다."
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, "POINT_IN_TIME")
+
     def test_시점에_수익을_인식하지_않습니다_단독은_UNDETERMINED_재리뷰_I3a(self) -> None:
         """재리뷰 Important #3(a) 단독 검증("기간에 걸쳐" 없이도): 부정형 "시점에 수익을
         인식하지 않습니다"만 있으면 POINT_IN_TIME 으로 잡히지 않아야 한다."""
