@@ -715,6 +715,40 @@ class RevenueRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk(text, None, "수익인식"))
         self.assertEqual(j.value, "OVER_TIME")
 
+    def test_위험과_효익이_구매자에게_이전된_때는_POINT_IN_TIME_V8(self) -> None:
+        """V8: K-GAAP 식 재화 문형("위험과 효익의 대부분이 구매자에게 이전된 때")도
+        시점기준 트리거다 — 진행기준(용역)과 병기되면 BOTH."""
+        text = (
+            "재화의 소유에 따른 위험과 효익의 대부분이 구매자에게 이전된 때 수익을 인식하고 "
+            "있습니다. 용역의 제공은 진행기준에 따라 수익을 인식하고 있습니다."
+        )
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, "BOTH")
+
+    def test_제품이_고객에게_이전되어_고객이_인수한_때_실측(self) -> None:
+        """V8 실측(batch-01.md 원문): "제품이 고객에게 이전되어 고객이 인수한 때 수익을
+        인식합니다."는 K-IFRS 1115 식 시점기준 표면형이다."""
+        text = "제품이 고객에게 이전되어 고객이 인수한 때 수익을 인식합니다."
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, "POINT_IN_TIME")
+
+    def test_진행기준을_적용하지_않고_시점_괄호_기준에_인식은_POINT_IN_TIME_V8(self) -> None:
+        """V8: "진행기준을 적용하지 않고"(부정)는 OVER_TIME 트리거로 오인되면 안 된다 —
+        길이 보존 strip 으로 부정형만 지운다. 뒤의 "시점(완성기준)에 수익을 인식"(괄호로
+        방식 이름이 낀 변형)이 진짜 POINT_IN_TIME 트리거다."""
+        text = "진행기준을 적용하지 않고 용역제공이 완료된 시점(완성기준)에 수익을 인식합니다."
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, "POINT_IN_TIME")
+
+    def test_수행의무_이행_한_시점_또는_기간에_걸쳐_정의문은_UNDETERMINED_V8(self) -> None:
+        """V8: 5단계 수익인식모형의 일반 정의문("…수행의무를 이행할 때 한 시점 또는 기간에
+        걸쳐 수익을 인식합니다")은 시점기준·진행기준 둘 다를 포괄하는 일반 서술이지 회사의
+        확정된 선택이 아니다 — "수행의무를 이행할 때"(신규 POINT_IN_TIME 트리거) 뒤에 이
+        일반 어구가 바로 이어지면 앞 트리거까지 함께 지운다."""
+        text = "고객에게 약속한 재화나 용역을 이전하여 수행의무를 이행할 때 한 시점 또는 기간에 걸쳐 수익을 인식합니다."
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, UNDETERMINED)
+
 
 class IpRulesTests(unittest.TestCase):
     spec = TOPICS["IP_MEASUREMENT"]
