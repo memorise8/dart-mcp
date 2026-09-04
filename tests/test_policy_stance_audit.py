@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from dart_search_mcp.tools.policy_stance_audit import run_policy_stance_audit
+from dart_search_mcp.tools.policy_stance_audit import _pattern_in_evidence_llm, run_policy_stance_audit
 from dart_search_mcp.tools.policy_stance_cli import run_extract_policy_stances
 
 FIX = Path(__file__).parent / "fixtures" / "policy"
@@ -335,6 +335,31 @@ class SingleDocCacheTests(unittest.TestCase):
 
             self.assertEqual(len(calls), 2)  # 문서 2개 — 행은 3개지만 파싱은 문서당 1회
             self.assertEqual(set(calls), {"S1", "S2"})
+
+
+class AuditKeywordsTests(unittest.TestCase):
+    """Q-I6: _AUDIT_KEYWORDS 는 브리프가 주제별 정규식을 문자까지 지정한 부분인데, 지금까지
+    이 함수를 지나는 테스트가 0 이었다(합성 5행은 전부 rule/none, 픽스처 교차 테스트는
+    use_llm=False). 네 주제 각각 양성 1건·음성 1건으로 회귀를 잠근다."""
+
+    def test_STD_EARLY_ADOPTION_키워드(self) -> None:
+        self.assertTrue(_pattern_in_evidence_llm("STD_EARLY_ADOPTION", "당사는 조기적용을 검토 중입니다."))
+        self.assertFalse(_pattern_in_evidence_llm("STD_EARLY_ADOPTION", "회사는 이 사항과 무관합니다."))
+
+    def test_PPE_MEASUREMENT_키워드(self) -> None:
+        self.assertTrue(_pattern_in_evidence_llm("PPE_MEASUREMENT", "당사는 원가모형을 적용합니다."))
+        self.assertFalse(_pattern_in_evidence_llm("PPE_MEASUREMENT", "당사는 취득가액으로 인식합니다."))
+
+    def test_REVENUE_METHOD_키워드(self) -> None:
+        self.assertTrue(_pattern_in_evidence_llm("REVENUE_METHOD", "수익은 진행률에 따라 인식합니다."))
+        self.assertFalse(_pattern_in_evidence_llm("REVENUE_METHOD", "수익은 매출 발생 시 계상합니다."))
+
+    def test_IP_MEASUREMENT_키워드(self) -> None:
+        self.assertTrue(_pattern_in_evidence_llm("IP_MEASUREMENT", "투자부동산은 공정가치모형으로 측정합니다."))
+        self.assertFalse(_pattern_in_evidence_llm("IP_MEASUREMENT", "투자부동산은 임대수익을 창출합니다."))
+
+    def test_등록되지_않은_주제는_None(self) -> None:
+        self.assertIsNone(_pattern_in_evidence_llm("UNKNOWN_TOPIC", "아무 문장"))
 
 
 if __name__ == "__main__":

@@ -72,6 +72,36 @@ class EvidenceAnchoringTests(unittest.TestCase):
         self.assertEqual((j.value, j.method), ("EARLY_ADOPTED", "llm_verified"))
         self.assertIn("조기적용하였습니다", j.evidence)
 
+    def test_블록에_개행과_연속_공백이_있어도_앵커된다_Q_M4(self) -> None:
+        """구현자 보고가 "브리프에 없는 구현 세부"로 꼽은 _normalize_with_map 의 공백 축약 분기가
+        지금까지 단일 공백 픽스처로만 테스트돼 미검증이었다(Q-M4). 개행·연속 공백이 있는 블록에서도
+        LLM 이 돌려준(단일 공백) 인용구가 앵커되는지 직접 고정한다."""
+        fake = lambda messages, **kw: json.dumps(
+            {"label": "NOT_ADOPTED", "evidence": "제1118호를 아직 채택하지 않았으며"}
+        )
+        block = _blk("당사는\n\n  다른   기준서를 검토하였습니다. 회사는   제1118호를    아직  채택하지 않았으며 영향을 평가 중입니다.")
+        j = judge_with_llm(self.spec, block, call_fn=fake)
+        self.assertEqual((j.value, j.method), ("NOT_ADOPTED", "llm"))
+        self.assertIn("채택하지 않았으며", j.evidence)
+
+    def test_20자_폴백으로_앵커된다_Q_M5(self) -> None:
+        """리뷰가 직접 재현해 정확함을 확인한 예시를 그대로 고정한다: LLM 인용구 전체는 블록에
+        없지만(뒷부분이 의역됨) 앞 20자는 원문과 그대로 일치 — 20자 폴백으로 앵커돼야 한다."""
+        from dart_search_mcp.policy_llm import _locate
+
+        text = "회사는 제1118호를 아직 채택하지 않았으며 영향을 평가 중입니다."
+        quote = "회사는 제1118호를 아직 채택하지 않았으나 향후 영향을 검토할 예정입니다."  # 20자 이후 의역
+        self.assertNotIn(quote, text)  # 전체 일치로는 못 찾는다 — 폴백이 실제로 필요한 상황인지 확인
+        pos = _locate(text, quote)
+        self.assertIsNotNone(pos)
+        self.assertEqual(pos, 0)
+
+        fake = lambda messages, **kw: json.dumps({"label": "NOT_ADOPTED", "evidence": quote})
+        block = _blk(text)
+        j = judge_with_llm(self.spec, block, call_fn=fake)
+        self.assertEqual((j.value, j.method), ("NOT_ADOPTED", "llm"))
+        self.assertNotEqual(j.evidence, "")
+
     def test_문장_확장_후_검증하면_안된다_Q_C1_재현(self) -> None:
         """리뷰 Q-C1 재현: LLM 이 인용한 구절("제1118호는 조기적용이 허용됨")은 그 자체로는 단정
         패턴이 아니다. 같은 문장 안에 다른 기준서(제1116호)를 조기적용했다는 단정 문구가 있어도,

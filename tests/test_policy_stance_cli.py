@@ -241,5 +241,70 @@ class RunExtractPolicyStancesTests(unittest.TestCase):
             self.assertEqual(s["llm_workers"], 4)
 
 
+class CliLlmWiringTests(unittest.TestCase):
+    """Q-I6: --llm-model/--llm-base-url 의 CLI 배선은 지금까지 어떤 테스트도 지나지 않았다.
+    tag-kam 테스트 관례(httpx.Client 를 소켓 없는 spy 로 교체)를 그대로 따라, CLI 옵션이
+    실제 HTTP 호출(모델명·URL)까지 실제로 이어지는지 CliRunner 로 끝까지 확인한다."""
+
+    def test_llm_model_base_url_옵션이_실제_HTTP_호출까지_배선된다(self) -> None:
+        import httpx
+        import server  # noqa: F401  — 레포 관례: server -> cli -> dart_search_mcp.tools.* 순서로 import
+        import cli
+        from click.testing import CliRunner
+
+        captured: dict = {}
+
+        class _FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "choices": [
+                        {"message": {"content": json.dumps({"label": "NOT_ADOPTED", "evidence": "중간합계"})}}
+                    ]
+                }
+
+        class _FakeClient:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            def __enter__(self) -> "_FakeClient":
+                return self
+
+            def __exit__(self, *exc_info) -> bool:
+                return False
+
+            def post(self, url: str, json: dict):
+                captured["url"] = url
+                captured["model"] = json.get("model")
+                return _FakeResponse()
+
+        original_client = httpx.Client
+        httpx.Client = _FakeClient  # type: ignore[assignment]
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp) / "s.jsonl"
+                runner = CliRunner()
+                result = runner.invoke(
+                    cli.cli,
+                    [
+                        "extract-policy-stances",
+                        "--facts", str(FIX / "audit_facts.jsonl"),
+                        "--docs", str(FIX / "docs"),
+                        "-o", str(out),
+                        "--topics", "STD_EARLY_ADOPTION",
+                        "--llm",
+                        "--llm-model", "custom-model-x",
+                        "--llm-base-url", "http://custom-gw.local/v1",
+                    ],
+                )
+                self.assertEqual(result.exit_code, 0, result.output)
+                self.assertEqual(captured["model"], "custom-model-x")
+                self.assertEqual(captured["url"], "http://custom-gw.local/v1/chat/completions")
+                self.assertIn("모델 custom-model-x", result.output)
+        finally:
+            httpx.Client = original_client  # type: ignore[assignment]
+
+
 if __name__ == "__main__":
     unittest.main()
