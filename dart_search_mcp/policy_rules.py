@@ -22,7 +22,7 @@ class Judgement:
     subject: str | None
     value: str
     evidence: str
-    method: str  # "rule" | "none"
+    method: str  # "rule" | "llm_verified" | "llm" | "none" — llm* 은 policy_llm.py 가 붙인다
 
 
 @dataclass(frozen=True, slots=True)

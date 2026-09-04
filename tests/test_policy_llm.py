@@ -39,6 +39,13 @@ class JudgeWithLlmTests(unittest.TestCase):
         judge_with_llm(self.spec, _blk("제1118호 본문"), call_fn=fake)
         self.assertIn("1118", seen["content"]); self.assertIn("제1118호 본문", seen["content"])
 
+    def test_LLM_호출_실패는_UNDETERMINED(self) -> None:
+        from dart_search_mcp.tools.kam_tagger import KamLlmError
+        def boom(messages, **kw):
+            raise KamLlmError("gateway down")
+        j = judge_with_llm(self.spec, _blk("제1118호 본문"), call_fn=boom)
+        self.assertEqual((j.value, j.method, j.evidence, j.subject), (UNDETERMINED, "none", "", "1118"))
+
 
 if __name__ == "__main__":
     unittest.main()
