@@ -123,28 +123,39 @@ def run_extract_policy_stances(
     # 프로세스를 통째로 죽이는 사고(OOM·강제종료 등)를 내더라도 이 파일은 남는다. 최종 결과가 덮어쓴다.
     _write_atomic(output_path, by_key.values())
     llm_failures = 0
+    llm_gateway = 0
+    llm_parse = 0
     llm_unanchored = 0
+    llm_unverified = 0
     if pending:
-        def _judge_one(item: tuple[dict[str, Any], Any, PolicyBlock, tuple[str, str, str | None]]) -> tuple[Judgement, bool]:
+        def _judge_one(
+            item: tuple[dict[str, Any], Any, PolicyBlock, tuple[str, str, str | None]]
+        ) -> tuple[Judgement, bool, str | None]:
             """개별 LLM 호출 실패(타임아웃·게이트웨이 오류 등 예상 밖 예외 포함)가 전체 실행을
-            멈추지 않게 격리한다 — UNDETERMINED/"none" 으로 낮추고 실패로 센다."""
+            멈추지 않게 격리한다 — UNDETERMINED/"none" 으로 낮추고 실패로 센다. 예외 없이 끝난
+            호출은 judge_with_llm 이 trace 에 남긴 사유("gateway"/"parse"/"unanchored"/
+            "unverified"/"ok")를 그대로 돌려준다(S-I1/Q-I1 — 다섯 실패 경로를 구분해서 센다)."""
             _, spec, block, _ = item
+            tr: dict[str, str] = {}
             try:
-                return judge_with_llm(spec, block, model=llm_model, base_url=llm_base_url, call_fn=call_fn), False
+                j = judge_with_llm(spec, block, model=llm_model, base_url=llm_base_url, call_fn=call_fn, trace=tr)
+                return j, False, tr.get("reason")
             except Exception:
                 subject = spec.subject_of(block)
-                return Judgement(spec.code, subject, UNDETERMINED, "", "none"), True
+                return Judgement(spec.code, subject, UNDETERMINED, "", "none"), True, None
 
         if llm_workers <= 1:
             results = [_judge_one(item) for item in pending]
         else:
             with ThreadPoolExecutor(max_workers=llm_workers) as executor:
                 results = list(executor.map(_judge_one, pending))
-        llm_failures = sum(1 for _, failed in results if failed)
-        # R2에서 judge_with_llm 이 원문에서 확인 못한 근거를 UNDETERMINED/"none"/빈 evidence 로
-        # 낮춘다 — 그 경우를 앵커 실패로 센다(호출 자체가 실패한 llm_failures 와는 별개 카운터).
-        llm_unanchored = sum(1 for j, failed in results if not failed and j.evidence == "" and j.method == "none")
-        for (fact, spec, block, key), (j, _failed) in zip(pending, results):
+        llm_failures = sum(1 for _, failed, _reason in results if failed)
+        reason_counts = Counter(reason for _, failed, reason in results if not failed and reason is not None)
+        llm_gateway = reason_counts.get("gateway", 0)
+        llm_parse = reason_counts.get("parse", 0)
+        llm_unanchored = reason_counts.get("unanchored", 0)
+        llm_unverified = reason_counts.get("unverified", 0)
+        for (fact, spec, block, key), (j, _failed, _reason) in zip(pending, results):
             prev = by_key.get(key)
             if prev is None or _RANK[j.method] > _RANK[prev["method"]]:
                 by_key[key] = _record(fact, j, block)
@@ -161,7 +172,10 @@ def run_extract_policy_stances(
         "capped_ratio": {t: (sum(v) / len(v) if v else 0.0) for t, v in capped.items()},
         "llm_calls": llm_calls,
         "llm_failures": llm_failures,
+        "llm_gateway": llm_gateway,
+        "llm_parse": llm_parse,
         "llm_unanchored": llm_unanchored,
+        "llm_unverified": llm_unverified,
         "llm_model": llm_model,
         "llm_base_url": llm_base_url,
         "llm_subjects": sorted(llm_subjects) if llm_subjects is not None else None,

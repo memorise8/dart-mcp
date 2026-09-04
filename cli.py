@@ -810,7 +810,8 @@ def extract_policy_stances_cmd(
         click.echo(f"오류: {exc}", err=True); raise SystemExit(1)
     click.echo(
         f"추출 완료: facts {s['facts']}건 · 보고서 {s['reports']}건(XML 없음 {s['skipped_no_xml']}건) "
-        f"-> 행 {s['rows']}건, LLM {s['llm_calls']}회(실패 {s['llm_failures']}) 모델 {s['llm_model']} 앵커 실패 {s['llm_unanchored']}, {s['elapsed_sec']}s "
+        f"-> 행 {s['rows']}건, LLM {s['llm_calls']}회(실패 {s['llm_failures']}) 모델 {s['llm_model']} "
+        f"앵커 실패 {s['llm_unanchored']} 미검증 {s['llm_unverified']}, {s['elapsed_sec']}s "
         f"· LLM 대상 {', '.join(s['llm_subjects']) if s['llm_subjects'] else '전체'} · workers {s['llm_workers']}"
     )
     if s["llm_subjects_note"]:

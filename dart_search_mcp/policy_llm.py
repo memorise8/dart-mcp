@@ -102,26 +102,39 @@ def judge_with_llm(
     model: str = DEFAULT_MODEL,
     base_url: str = DEFAULT_BASE_URL,
     call_fn: CallFn = call_llm,
+    trace: dict[str, str] | None = None,
 ) -> Judgement:
+    """`trace` 가 주어지면 UNDETERMINED/"none" 으로 낮춘 사유를 `trace["reason"]` 에 남긴다
+    ("gateway"|"parse"|"unanchored"|"unverified") — 성공하면 "ok". `Judgement` 에는 필드를
+    더하지 않는다(호출당 하나씩 쓰는 out-param 이라 스레드 안전하다). 다섯 실패 경로가 전부
+    evidence=""·method="none" 인 같은 값 객체로 붕괴돼 호출자가 구분할 수 없던 문제(S-I1/Q-I1)를
+    이걸로 푼다 — 예: 게이트웨이 다운(KamLlmError)과 R18 가드 거부(unverified)를 "앵커 실패"
+    하나로 잘못 세면, 게이트웨이 장애를 앵커링 결함으로 오인하게 된다."""
     subject = spec.subject_of(block)
     none = Judgement(spec.code, subject, UNDETERMINED, "", "none")
+
+    def _none(reason: str) -> Judgement:
+        if trace is not None:
+            trace["reason"] = reason
+        return none
+
     try:
         reply = call_fn([{"role": "user", "content": build_prompt(spec, block, subject)}], model=model, base_url=base_url)
     except KamLlmError:
-        return none
+        return _none("gateway")
     parsed = _parse(reply)
     if parsed is None:
-        return none
+        return _none("parse")
     value, evidence = parsed
     if value not in spec.values or value == UNDETERMINED:
-        return none
+        return _none("parse")
     # 근거 앵커링(R2) — LLM 이 돌려준 구절이 블록 원문 어디에 있는지 찾아 문장 전체로 넓힌다.
     # 원문에서 찾을 수 없는 근거는 어휘 §1("근거 없는 행은 만들지 않는다")에 따라 채택하지 않는다.
     # _locate 탐색은 프롬프트가 실제로 실은 구간(block.text[:_BLOCK_MAX])으로 좁힌다(Q-M5) —
     # 모델이 보지 않은 2,500~3,000자 구간에서 우연히 일치해 "확인됨"으로 오채택되는 것을 막는다.
     anchor = _locate(block.text[:_BLOCK_MAX], evidence)
     if anchor is None:
-        return none
+        return _none("unanchored")
     # 검증(positive_pattern_matches)은 LLM 이 실제로 인용한 구절(quoted)로 한다 — 저장(evidence)은
     # 문장 전체로 넓히되, 검증까지 넓혀버리면 문장 안 아무 단정 패턴이나 걸려 통과해 버린다(Q-C1:
     # "제1116호를 조기적용" 문장 조각이 "제1118호" 행을 승인하는 위양성을 신설했었다). R18 가드가
@@ -129,6 +142,10 @@ def judge_with_llm(
     quoted, evidence = evidence, evidence_sentence(block.text, anchor)
     if value in spec.positive_values:
         if not positive_pattern_matches(spec, value, quoted):
-            return none
+            return _none("unverified")
+        if trace is not None:
+            trace["reason"] = "ok"
         return Judgement(spec.code, subject, value, evidence[:400], "llm_verified")
+    if trace is not None:
+        trace["reason"] = "ok"
     return Judgement(spec.code, subject, value, evidence[:400], "llm")

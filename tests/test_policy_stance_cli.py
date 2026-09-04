@@ -183,6 +183,51 @@ class RunExtractPolicyStancesTests(unittest.TestCase):
             row = next(r for r in _rows(out) if r["rcept_no"] == "20260001000002")
             self.assertEqual((row["value"], row["method"]), ("UNDETERMINED", "none"))
 
+    def test_게이트웨이_오류는_llm_gateway로_센다(self) -> None:
+        """S-I1/Q-I1: KamLlmError(게이트웨이 다운)는 llm_unanchored 가 아니라 llm_gateway 로 센다 —
+        예전엔 앵커 실패와 구분이 안 돼 "게이트웨이 장애"를 "앵커링 과실"로 오인할 수 있었다."""
+        from dart_search_mcp.tools.kam_tagger import KamLlmError
+
+        def boom(messages, **kw):
+            raise KamLlmError("gateway down")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "policy_stance.jsonl"
+            summary = run_extract_policy_stances(
+                facts_path=FIX / "audit_facts.jsonl", docs_dir=FIX / "docs", output_path=out,
+                topics=("STD_EARLY_ADOPTION",), use_llm=True, call_fn=boom)
+            self.assertEqual(summary["llm_gateway"], 1)
+            self.assertEqual(summary["llm_unanchored"], 0)
+            self.assertEqual(summary["llm_failures"], 0)  # KamLlmError는 judge_with_llm 내부에서 삼켜진다 — 예외가 아니다
+
+    def test_파싱_실패는_llm_parse로_센다(self) -> None:
+        def fake(messages, **kw):
+            return "이것은 JSON이 아닙니다"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "policy_stance.jsonl"
+            summary = run_extract_policy_stances(
+                facts_path=FIX / "audit_facts.jsonl", docs_dir=FIX / "docs", output_path=out,
+                topics=("STD_EARLY_ADOPTION",), use_llm=True, call_fn=fake)
+            self.assertEqual(summary["llm_parse"], 1)
+            self.assertEqual(summary["llm_unanchored"], 0)
+
+    def test_R18_가드_거부는_llm_unverified로_센다(self) -> None:
+        """긍정 라벨인데 인용구가 단정 패턴과 안 맞아 거부된 경우(R18 가드) — 앵커 실패와는
+        다른 사유이므로 llm_unverified 로 별도로 센다."""
+        def fake(messages, **kw):
+            return json.dumps({"label": "EARLY_ADOPTED", "evidence": "새로운 중간합계를 도입합니다"})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "policy_stance.jsonl"
+            summary = run_extract_policy_stances(
+                facts_path=FIX / "audit_facts.jsonl", docs_dir=FIX / "docs", output_path=out,
+                topics=("STD_EARLY_ADOPTION",), use_llm=True, call_fn=fake)
+            self.assertEqual(summary["llm_unverified"], 1)
+            self.assertEqual(summary["llm_unanchored"], 0)
+            row = next(r for r in _rows(out) if r["rcept_no"] == "20260001000002")
+            self.assertEqual((row["value"], row["method"]), ("UNDETERMINED", "none"))
+
     def test_llm_workers_병렬도_같은_결과를_낸다(self) -> None:
         def fake(messages, **kw):
             return json.dumps({"label": "NOT_ADOPTED", "evidence": "중간합계"})
