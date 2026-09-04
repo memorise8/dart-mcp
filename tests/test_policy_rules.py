@@ -374,6 +374,19 @@ class EvidenceSentenceTests(unittest.TestCase):
         self.assertEqual(result, text[lo : lo + 400].strip())
         self.assertIn("재평가모형을 적용", result)
 
+    def test_표_조각_접두어는_마지막_항목_기호부터_시작한다_V6_R4(self) -> None:
+        """V6 R4: 문장 경계가 없는 표 조각("(단위: 천원) 구분 …") 뒤에 실제 항목("(4) 연결회사는
+        …")이 이어지면, 문장 시작(start)과 pos 사이의 마지막 항목 기호("(4)")부터 근거가
+        시작해야 한다 — 표 숫자열이 근거 앞에 그대로 남아 있으면 안 된다."""
+        text = (
+            "(단위: 천원) 구분 당기말 전기말 1년 이내 12,338,413 12,185,353 "
+            "(4) 연결회사는 투자부동산에 대해 원가모형을 적용하고 있으며, "
+            "당기말 투자부동산의 공정가치는 207,195,626천원입니다."
+        )
+        pos = text.index("원가모형을 적용")
+        result = evidence_sentence(text, pos)
+        self.assertTrue(result.startswith("(4) 연결회사는"))
+
 
 if __name__ == "__main__":
     unittest.main()

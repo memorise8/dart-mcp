@@ -9,11 +9,24 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from dart_search_mcp.policy_blocks import PolicyBlock
+from dart_search_mcp.policy_blocks import _HEADING_AFTER_RE, PolicyBlock
 
 UNDETERMINED = "UNDETERMINED"
 _EVIDENCE_MAX = 400
 _SENT_SPLIT_RE = re.compile(r"(?<=다\.)\s+|(?<=니다\.)\s+|(?<=음\.)\s+")
+# V6 R4: 표 조각(숫자 나열) 뒤에 항목이 이어지는 경우, "문장"의 시작이 그 표 조각까지 거슬러
+# 올라간다(문장 경계가 없어서). 근거를 항목 기호부터 시작하도록 별도로 잘라낸다.
+_ITEM_MARKER_RE = re.compile(r"\(\d{1,2}\)|\d{1,2}\)|\d{1,2}-\d{1,2}\.|[①-⑳]|[가-힣]\.\s|\d{1,2}\.\s(?=[가-힣])")
+
+
+def _last_item_marker_start(text: str, start: int, pos: int) -> int | None:
+    """[start, pos) 구간에서 뒤에 한글이 이어지는(`_HEADING_AFTER_RE` 와 같은 조건) 항목 기호 중
+    가장 마지막(=pos 에 가장 가까운) 것의 시작 위치. 없으면 None."""
+    best: int | None = None
+    for m in _ITEM_MARKER_RE.finditer(text, start, pos):
+        if _HEADING_AFTER_RE.match(text, m.end()):
+            best = m.start()
+    return best
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +70,11 @@ def evidence_sentence(text: str, pos: int) -> str:
             end = m.start()
             found_boundary = True
             break
+    # V6 R4: 문장 시작(start)과 pos 사이에 항목 기호(표 조각 접두어 등)가 있으면, 그 마지막
+    # 기호부터 근거를 시작한다 — 400자 창 규칙은 이 조정 이후에 적용한다.
+    marker_start = _last_item_marker_start(text, start, pos)
+    if marker_start is not None:
+        start = marker_start
     sent = text[start:end]
     stripped = sent.strip()
     if len(stripped) <= _EVIDENCE_MAX:
