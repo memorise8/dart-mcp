@@ -123,6 +123,19 @@ class PpeRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk(text, None, "유형자산"))
         self.assertEqual(j.value, "REVALUATION_MODEL")
 
+    def test_비교표_뒤에_재평가모형_단정이_있어도_삼켜지지_않는다_V5_R1_narrowing(self) -> None:
+        """재리뷰 V5-R1 narrowing 재현: 표(마침표 없음) 자체는 strip 트리거만 지워지고, 마침표
+        없이 바로 뒤에 이어지는 진짜 긍정 문장은 삼켜지지 않아야 한다. 문장 확장형(앞뒤 [^.]*)
+        strip 이었을 때는 표 뒤 문장까지 통째로 지워져 UNDETERMINED 로 뒤집혔다."""
+        table = (
+            "4) 재평가된 유형자산이 원가모형으로 평가되었을 경우의 장부금액 "
+            "(단위 : 천원) 분류별 유형자산 재평가금액 원가모형적용 시 장부금액 토 지 2,348,650 975,509"
+        )
+        text = table + " 당사는 토지에 대하여 재평가모형을 적용하고 있습니다."
+        j = judge(self.spec, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, "REVALUATION_MODEL")
+        self.assertIn("재평가모형을 적용하고 있습니다", j.evidence)
+
 
 class RevenueRulesTests(unittest.TestCase):
     spec = TOPICS["REVENUE_METHOD"]
@@ -197,6 +210,15 @@ class IpRulesTests(unittest.TestCase):
             "연결기업은 과거에 모든 투자부동산을 원가모형을 적용하여 측정하였습니다. "
             "2025년 1월 1일에 연결기업은 투자부동산의 회계처리방법을 공정가치모형으로 변경하기로 선택하였습니다."
         )
+        j = judge(self.spec, _blk(text, None, "투자부동산"))
+        self.assertEqual(j.value, "FAIR_VALUE_MODEL")
+        self.assertIn("공정가치모형으로 변경", j.evidence)
+
+    def test_과거에와_변경_트리거가_같은_문장이어도_삼켜지지_않는다_V5_R1_narrowing(self) -> None:
+        """재리뷰 V5-R1 narrowing 재현: "과거에" strip 이 문장 확장형이면, "과거에"와 변경 후
+        모형 트리거가 같은 문장(마침표 하나) 안에 있을 때 트리거까지 통째로 지워
+        UNDETERMINED 로 뒤집혔다. phrase-bounded strip 은 "과거에 …모형 적용" 구절만 지운다."""
+        text = "회사는 과거에 원가모형을 적용하였으나 당기부터 공정가치모형으로 변경하였습니다."
         j = judge(self.spec, _blk(text, None, "투자부동산"))
         self.assertEqual(j.value, "FAIR_VALUE_MODEL")
         self.assertIn("공정가치모형으로 변경", j.evidence)
