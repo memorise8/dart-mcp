@@ -528,6 +528,21 @@ class RevenueRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk(text, None, "수익인식"))
         self.assertEqual(j.value, "OVER_TIME")
 
+    def test_진행기준에_의하여는_OVER_TIME_트리거다_재리뷰_Y1_20260219000703(self) -> None:
+        """재리뷰 Important Y1 재현(20260219000703, dart_collected 실측): "의해"는 있는데
+        "의하여"가 없어 코퍼스에 흔한 "진행기준에 의하여 수익을 인식하고 있습니다"가 매치되지
+        않았다 — 시점기준(재화 판매)·진행기준(용역 제공)을 병기하는 회사가 POINT_IN_TIME
+        단독으로 잘못 라벨링됐다(2,000 보고서 표본 12건)."""
+        text = (
+            "(1) 수익인식 당사는 상품의 매출에 대하여 재화의 소유에 따른 유의적인 위험과 효익이 "
+            "이전된 시점에 수익으로 인식하고 있습니다. 용역제공 거래에 대하여는 진행기준에 "
+            "의하여 수익을 인식하고 있습니다. 기타의 수익에 대해서는 수익가득과정이 완료되고 "
+            "수익금액을 신뢰성 있게 측정할 수 있으며 경제적 효익의 유입가능성이 매우 높을 "
+            "경우에 인식하고 있습니다."
+        )
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, "BOTH")
+
     def test_시점에_수익을_인식과_기간에_걸쳐_BOTH는_회귀하지_않는다_재리뷰_I3(self) -> None:
         """재리뷰 Important #3 가드 추가 후에도 브리프의 원래 BOTH 시나리오(POINT_IN_TIME 이
         OVER_TIME 보다 문장 순서상 먼저 나옴)는 그대로 BOTH 여야 한다 — "기간에 걸쳐" 가
