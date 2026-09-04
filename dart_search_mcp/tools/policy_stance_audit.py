@@ -170,14 +170,24 @@ def run_policy_stance_audit(
 ) -> dict[str, Any]:
     stances_path, docs_dir, report_path = Path(stances_path), Path(docs_dir), Path(report_path)
     rows = [json.loads(line) for line in stances_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    # rcept_no 로 정렬(Q-I5) — jsonl 은 이미 이 순서로 쓰이지만(_write_atomic 의 정렬 키) 그 보장에
+    # 기대지 않고 한 번 더 정렬한다. 아래 단일 문서 캐시가 "직전 rcept_no 하나만" 기억해도 문서당
+    # 1회만 파싱되려면 같은 rcept_no 행이 반드시 인접해야 한다.
+    rows.sort(key=lambda r: r.get("rcept_no", ""))
 
-    text_cache: dict[str, str | None] = {}
+    # rcept_no 별 무제한 dict 캐시는 실코퍼스(4.8만 문서, 문서당 평균 약 60KB 텍스트)에서 캐시가
+    # 2.7GB 까지 상주한다(Q-I5) — 재파싱 방지 효과는 없다(행이 정렬돼 있어 같은 rcept_no 가 이미
+    # 인접하므로). 직전 rcept_no 하나만 기억하는 슬롯 하나로 충분하다.
+    _last_rcept_no: str | None = None
+    _last_text: str | None = None
 
     def _doc_text(rcept_no: str) -> str | None:
-        if rcept_no not in text_cache:
+        nonlocal _last_rcept_no, _last_text
+        if rcept_no != _last_rcept_no:
             xml_path = select_xml_path(docs_dir, rcept_no)
-            text_cache[rcept_no] = _strip_tags_to_text(xml_path.read_bytes()) if xml_path is not None else None
-        return text_cache[rcept_no]
+            _last_text = _strip_tags_to_text(xml_path.read_bytes()) if xml_path is not None else None
+            _last_rcept_no = rcept_no
+        return _last_text
 
     group_rows: dict[tuple[str, str], int] = defaultdict(int)
     group_flags: dict[tuple[str, str], dict[str, dict[str, int]]] = defaultdict(lambda: defaultdict(lambda: {"checked": 0, "violations": 0}))

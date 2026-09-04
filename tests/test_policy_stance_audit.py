@@ -282,5 +282,60 @@ class CliExitCodeTests(unittest.TestCase):
             self.assertIn("XML 없음", result.output)
 
 
+class SingleDocCacheTests(unittest.TestCase):
+    """Q-I5: rcept_no 별 무제한 dict 캐시 대신 직전 rcept_no 하나만 기억하는 단일 슬롯 캐시를
+    쓴다 — 입력이 rcept_no 순서로 안 섞여 있어도(정렬을 그 보장에 기대지 않는다) 문서당 정확히
+    1회만 파싱돼야 한다."""
+
+    def test_같은_rcept_no_여러_행도_문서당_1회만_파싱한다(self) -> None:
+        import dart_search_mcp.tools.policy_stance_audit as audit_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            docs = t / "docs"
+            _write_doc(docs, "S1", "회사는 아직 채택하지 않았습니다.")
+            _write_doc(docs, "S2", "당사는 원가모형을 적용합니다.")
+            # 입력을 일부러 rcept_no 순서가 아니게(S2, S1, S2) 둔다 — 정렬이 실제로 동작해야
+            # 단일 슬롯 캐시로도 문서당 1회만 파싱된다.
+            rows = [
+                {
+                    "rcept_no": "S2", "corp_code": "1", "fiscal_year": 2025,
+                    "topic": "PPE_MEASUREMENT", "subject": None, "value": "COST_MODEL",
+                    "evidence": "당사는 원가모형을 적용합니다.", "method": "rule",
+                    "confidence": 1.0, "block_offset": 0, "parser_version": "ps-v1",
+                },
+                {
+                    "rcept_no": "S1", "corp_code": "1", "fiscal_year": 2025,
+                    "topic": "STD_EARLY_ADOPTION", "subject": "1118", "value": "NOT_ADOPTED",
+                    "evidence": "회사는 아직 채택하지 않았습니다.", "method": "rule",
+                    "confidence": 1.0, "block_offset": 0, "parser_version": "ps-v1",
+                },
+                {
+                    "rcept_no": "S2", "corp_code": "1", "fiscal_year": 2025,
+                    "topic": "STD_EARLY_ADOPTION", "subject": "1109", "value": "NOT_ADOPTED",
+                    "evidence": "당사는 원가모형을 적용합니다.", "method": "rule",
+                    "confidence": 1.0, "block_offset": 0, "parser_version": "ps-v1",
+                },
+            ]
+            stances = t / "policy_stance.jsonl"
+            _write_stances(stances, rows)
+
+            calls: list[str] = []
+            original = audit_mod.select_xml_path
+
+            def _spy(docs_dir: Path, rcept_no: str):
+                calls.append(rcept_no)
+                return original(docs_dir, rcept_no)
+
+            audit_mod.select_xml_path = _spy
+            try:
+                run_policy_stance_audit(stances_path=stances, docs_dir=docs, report_path=t / "audit.md")
+            finally:
+                audit_mod.select_xml_path = original
+
+            self.assertEqual(len(calls), 2)  # 문서 2개 — 행은 3개지만 파싱은 문서당 1회
+            self.assertEqual(set(calls), {"S1", "S2"})
+
+
 if __name__ == "__main__":
     unittest.main()
