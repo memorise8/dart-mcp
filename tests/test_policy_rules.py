@@ -66,6 +66,18 @@ class PpeRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk("(5) 유형자산 토지는 재평가모형을 적용하고 건물과 기계장치는 원가모형을 적용하고 있습니다.", None, "유형자산"))
         self.assertEqual(j.value, "MIXED")
 
+    def test_투자부동산_블록_안의_유형자산_언급으로는_적용_대상이_아니다(self) -> None:
+        block = _blk("(6) 투자부동산 유형자산은 원가모형을 적용합니다.", None, "투자부동산")
+        self.assertFalse(TOPICS["PPE_MEASUREMENT"].applies(block))
+
+    def test_유형자산_표제_블록은_원가모형_적용(self) -> None:
+        j = judge(self.spec, _blk("(5) 유형자산 유형자산은 원가모형을 적용합니다.", None, "유형자산"))
+        self.assertEqual(j.value, "COST_MODEL")
+
+    def test_유형자산_근접_원가모형_사용도_적용(self) -> None:
+        j = judge(self.spec, _blk("(5) 유형자산 당사는 원가모형을 사용합니다.", None, "유형자산"))
+        self.assertEqual(j.value, "COST_MODEL")
+
 
 class RevenueRulesTests(unittest.TestCase):
     spec = TOPICS["REVENUE_METHOD"]

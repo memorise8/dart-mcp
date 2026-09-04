@@ -41,7 +41,7 @@ _MARKER_STYLES: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 _MARKER_PATTERNS: tuple[re.Pattern[str], ...] = tuple(pat for _, pat in _MARKER_STYLES)
 _HEADING_AFTER_RE = re.compile(r"\s*[가-힣]")
-_SENTENCE_END_RE = re.compile(r"(?:다|니다|음|함|\.)\s*$")
+_SENTENCE_END_RE = re.compile(r"(?:다|니다|음|함|(?<!\d)\.)\s*$")
 # 블록 자신의 양식을 못 찾을 때(예: 따옴표 제목 헤더처럼 항목 기호 없이 시작하는 기준서 블록)만 쓰는
 # 대체 탐색 오프셋 — 시작 직후 텍스트가 자기 자신을 경계로 오인하지 않도록 여유를 둔다.
 _GENERIC_FALLBACK_OFFSET = 60
@@ -60,8 +60,10 @@ def _own_marker(text: str, pos: int) -> tuple[re.Pattern[str], int] | None:
 
 
 def _is_sentence_adjacent(text: str, i: int) -> bool:
-    """i(후보 경계의 시작) 바로 앞이 문장 끝인지 — 단어 중간의 "물." 같은 우연한 매치를 걸러낸다."""
-    return _SENTENCE_END_RE.search(text[max(0, i - 6) : i]) is not None
+    r"""i(후보 경계의 시작) 바로 앞이 문장 끝인지 — 단어 중간의 "물." 같은 우연한 매치를 걸러낸다.
+    숫자 바로 뒤의 "."(점 날짜 "2027. 1. 1." 등)는 문장 끝으로 보지 않는다 — 여유 있게 앞쪽까지
+    포함해 잘라(-8) `(?<!\d)` 룩비하인드가 윈도 경계에서 숫자를 놓치지 않게 한다."""
+    return _SENTENCE_END_RE.search(text[max(0, i - 8) : i]) is not None
 
 
 def _earliest_boundary(

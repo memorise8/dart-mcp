@@ -86,6 +86,14 @@ class SplitPolicyBlocksTests(unittest.TestCase):
         self.assertIn("재평가모형", ppe.text)
         self.assertNotIn("취득원가", ppe.text)
 
+    def test_점_날짜는_문장_경계로_오인하지_않는다(self) -> None:
+        text = ("(4) 기업회계기준서 제1118호 '재무제표 표시' 제정 이 기준서는 재무제표의 새로운 표시 방식을 도입하며 "
+                "동 기준서는 2027. 1. 1. 이후 시작하는 회계연도부터 적용됩니다. 회사는 아직 채택하지 않았습니다. "
+                "(5) 유형자산 당사는 원가모형을 적용합니다.")
+        std = next(b for b in split_policy_blocks(text) if b.standard_no == "1118")
+        self.assertIn("회사는 아직 채택하지 않았습니다", std.text)
+        self.assertNotIn("원가모형", std.text)
+
 
 if __name__ == "__main__":
     unittest.main()

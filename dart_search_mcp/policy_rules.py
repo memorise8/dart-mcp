@@ -108,7 +108,7 @@ _T1_FALLBACK = (
 # ---- T2 유형자산 측정모형 ------------------------------------------------------
 _T2_POS = (
     (_p(r"재평가\s*(?:모형|모델)(?:을|를)?\s*(?:적용|채택|사용)"), "REVALUATION_MODEL"),
-    (_p(r"원가\s*(?:모형|모델)(?:을|를)?\s*(?:적용|채택|사용)"), "COST_MODEL"),
+    (_p(r"유형자산.{0,60}원가\s*(?:모형|모델)(?:을|를)?\s*(?:적용|채택|사용)"), "COST_MODEL"),
 )
 
 # ---- T4 수익인식 방법 ---------------------------------------------------------
@@ -130,8 +130,21 @@ def _by_std(b: PolicyBlock) -> bool:
     return b.standard_no is not None
 
 
+# 항목 기호(있으면) 뒤 표제 첫 토큰. "(6) 투자부동산 …" 처럼 본문 어딘가에 다른 주제 이름(유형자산)이
+# 나열되더라도, 표제 자체가 그 이름으로 시작하지 않으면 그 주제로 오판하지 않는다.
+_HEADING_PREFIX_RE = re.compile(
+    r"^\s*(?:\(\s*\d+\s*\)|\(\s*[가-힣]\s*\)|\d+\s*\)|[①-⑳㉠-㉭]|[-·ㆍ•○■□▶▪◦]|[가-힣]\.|\d+\.)?\s*"
+)
+
+
+def _heading_starts_with(b: PolicyBlock, name: str) -> bool:
+    m = _HEADING_PREFIX_RE.match(b.text)
+    rest = b.text[m.end() :] if m else b.text
+    return rest.startswith(name)
+
+
 def _by_topic(name: str) -> Callable[[PolicyBlock], bool]:
-    return lambda b: b.topic_heading == name or (b.standard_no is None and name in b.text[:60])
+    return lambda b: b.topic_heading == name or (b.standard_no is None and _heading_starts_with(b, name))
 
 
 TOPICS: dict[str, TopicSpec] = {
