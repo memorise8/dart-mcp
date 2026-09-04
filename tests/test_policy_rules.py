@@ -192,6 +192,18 @@ class PpeRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk(text, None, "유형자산"))
         self.assertEqual(j.value, "REVALUATION_MODEL")
 
+    def test_재평가모형에_따라_손상차손_조건절은_REVAL이_아니다_재리뷰_I1(self) -> None:
+        """재리뷰 Important #1 재현(20260331004511/20260610000623): "재평가모형을 도입하여
+        재평가모형에 따라 재평가금액을 장부금액으로 하는 경우 …"는 손상차손 회계처리 규정을
+        서술하는 조건절이지 회사의 측정모형 선택 진술이 아니다 — R2 가 막 제거한 "적용하는
+        자산" 오탐 클래스를 다른 표면형으로 다시 들여온 사례다."""
+        text = (
+            "다.유형자산 재평가모형을 도입하여 재평가모형에 따라 재평가금액을 장부금액으로 하는 경우 "
+            "재평가되는 자산의 손상차손은 당해 사업연도의 손익으로 인식합니다."
+        )
+        j = judge(self.spec, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, UNDETERMINED)
+
     def test_원가모형_적용하여_측정하였을_경우도_가정형_strip_V6_R2(self) -> None:
         """V6 R2: 기존 가정형 strip("원가모형으로 평가되었을 경우")은 동사와 어미 사이에
         "하여 측정"이 끼는 변형("적용하여 측정하였을 경우")을 못 잡아 COST_MODEL 로 오판했다."""
