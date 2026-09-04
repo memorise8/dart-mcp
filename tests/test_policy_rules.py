@@ -136,6 +136,39 @@ class PpeRulesTests(unittest.TestCase):
         self.assertEqual(j.value, "REVALUATION_MODEL")
         self.assertIn("재평가모형을 적용하고 있습니다", j.evidence)
 
+    def test_열거_쉼표로_구분된_재평가모형과_원가모형은_MIXED_V6_R1(self) -> None:
+        """V6 R1: "토지는 재평가모형을, 기타 유형자산은 원가모형을 적용"처럼 REVAL 이 쉼표로
+        끊기는 열거형이면 기존 REVAL 패턴("적용/채택/사용" 동사 필요)이 못 잡아 COST_MODEL 로만
+        판정됐다. 열거 쉼표 변형을 추가한다."""
+        text = "당사는 유형자산중 토지는 재평가모형을, 기타 유형자산은 원가모형을 적용하고 있습니다."
+        j = judge(self.spec, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, "MIXED")
+
+    def test_원가모형_동사가_평가_측정이어도_MIXED_V6_R1(self) -> None:
+        """V6 R1: COST 트리거 동사가 "평가/측정"(으로/로 조사)이면 기존 패턴("적용/채택/사용"만
+        허용)이 못 잡았다."""
+        text = "토지를 제외한 유형자산은 원가모형으로 평가하고 있습니다. 토지에 대하여 재평가모형을 적용하고 있습니다."
+        j = judge(self.spec, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, "MIXED")
+
+    def test_취득원가로_평가도_COST로_잡혀_MIXED_V6_R1(self) -> None:
+        """V6 R1: "취득원가로 평가"도 COST_MODEL 트리거다(유형자산 앵커 유지)."""
+        text = "(5) 유형자산 재평가모형을 적용한 토지를 제외하고는 취득원가로 평가하고 있습니다."
+        j = judge(self.spec, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, "MIXED")
+
+    def test_원가모형에서_재평가모형으로_회계정책_변경은_REVALUATION_MODEL_V6_R1(self) -> None:
+        """V6 R1: "원가모형에서 재평가모형으로 회계정책을 변경하였습니다"는 변경 후 모형(REVAL)이
+        최종값이다. "원가모형에서"는 strip(구절만) 해 COST 오탐을 막는다."""
+        text = "토지 및 건물에 대해 후속측정방법을 원가모형에서 재평가모형으로 회계정책을 변경하였습니다."
+        j = judge(self.spec, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, "REVALUATION_MODEL")
+
+    def test_재평가모형에_따라는_REVALUATION_MODEL_V6_R1(self) -> None:
+        text = "유형자산 재평가모형에 따라 토지, 건물에 대해 재평가를 실시하였습니다."
+        j = judge(self.spec, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, "REVALUATION_MODEL")
+
 
 class RevenueRulesTests(unittest.TestCase):
     spec = TOPICS["REVENUE_METHOD"]
