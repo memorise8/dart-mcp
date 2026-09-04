@@ -417,10 +417,11 @@ class RowValidationTests(unittest.TestCase):
 
 class NotApplicableVsUncheckedTests(unittest.TestCase):
     """N4: `unchecked = total_rows - checked`(Q-M2) 는 "설계상 이 플래그가 이 행에 적용되지
-    않는다"(not_applicable — 예: T1 이 아닌 행의 foreign_standard, 미등록 주제의
+    않는다"(not_applicable — 예: T1 이 아닌 행의 foreign_standard, TOPICS 밖 주제의 rule 행
     pattern_in_evidence)와 "적용은 되는데 XML 을 못 읽어 확인 못했다"(unchecked)를 구분하지
     못했다. T1 이 아닌 모든 행이 foreign_standard 의 "미검사"에 잡혀, 진짜 등록 누락 신호가
-    거대한 정상 수치에 묻혔다. 이제 둘을 분리한다."""
+    거대한 정상 수치에 묻혔다. 이제 둘을 분리한다. (llm/llm_verified 행의 _AUDIT_KEYWORDS 미등록은
+    not_applicable 이 아니라 별도의 unregistered_topic 이다 — UnregisteredTopicTests 참고.)"""
 
     def test_TOPICS_밖_주제코드는_pattern_in_evidence가_not_applicable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -471,6 +472,42 @@ class NotApplicableVsUncheckedTests(unittest.TestCase):
             self.assertEqual(rep["totals"]["foreign_standard"]["checked"], 0)
             self.assertEqual(rep["totals"]["foreign_standard"]["not_applicable"], 1)
             self.assertEqual(rep["totals"]["foreign_standard"]["unchecked"], 0)
+
+
+class UnregisteredTopicTests(unittest.TestCase):
+    """N4 잔여(재리뷰 Minor #10): llm/llm_verified 행의 주제가 _AUDIT_KEYWORDS 에 없으면
+    pattern_in_evidence 가 not_applicable 로 묻혔다 — method=="none" 행 전부가 이미 채우는
+    거대한 정상 모집단과 같은 칸이라 "주제 추가 후 등록을 잊었다"는 신호가 안 보였다.
+    policy_stance_gate.unknown_topics 처럼 별도 카운터·목록으로 낸다."""
+
+    def test_미등록_주제의_llm_행은_unregistered_topic으로_잡힌다(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            docs = t / "docs"
+            _write_doc(docs, "L1", "아무 문장입니다.")
+            rows = [
+                {
+                    "rcept_no": "L1", "corp_code": "1", "fiscal_year": 2025,
+                    "topic": "BOGUS_TOPIC", "subject": None, "value": "WHATEVER",
+                    "evidence": "아무 문장입니다.", "method": "llm",
+                    "confidence": 0.6, "block_offset": 0, "parser_version": "ps-v1",
+                },
+            ]
+            stances = t / "policy_stance.jsonl"
+            _write_stances(stances, rows)
+            report = t / "audit.md"
+            rep = run_policy_stance_audit(stances_path=stances, docs_dir=docs, report_path=report)
+
+            self.assertEqual(rep["totals"]["pattern_in_evidence"]["checked"], 0)
+            self.assertEqual(rep["totals"]["pattern_in_evidence"]["violations"], 0)
+            self.assertEqual(rep["totals"]["pattern_in_evidence"]["not_applicable"], 0)
+            self.assertEqual(rep["totals"]["pattern_in_evidence"]["unchecked"], 0)
+            self.assertEqual(rep["totals"]["pattern_in_evidence"]["unregistered_topic"], 1)
+            self.assertEqual(rep["unregistered_topics"], ["BOGUS_TOPIC"])
+
+            md = report.read_text(encoding="utf-8")
+            self.assertIn("미등록주제", md)
+            self.assertIn("BOGUS_TOPIC", md)
 
 
 if __name__ == "__main__":

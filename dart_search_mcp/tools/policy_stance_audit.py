@@ -49,6 +49,11 @@ _VIOLATION_WHEN_FALSE = frozenset({"evidence_in_block", "pattern_in_evidence"})
 # (`False == "not_applicable"` 은 False) `_row_flags`/집계에서 안전하게 분기할 수 있다.
 _NOT_APPLICABLE = "not_applicable"
 _UNCHECKED = "unchecked"
+# N4 잔여(재리뷰 Minor #10): llm/llm_verified 행의 주제가 _AUDIT_KEYWORDS 에 등록 안 됐으면
+# pattern_in_evidence 가 None(=미적용)을 돌려주는데, 이걸 그냥 not_applicable 로 묻으면
+# method=="none" 행 전부가 이미 채우고 있는 거대한 정상 모집단에 섞여 "주제 추가 후 등록을
+# 잊었다"는 신호가 사라진다. policy_stance_gate 의 unknown_topics 처럼 별도로 드러낸다.
+_UNREGISTERED_TOPIC = "unregistered_topic"
 
 
 class PolicyStanceAuditRowError(Exception):
@@ -190,7 +195,10 @@ def _row_flags(row: dict[str, Any], text: str | None) -> dict[str, bool | str]:
         flags["pattern_in_evidence"] = _NOT_APPLICABLE if pie is None else pie
     elif method in ("llm", "llm_verified"):
         pie = _pattern_in_evidence_llm(topic, evidence)
-        flags["pattern_in_evidence"] = _NOT_APPLICABLE if pie is None else pie
+        # None 은 여기서 항상 "_AUDIT_KEYWORDS 에 이 주제가 없다" 는 뜻이다(N4 잔여) — method
+        # 자체가 이미 llm/llm_verified 로 확정돼 있으니 "설계상 무의미"(not_applicable)가 아니라
+        # "등록을 잊었다"는 신호를 따로 낸다.
+        flags["pattern_in_evidence"] = _UNREGISTERED_TOPIC if pie is None else pie
     else:
         flags["pattern_in_evidence"] = _NOT_APPLICABLE
 
@@ -250,11 +258,14 @@ def run_policy_stance_audit(
 
     group_rows: dict[tuple[str, str], int] = defaultdict(int)
     group_flags: dict[tuple[str, str], dict[str, dict[str, int]]] = defaultdict(
-        lambda: defaultdict(lambda: {"checked": 0, "violations": 0, "not_applicable": 0, "unchecked": 0})
+        lambda: defaultdict(
+            lambda: {"checked": 0, "violations": 0, "not_applicable": 0, "unchecked": 0, "unregistered_topic": 0}
+        )
     )
     violations: dict[str, list[list[Any]]] = defaultdict(list)
     samples: dict[str, list[dict[str, Any]]] = defaultdict(list)
     missing_xml = 0
+    unregistered_topics: set[str] = set()
 
     for row in rows:
         rcept_no = row["rcept_no"]
@@ -272,6 +283,10 @@ def run_policy_stance_audit(
                 continue
             if val == _UNCHECKED:
                 fstat["unchecked"] += 1
+                continue
+            if val == _UNREGISTERED_TOPIC:
+                fstat["unregistered_topic"] += 1
+                unregistered_topics.add(topic)
                 continue
             ok = val
             is_violation = (not ok) if flag in _VIOLATION_WHEN_FALSE else ok
@@ -306,6 +321,7 @@ def run_policy_stance_audit(
                     "ratio": (fs["violations"] / fs["checked"]) if fs["checked"] else 0.0,
                     "not_applicable": fs["not_applicable"],
                     "unchecked": fs["unchecked"],
+                    "unregistered_topic": fs["unregistered_topic"],
                 }
                 for flag, fs in flags_map.items()
             },
@@ -317,6 +333,7 @@ def run_policy_stance_audit(
         viol = sum(g["flags"].get(flag, {}).get("violations", 0) for g in by_group.values())
         not_applicable = sum(g["flags"].get(flag, {}).get("not_applicable", 0) for g in by_group.values())
         unchecked = sum(g["flags"].get(flag, {}).get("unchecked", 0) for g in by_group.values())
+        unregistered_topic = sum(g["flags"].get(flag, {}).get("unregistered_topic", 0) for g in by_group.values())
         totals[flag] = {
             "checked": checked,
             "violations": viol,
@@ -327,11 +344,18 @@ def run_policy_stance_audit(
             # 거대한 not_applicable 숫자에 진짜 등록 누락 신호가 묻힌다.
             "not_applicable": not_applicable,
             "unchecked": unchecked,
+            # N4 잔여(재리뷰 Minor #10): _AUDIT_KEYWORDS 등록 누락은 not_applicable 이 아니라 이
+            # 카운터로 별도로 잡는다 — method=="none" 행 전부가 채우는 거대한 not_applicable 모집단에
+            # 묻히면 "등록을 잊었다"는 신호가 사라진다.
+            "unregistered_topic": unregistered_topic,
         }
 
     result: dict[str, Any] = {
         "rows": len(rows),
         "missing_xml": missing_xml,
+        # policy_stance_gate.unknown_topics 와 같은 취지 — _AUDIT_KEYWORDS 에 없는 주제 코드를
+        # (개수가 아니라) 어떤 주제인지 바로 알 수 있게 목록으로 낸다.
+        "unregistered_topics": sorted(unregistered_topics),
         "by_group": by_group,
         "totals": totals,
         "violations": {flag: violations.get(flag, []) for flag in FLAGS},
@@ -350,13 +374,19 @@ def _write_report(report_path: Path, result: dict[str, Any], samples: dict[str, 
             f"XML 없음(rcept_no 의 문서를 못 읽음): {result['missing_xml']}건 — "
             "evidence_in_block 검사·종료코드 판정에서 제외했다(Q-I4)."
         )
+    if result["unregistered_topics"]:
+        lines.append(
+            "> ⚠ _AUDIT_KEYWORDS 에 등록되지 않은 주제가 llm/llm_verified 행에 있다: "
+            + ", ".join(result["unregistered_topics"])
+            + " — 그 행의 pattern_in_evidence 는 not_applicable 이 아니라 unregistered_topic 으로 센다(N4)."
+        )
     lines += ["", "## 전체 플래그 요약", ""]
-    lines += ["| 플래그 | 검사 | 위반 | 비율 | 미적용 | 미검사 |", "|---|---|---|---|---|---|"]
+    lines += ["| 플래그 | 검사 | 위반 | 비율 | 미적용 | 미검사 | 미등록주제 |", "|---|---|---|---|---|---|---|"]
     for flag in FLAGS:
         t = result["totals"][flag]
         lines.append(
             f"| {flag} | {t['checked']} | {t['violations']} | {t['ratio']:.1%} | "
-            f"{t['not_applicable']} | {t['unchecked']} |"
+            f"{t['not_applicable']} | {t['unchecked']} | {t['unregistered_topic']} |"
         )
 
     lines += ["", "## (주제, 판정방식) 별", ""]
