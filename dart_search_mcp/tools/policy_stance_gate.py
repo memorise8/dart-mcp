@@ -8,10 +8,14 @@ from typing import Any
 
 from dart_search_mcp.policy_rules import TOPICS, UNDETERMINED
 
+_DEFAULT_UNDET_MAX = 0.10
+
 GATES: dict[str, Any] = {
     "positive_recall_min": 0.95,
     "hardneg_fp_max": 0,
     "undetermined_max": {"STD_EARLY_ADOPTION": 0.10, "PPE_MEASUREMENT": 0.10, "REVENUE_METHOD": 0.30, "IP_MEASUREMENT": 0.10},
+    "min_positives": 10,
+    "min_hardnegs": 50,
 }
 
 
@@ -38,28 +42,40 @@ def build_gate_report(*, stances_path: Path, positives_path: Path | None, hardne
         neg_by_topic[r["topic"]].append(r)
     topics: dict[str, Any] = {}
     lines = ["# 회계정책 선택 사실 게이트 리포트", ""]
-    for code in sorted(dist):
+    for code in sorted(set(dist) | set(pos_by_topic) | set(neg_by_topic)):
         spec = TOPICS.get(code)
-        total = sum(dist[code].values())
-        undet = dist[code].get(UNDETERMINED, 0) / total if total else 0.0
+        counts = dist.get(code, Counter())
+        total = sum(counts.values())
+        undet = counts.get(UNDETERMINED, 0) / total if total else 0.0
         pos = pos_by_topic.get(code, [])
         hit = sum(1 for p in pos if stances.get(_key(p), {}).get("value") == p["expected"])
         recall = hit / len(pos) if pos else None
         neg = neg_by_topic.get(code, [])
         fp = sum(1 for n in neg if spec and stances.get(_key(n), {}).get("value") in spec.positive_values)
+        undet_max = GATES["undetermined_max"].get(code, _DEFAULT_UNDET_MAX)
+        controls_sufficient = len(pos) >= GATES["min_positives"] and len(neg) >= GATES["min_hardnegs"]
         passed = (
-            (recall is None or recall >= GATES["positive_recall_min"])
+            controls_sufficient
+            and (recall is None or recall >= GATES["positive_recall_min"])
             and fp <= GATES["hardneg_fp_max"]
-            and undet <= GATES["undetermined_max"].get(code, 0.10)
+            and undet <= undet_max
         )
         topics[code] = {
-            "distribution": dict(dist[code]), "rows": total, "positive_recall": recall, "positives": len(pos),
-            "hardneg_false_positive": fp, "hardnegs": len(neg), "undetermined_ratio": round(undet, 4), "passed": passed,
+            "distribution": dict(counts), "rows": total, "positive_recall": recall, "positives": len(pos),
+            "hardneg_false_positive": fp, "hardnegs": len(neg), "undetermined_ratio": round(undet, 4),
+            "controls_sufficient": controls_sufficient, "passed": passed,
         }
+        ctrl_status = "충분" if controls_sufficient else "부족(화면 비노출)"
         lines += [f"## {code} — {'통과' if passed else '미달'}", "", "| 값 | 건수 |", "|---|---|"]
-        lines += [f"| {v} | {n} |" for v, n in sorted(dist[code].items())]
-        lines += ["", f"- 양성 재현: {hit}/{len(pos)}" + (f" ({recall:.0%})" if recall is not None else " (대조군 없음)"),
-                  f"- 하드 네거티브 오탐: {fp}/{len(neg)}", f"- 판단불가 비율: {undet:.1%} (상한 {GATES['undetermined_max'].get(code, 0.10):.0%})", ""]
+        lines += [f"| {v} | {n} |" for v, n in sorted(counts.items())]
+        lines += [
+            "",
+            f"- 양성 재현: {hit}/{len(pos)}" + (f" ({recall:.0%})" if recall is not None else " (대조군 없음)"),
+            f"- 하드 네거티브 오탐: {fp}/{len(neg)}",
+            f"- 판단불가 비율: {undet:.1%} (상한 {undet_max:.0%})",
+            f"- 대조군: 양성 {len(pos)}/{GATES['min_positives']} · 하드 네거티브 {len(neg)}/{GATES['min_hardnegs']} → {ctrl_status}",
+            "",
+        ]
     report = {"passed": all(t["passed"] for t in topics.values()) if topics else False, "topics": topics}
     Path(report_path).write_text("\n".join(lines), encoding="utf-8")
     return report
