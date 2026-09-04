@@ -818,7 +818,8 @@ def policy_stance_gate_cmd(stances: str, positives: str | None, hardneg: str | N
     rep = build_gate_report(stances_path=Path(stances), positives_path=Path(positives) if positives else None,
                             hardneg_path=Path(hardneg) if hardneg else None, report_path=Path(report))
     for code, t in rep["topics"].items():
-        click.echo(f"{code}: {'통과' if t['passed'] else '미달'} 판단불가 {t['undetermined_ratio']:.1%} 재현 {t['positive_recall']} 오탐 {t['hardneg_false_positive']}")
+        recall_disp = f"{t['positive_recall']:.0%}" if t["positive_recall"] is not None else "-"
+        click.echo(f"{code}: {'통과' if t['passed'] else '미달'} 판단불가 {t['undetermined_ratio']:.1%} 재현 {recall_disp} 오탐 {t['hardneg_false_positive']}")
     if not rep["passed"]:
         raise SystemExit(2)
 
