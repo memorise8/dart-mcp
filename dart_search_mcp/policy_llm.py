@@ -70,19 +70,29 @@ def _normalize_with_map(text: str) -> tuple[str, list[int]]:
     return "".join(out), idx_map
 
 
-def _locate(text: str, evidence: str) -> int | None:
-    """evidence(공백 정규화)를 block.text(같은 정규화) 안에서 찾아, 원문 text 기준 시작 위치를
-    돌려준다. 못 찾으면 evidence 앞 20자로 한 번 더 찾는다. 그래도 없으면 None."""
+def _locate(text: str, evidence: str) -> tuple[int, int] | None:
+    """evidence(공백 정규화)를 block.text(같은 정규화) 안에서 찾아, 원문 text 기준
+    (시작 위치, 매치된 구간의 원문 길이) 를 돌려준다. 못 찾으면 evidence 앞 20자로 한 번 더
+    찾는다(폴백) — 이때 길이는 그 20자에 대응하는 원문 길이일 뿐이다. 그래도 없으면 None.
+
+    호출자는 `text[index:index+matched_len]`(quoted)로 "원문에서 실제로 확인된 구간"을 얻는다.
+    폴백으로 잡혔으면 quoted 는 evidence 의 앞부분일 뿐이라 `_normalize(quoted) != _normalize
+    (evidence)` — 이 차이로 호출자가 전체 인용 대 폴백을 구분한다(N1: 긍정값 검증은 폴백을
+    받아들이면 안 된다 — 자세한 이유는 judge_with_llm 의 검증 지점 주석 참고)."""
     norm_evidence = _normalize(evidence)
     if not norm_evidence:
         return None
     norm_text, idx_map = _normalize_with_map(text)
     idx = norm_text.find(norm_evidence)
+    match_len = len(norm_evidence)
     if idx == -1 and len(norm_evidence) > _ANCHOR_PREFIX_LEN:
         idx = norm_text.find(norm_evidence[:_ANCHOR_PREFIX_LEN])
+        match_len = _ANCHOR_PREFIX_LEN
     if idx == -1:
         return None
-    return idx_map[idx]
+    start = idx_map[idx]
+    end = idx_map[idx + match_len - 1] + 1
+    return start, end - start
 
 
 def _parse(reply: str) -> tuple[str, str] | None:
@@ -135,17 +145,27 @@ def judge_with_llm(
     anchor = _locate(block.text[:_BLOCK_MAX], evidence)
     if anchor is None:
         return _none("unanchored")
-    # 검증(positive_pattern_matches)은 LLM 이 실제로 인용한 구절(quoted)로 한다 — 저장(evidence)은
-    # 문장 전체로 넓히되, 검증까지 넓혀버리면 문장 안 아무 단정 패턴이나 걸려 통과해 버린다(Q-C1:
-    # "제1116호를 조기적용" 문장 조각이 "제1118호" 행을 승인하는 위양성을 신설했었다). R18 가드가
-    # 지키는 성질(긍정값은 LLM 이 실제로 지목한 구절이 단정형일 때만 채택)은 quoted 로만 지켜진다.
-    quoted, evidence = evidence, evidence_sentence(block.text, anchor)
+    index, matched_len = anchor
+    # 검증(positive_pattern_matches)은 앵커된 "원문" 구절(quoted = block.text[index:index+matched_len])
+    # 로 한다 — LLM 응답 문자열(evidence) 그대로가 아니다. 재리뷰 N1: quoted 를 evidence 그대로
+    # 쓰면, 20자 폴백 앵커(앞 20자만 원문 일치)로 잡힌 경우 21자 이후는 LLM 이 지어내도(원문에
+    # 없어도) 단정 패턴 검사를 통과할 수 있었다 — 값과 모순되는 근거가 llm_verified 로 채택되는
+    # 위양성이었다. 지금은 quoted 가 항상 block.text 의 실제 부분문자열이다.
+    quoted = block.text[index : index + matched_len]
     if value in spec.positive_values:
+        # 긍정값은 폴백(부분 일치) 앵커를 받지 않는다 — quoted 가 evidence 전체와 정규화 기준으로
+        # 같아야("완전 일치") 한다. 폴백이면 quoted 는 evidence 의 앞 20자뿐이라 그 뒤가 원문에
+        # 있는지 알 수 없으므로, R18 가드(단정 패턴 검증)가 원문이 아니라 LLM 의 의역·날조를
+        # 검증하게 될 위험이 있다 — 그 경우 근거 없는 행을 만들지 않는다(앵커 실패로 낮춘다).
+        if _normalize(quoted) != _normalize(evidence):
+            return _none("unanchored")
         if not positive_pattern_matches(spec, value, quoted):
             return _none("unverified")
+        evidence = evidence_sentence(block.text, index)
         if trace is not None:
             trace["reason"] = "ok"
         return Judgement(spec.code, subject, value, evidence[:400], "llm_verified")
+    evidence = evidence_sentence(block.text, index)
     if trace is not None:
         trace["reason"] = "ok"
     return Judgement(spec.code, subject, value, evidence[:400], "llm")

@@ -102,15 +102,33 @@ class EvidenceAnchoringTests(unittest.TestCase):
         text = "회사는 제1118호를 아직 채택하지 않았으며 영향을 평가 중입니다."
         quote = "회사는 제1118호를 아직 채택하지 않았으나 향후 영향을 검토할 예정입니다."  # 20자 이후 의역
         self.assertNotIn(quote, text)  # 전체 일치로는 못 찾는다 — 폴백이 실제로 필요한 상황인지 확인
-        pos = _locate(text, quote)
-        self.assertIsNotNone(pos)
-        self.assertEqual(pos, 0)
+        anchor = _locate(text, quote)
+        self.assertIsNotNone(anchor)
+        index, matched_len = anchor
+        self.assertEqual(index, 0)
+        self.assertEqual(matched_len, 20)  # 폴백은 20자에 대응하는 원문 길이만 돌려준다(N1)
 
+        # NOT_ADOPTED 는 긍정값이 아니므로 폴백 앵커도 그대로 받는다(N1 은 긍정값만 제한한다).
         fake = lambda messages, **kw: json.dumps({"label": "NOT_ADOPTED", "evidence": quote})
         block = _blk(text)
         j = judge_with_llm(self.spec, block, call_fn=fake)
         self.assertEqual((j.value, j.method), ("NOT_ADOPTED", "llm"))
         self.assertNotEqual(j.evidence, "")
+
+    def test_긍정값은_20자_폴백_앵커를_받지_않는다_N1_재현(self) -> None:
+        """재리뷰 N1 재현: quoted 를 LLM 응답 그대로 검증하면, 20자 폴백 앵커(앞부분만 원문
+        일치)에서 21자 이후를 LLM 이 지어내도(원문에 없어도) 단정 패턴 검증을 통과했다 —
+        값과 모순되는 근거("영향을 검토 중입니다")가 EARLY_ADOPTED/llm_verified 로 채택되는
+        위양성이었다. 지금은 긍정값에 한해 폴백을 거부해 UNDETERMINED/none/"unanchored" 여야 한다."""
+        orig = "기업회계기준서 제1118호 수익 회사는 동 기준서의 적용이 재무제표에 미치는 영향을 검토 중입니다."
+        quote = "기업회계기준서 제1118호 수익 회사는 동 기준서를 조기적용하였습니다"  # 뒷부분 날조, 원문에 없음
+        self.assertNotIn(quote, orig)
+        fake = lambda messages, **kw: json.dumps({"label": "EARLY_ADOPTED", "evidence": quote})
+        block = _blk(orig, "1118")
+        tr: dict = {}
+        j = judge_with_llm(self.spec, block, call_fn=fake, trace=tr)
+        self.assertEqual((j.value, j.method, j.evidence), (UNDETERMINED, "none", ""))
+        self.assertEqual(tr.get("reason"), "unanchored")
 
     def test_문장_확장_후_검증하면_안된다_Q_C1_재현(self) -> None:
         """리뷰 Q-C1 재현: LLM 이 인용한 구절("제1118호는 조기적용이 허용됨")은 그 자체로는 단정
