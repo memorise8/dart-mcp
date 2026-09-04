@@ -355,6 +355,31 @@ class PpeRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk(text, None, "유형자산"))
         self.assertNotEqual(j.value, "REVALUATION_MODEL")
 
+    def test_재평가모형을_선택하였으며는_MIXED_V8(self) -> None:
+        """V8: "재평가모형을 선택"도 채택 진술이다(실측 batch-01.md: "재평가모형을 선택하고
+        있으며")."""
+        text = "당사는 토지에 대하여 재평가모형을 선택하였으며, 그 외 유형자산에 대하여 원가모형을 적용하고 있습니다."
+        j = judge(self.spec, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, "MIXED")
+
+    def test_재평가모형을_도입하여_손상조건절은_여전히_REVAL이_아니다_V8(self) -> None:
+        """V8 회귀 확인: "선택|도입" 추가가 I1/X4 가 막던 손상 조건절 대조 문장("재평가모형을
+        도입하여 재평가모형에 따라 …하는 경우 …손상차손은 …")을 다시 열면 안 된다 — X4 와
+        같은 손상 문맥 배제 룩어헤드를 이 패턴에도 붙였다."""
+        text = (
+            "다.유형자산 재평가모형을 도입하여 재평가모형에 따라 재평가금액을 장부금액으로 하는 경우 "
+            "재평가되는 자산의 손상차손은 당해 사업연도의 손익으로 인식합니다."
+        )
+        j = judge(self.spec, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, UNDETERMINED)
+
+    def test_토지는_공정가치로_평가하고_있으며는_MIXED_V8(self) -> None:
+        """V8: "토지는 …공정가치로 평가/측정"도 재평가모형 채택 진술이다(실측 batch-03.md:
+        "토지는 일정한 주기로 공정가치로 평가하고 있으며")."""
+        text = "토지는 일정한 주기로 공정가치로 평가하고 있으며, 기타의 유형자산은 취득원가로 평가하고 있습니다."
+        j = judge(self.spec, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, "MIXED")
+
     def test_원가모형_적용하여_측정하였을_경우도_가정형_strip_V6_R2(self) -> None:
         """V6 R2: 기존 가정형 strip("원가모형으로 평가되었을 경우")은 동사와 어미 사이에
         "하여 측정"이 끼는 변형("적용하여 측정하였을 경우")을 못 잡아 COST_MODEL 로 오판했다."""
