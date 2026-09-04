@@ -62,6 +62,12 @@ from dart_search_mcp.tools.extract_facts import (
     emit_topic_cases_from_facts,
     extract_audit_facts,
 )
+from dart_search_mcp.policy_llm import (
+    DEFAULT_BASE_URL as POLICY_DEFAULT_BASE_URL,
+)
+from dart_search_mcp.policy_llm import (
+    DEFAULT_MODEL as POLICY_DEFAULT_MODEL,
+)
 from dart_search_mcp.tools.split_kam_cli import (
     SplitKamSourceError,
     run_split_kam,
@@ -783,14 +789,13 @@ def split_kam_cmd(facts_path, output_path):
 @click.option("--limit", type=int, default=None)
 @click.option("--llm-subjects", default=None, help="콤마 구분 subject 목록(예: 1118,1109) — 지정 시 그 대상만 LLM 에 보낸다. 기본: 전부")
 @click.option("--llm-workers", type=click.IntRange(1, 16), default=1, show_default=True, help="LLM 판정 병렬 스레드 수")
-@click.option("--llm-model", default=None, help="LLM 모델명 (기본: policy_llm.DEFAULT_MODEL)")
-@click.option("--llm-base-url", default=None, help="LLM 게이트웨이 base URL (기본: policy_llm.DEFAULT_BASE_URL)")
+@click.option("--llm-model", default=POLICY_DEFAULT_MODEL, show_default=True, help="LLM 모델명")
+@click.option("--llm-base-url", default=POLICY_DEFAULT_BASE_URL, show_default=True, help="LLM 게이트웨이 base URL")
 def extract_policy_stances_cmd(
     facts: str, docs: str, output: str, topics: str, llm: bool, limit: int | None,
-    llm_subjects: str | None, llm_workers: int, llm_model: str | None, llm_base_url: str | None,
+    llm_subjects: str | None, llm_workers: int, llm_model: str, llm_base_url: str,
 ) -> None:
     """회계정책 주석에서 회사의 선택(기준서 조기적용 등)을 판정해 policy_stance.jsonl 로 낸다."""
-    from dart_search_mcp.policy_llm import DEFAULT_BASE_URL, DEFAULT_MODEL
     from dart_search_mcp.policy_rules import TOPICS
     from dart_search_mcp.tools.policy_stance_cli import PolicyStanceSourceError, run_extract_policy_stances
     topic_codes = tuple(t.strip() for t in topics.split(",") if t.strip())
@@ -805,7 +810,7 @@ def extract_policy_stances_cmd(
         s = run_extract_policy_stances(facts_path=Path(facts), docs_dir=Path(docs), output_path=Path(output),
                                        topics=topic_codes,
                                        use_llm=llm, limit=limit, llm_subjects=subjects, llm_workers=llm_workers,
-                                       llm_model=llm_model or DEFAULT_MODEL, llm_base_url=llm_base_url or DEFAULT_BASE_URL)
+                                       llm_model=llm_model, llm_base_url=llm_base_url)
     except PolicyStanceSourceError as exc:
         click.echo(f"오류: {exc}", err=True); raise SystemExit(1)
     click.echo(

@@ -15,13 +15,16 @@ from pathlib import Path
 from typing import Any
 
 from dart_search_mcp.audit_xml_parser import _strip_tags_to_text
-from dart_search_mcp.policy_rules import TOPICS, UNDETERMINED  # noqa: F401 — UNDETERMINED 는 외부에서 참조할 수 있게 재노출
+from dart_search_mcp.policy_rules import TOPICS
 from dart_search_mcp.tools.extract_facts import select_xml_path
 
 # BLOCK_CAP(policy_blocks.py) + evidence_sentence 의 400자 상한(policy_rules.py) — 감사가 자기완결
 # 되도록 값만 여기 다시 적고 그 모듈들을 import 하지는 않는다.
 _WINDOW = 3000 + 400
 _NONE_PREFIX = "판정 불가: "
+# evidence_sentence 가 400자 창을 strip() 해서 돌려주므로(양끝이 공백이면 398~399), 정확히
+# 400 을 기준으로 잡으면 R1 이 만들어낸 "표 한가운데를 잘라낸" 상한 도달 근거를 놓친다(S-M5).
+_CAPPED_THRESHOLD = 395
 
 _WS_RE = re.compile(r"\s+")
 _TABLE_FRAG_RE = re.compile(r"\d{1,3}(?:,\d{3}){2,}")
@@ -42,7 +45,18 @@ FLAGS: tuple[str, ...] = ("evidence_in_block", "pattern_in_evidence", "foreign_s
 _VIOLATION_WHEN_FALSE = frozenset({"evidence_in_block", "pattern_in_evidence"})
 
 
+class PolicyStanceAuditRowError(Exception):
+    """stances jsonl 행에 필수 키(rcept_no·topic)가 없을 때(Q-M1) — policy_stance_gate.
+    PolicyGateControlError 와 같은 취지: 몇 번째 줄인지 사람이 읽을 수 있는 오류로 바꾼다.
+    안 그러면 이전 실행이 중간에 죽어 잘린 jsonl 을 감사할 때 아무 리포트도 없이 맨 KeyError
+    트레이스백만 남는다."""
+
+
 def _normalize(s: str) -> str:
+    """policy_llm._normalize 와 문자 그대로 같은 규칙(연속 공백→한 칸, 양끝 strip) — 이 모듈은
+    다른 policy_* 모듈에 기대지 않는 자기완결 설계라 별도로 정의한다(Q-M6). 의도된 중복이니
+    한쪽을 고치면 반드시 다른 쪽도 맞출 것 — 갈라지면 감사와 앵커링의 "원문에서 확인됨" 판정
+    기준이 서로 달라진다."""
     return _WS_RE.sub(" ", s).strip()
 
 
@@ -120,7 +134,7 @@ def _table_fragment(evidence: str) -> bool:
 
 
 def _capped(evidence: str) -> bool:
-    return len(evidence) >= 400
+    return len(evidence) >= _CAPPED_THRESHOLD
 
 
 def _is_combo_row(row: dict[str, Any]) -> bool:
@@ -165,15 +179,34 @@ def _row_flags(row: dict[str, Any], text: str | None) -> dict[str, bool]:
     return flags
 
 
+def _read_rows(stances_path: Path) -> list[dict[str, Any]]:
+    """행마다 필수 키(rcept_no·topic)를 확인하고, 없으면 몇 번째 줄인지 담아 바로 에러를
+    낸다(Q-M1) — 조용히 죽는 bare KeyError 대신 사람이 읽을 수 있는 오류로."""
+    rows: list[dict[str, Any]] = []
+    for lineno, raw_line in enumerate(stances_path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        row = json.loads(line)
+        for key in ("rcept_no", "topic"):
+            if key not in row:
+                raise PolicyStanceAuditRowError(
+                    f"{stances_path}: {lineno}번째 줄에 필수 키 '{key}' 가 없다"
+                    f"(rcept_no={row.get('rcept_no')!r}, topic={row.get('topic')!r})"
+                )
+        rows.append(row)
+    return rows
+
+
 def run_policy_stance_audit(
     *, stances_path: Path, docs_dir: Path, report_path: Path, sample_per_flag: int = 20
 ) -> dict[str, Any]:
     stances_path, docs_dir, report_path = Path(stances_path), Path(docs_dir), Path(report_path)
-    rows = [json.loads(line) for line in stances_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    rows = _read_rows(stances_path)
     # rcept_no 로 정렬(Q-I5) — jsonl 은 이미 이 순서로 쓰이지만(_write_atomic 의 정렬 키) 그 보장에
     # 기대지 않고 한 번 더 정렬한다. 아래 단일 문서 캐시가 "직전 rcept_no 하나만" 기억해도 문서당
     # 1회만 파싱되려면 같은 rcept_no 행이 반드시 인접해야 한다.
-    rows.sort(key=lambda r: r.get("rcept_no", ""))
+    rows.sort(key=lambda r: r["rcept_no"])
 
     # rcept_no 별 무제한 dict 캐시는 실코퍼스(4.8만 문서, 문서당 평균 약 60KB 텍스트)에서 캐시가
     # 2.7GB 까지 상주한다(Q-I5) — 재파싱 방지 효과는 없다(행이 정렬돼 있어 같은 rcept_no 가 이미
@@ -241,11 +274,19 @@ def run_policy_stance_audit(
             },
         }
 
+    total_rows = len(rows)
     totals: dict[str, dict[str, Any]] = {}
     for flag in FLAGS:
         checked = sum(g["flags"].get(flag, {}).get("checked", 0) for g in by_group.values())
         viol = sum(g["flags"].get(flag, {}).get("violations", 0) for g in by_group.values())
-        totals[flag] = {"checked": checked, "violations": viol, "ratio": (viol / checked) if checked else 0.0}
+        totals[flag] = {
+            "checked": checked,
+            "violations": viol,
+            "ratio": (viol / checked) if checked else 0.0,
+            # 주제를 새로 추가하고 _AUDIT_KEYWORDS 등록을 잊는 등, 플래그가 조용히 검사 대상에서
+            # 빠지면 "위반 0" 과 구분이 안 된다(Q-M2) — unchecked 로 드러낸다.
+            "unchecked": total_rows - checked,
+        }
 
     result: dict[str, Any] = {
         "rows": len(rows),
@@ -269,10 +310,10 @@ def _write_report(report_path: Path, result: dict[str, Any], samples: dict[str, 
             "evidence_in_block 검사·종료코드 판정에서 제외했다(Q-I4)."
         )
     lines += ["", "## 전체 플래그 요약", ""]
-    lines += ["| 플래그 | 검사 | 위반 | 비율 |", "|---|---|---|---|"]
+    lines += ["| 플래그 | 검사 | 위반 | 비율 | 미검사 |", "|---|---|---|---|---|"]
     for flag in FLAGS:
         t = result["totals"][flag]
-        lines.append(f"| {flag} | {t['checked']} | {t['violations']} | {t['ratio']:.1%} |")
+        lines.append(f"| {flag} | {t['checked']} | {t['violations']} | {t['ratio']:.1%} | {t['unchecked']} |")
 
     lines += ["", "## (주제, 판정방식) 별", ""]
     for key, g in sorted(result["by_group"].items()):

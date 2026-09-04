@@ -44,18 +44,26 @@ def evidence_sentence(text: str, pos: int) -> str:
 
     표(숫자 나열)처럼 문장 경계가 없어 "문장"이 400자를 넘으면, 문장 전체를 그대로 자르는 대신
     pos 를 중심으로 400자 창을 잡는다 — 그래야 매치 구절(pos)이 창 밖으로 밀려나지 않는다(R1).
-    반환값은 항상 pos 위치의 글자를 포함한다."""
+    전제: pos 는 비공백 글자를 가리킨다(호출자는 항상 그렇다 — 패턴 매치 시작 위치이거나
+    `policy_llm._locate` 가 되돌린 비공백 인덱스). 그 전제 아래 반환값은 항상 pos 위치의 글자를
+    포함한다(S-M1 — pos 가 문장 구분 공백 런 안이면 이 불변식은 보장되지 않는다)."""
     start = 0
     end = len(text)
+    found_boundary = False
     for m in _SENT_SPLIT_RE.finditer(text):
         if m.end() <= pos:
             start = m.end()
         else:
             end = m.start()
+            found_boundary = True
             break
     sent = text[start:end]
-    if len(sent) <= _EVIDENCE_MAX:
-        stripped = sent.strip()
+    stripped = sent.strip()
+    if len(stripped) <= _EVIDENCE_MAX:
+        # 다음 경계를 찾아 잘라낸 경우(found_boundary)는 결과가 비어도 그대로 돌려준다(기존 동작
+        # 그대로, S-M2) — pos 앞뒤 200자 폴백은 문장 경계를 아예 못 찾은 경우에만 쓴다.
+        if found_boundary:
+            return stripped
         return stripped or text[max(0, pos - 200) : pos + 200].strip()
     lo = max(start, pos - 150)
     hi = min(end, lo + _EVIDENCE_MAX)

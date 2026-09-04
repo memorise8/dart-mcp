@@ -3,7 +3,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from dart_search_mcp.tools.policy_stance_audit import _pattern_in_evidence_llm, run_policy_stance_audit
+from dart_search_mcp.tools.policy_stance_audit import (
+    PolicyStanceAuditRowError,
+    _pattern_in_evidence_llm,
+    run_policy_stance_audit,
+)
 from dart_search_mcp.tools.policy_stance_cli import run_extract_policy_stances
 
 FIX = Path(__file__).parent / "fixtures" / "policy"
@@ -360,6 +364,57 @@ class AuditKeywordsTests(unittest.TestCase):
 
     def test_등록되지_않은_주제는_None(self) -> None:
         self.assertIsNone(_pattern_in_evidence_llm("UNKNOWN_TOPIC", "아무 문장"))
+
+
+class RowValidationTests(unittest.TestCase):
+    """Q-M1: 필수 키(rcept_no·topic)가 없는 행은 bare KeyError 대신 몇 번째 줄인지 담은
+    명확한 오류를 낸다 — 중간에 잘린 jsonl 을 감사할 때 아무 리포트도 없이 죽는 대신."""
+
+    def test_topic_키가_없는_행은_줄번호와_함께_에러(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            stances = t / "policy_stance.jsonl"
+            stances.write_text(
+                json.dumps({"rcept_no": "A", "topic": "STD_EARLY_ADOPTION", "subject": None,
+                            "value": "NOT_ADOPTED", "evidence": "x", "method": "rule", "block_offset": 0})
+                + "\n"
+                + json.dumps({"rcept_no": "B", "subject": None, "value": "NOT_ADOPTED",
+                              "evidence": "x", "method": "rule", "block_offset": 0})
+                + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(PolicyStanceAuditRowError) as ctx:
+                run_policy_stance_audit(stances_path=stances, docs_dir=t / "docs", report_path=t / "audit.md")
+            self.assertIn("2번째 줄", str(ctx.exception))
+            self.assertIn("topic", str(ctx.exception))
+
+
+class UncheckedFlagTests(unittest.TestCase):
+    """Q-M2: TOPICS 밖 주제 코드는 pattern_in_evidence 가 None(검사 제외)을 돌려준다 —
+    "위반 0" 과 구분되도록 totals[flag]["unchecked"] 로 드러나야 한다."""
+
+    def test_알수없는_주제코드_행은_pattern_in_evidence가_unchecked로_잡힌다(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            docs = t / "docs"
+            _write_doc(docs, "U1", "아무 문장입니다.")
+            rows = [
+                {
+                    "rcept_no": "U1", "corp_code": "1", "fiscal_year": 2025,
+                    "topic": "BOGUS_TOPIC", "subject": None, "value": "WHATEVER",
+                    "evidence": "아무 문장입니다.", "method": "rule",
+                    "confidence": 1.0, "block_offset": 0, "parser_version": "ps-v1",
+                },
+            ]
+            stances = t / "policy_stance.jsonl"
+            _write_stances(stances, rows)
+            rep = run_policy_stance_audit(stances_path=stances, docs_dir=docs, report_path=t / "audit.md")
+
+            self.assertEqual(rep["totals"]["pattern_in_evidence"]["checked"], 0)
+            self.assertEqual(rep["totals"]["pattern_in_evidence"]["violations"], 0)
+            self.assertEqual(rep["totals"]["pattern_in_evidence"]["unchecked"], 1)
+            md = (t / "audit.md").read_text(encoding="utf-8")
+            self.assertIn("미검사", md)
 
 
 if __name__ == "__main__":

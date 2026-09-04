@@ -139,6 +139,7 @@ class EvidenceSentenceTests(unittest.TestCase):
         self.assertEqual(result, "당사는 토지에 대해 재평가모형을 적용하고 있습니다.")
 
     def test_문장_경계_없는_표_뒤_구절도_400자_창_안에_포함된다(self) -> None:
+        """pos 가 긴 문장의 끝 부근(hi=end 로 잘려 lo 를 당기는 분기)."""
         table = "1,234,567 " * 130  # 문장 경계(다./니다./음.) 없는 표 나열 — 1,300자
         phrase = "재평가모형을 적용하고 있습니다."
         text = table + phrase
@@ -147,7 +148,21 @@ class EvidenceSentenceTests(unittest.TestCase):
         result = evidence_sentence(text, pos)
         self.assertIn("재평가모형을 적용", result)
         self.assertLessEqual(len(result), 400)
-        self.assertIn(text[pos], result)
+
+    def test_pos가_문장_한가운데면_앞뒤_400자_창을_그대로_받는다(self) -> None:
+        """Q-M3: 양끝 다 안 닿는 순수 한가운데 분기(lo=pos-150, hi=pos+250)를 지나는 테스트가
+        없었다 — 위치까지 정확히 확인한다(assertIn 한 글자짜리 단언은 표 텍스트가 우연히 그
+        글자를 담기만 해도 통과해 무의미하므로 쓰지 않는다)."""
+        before = "9,999,999 " * 60  # 문장 경계 없는 표 — 600자, pos-150 이 여유 있게 앞에 남는다
+        phrase = "재평가모형을 적용하고 있습니다"
+        after = "8,888,888 " * 60  # 뒤에도 600자 — hi 가 end 에 닿지 않는다
+        text = before + phrase + after
+        pos = text.index(phrase)
+        result = evidence_sentence(text, pos)
+        lo = pos - 150
+        self.assertEqual(len(result), 400)
+        self.assertEqual(result, text[lo : lo + 400].strip())
+        self.assertIn("재평가모형을 적용", result)
 
 
 if __name__ == "__main__":

@@ -13,9 +13,13 @@ class JudgeWithLlmTests(unittest.TestCase):
     spec = TOPICS["STD_EARLY_ADOPTION"]
 
     def test_비긍정값은_그대로_llm(self) -> None:
+        """S-M3: evidence 는 픽스처 블록 안에 실제로 있는 구절이어야 한다 — 그래야 나중에 앵커
+        성공 경로가 망가져도(예: _locate 리팩터 실수) 이 테스트가 evidence 로 잡아낸다."""
         fake = lambda messages, **kw: json.dumps({"label": "NOT_ADOPTED", "evidence": "영향을 평가 중"})
-        j = judge_with_llm(self.spec, _blk("제1118호 … 회사는 영향을 평가 중입니다."), call_fn=fake)
+        block = _blk("제1118호 … 회사는 영향을 평가 중입니다.")
+        j = judge_with_llm(self.spec, block, call_fn=fake)
         self.assertEqual((j.value, j.method, j.subject), ("NOT_ADOPTED", "llm", "1118"))
+        self.assertEqual(j.evidence, "제1118호 … 회사는 영향을 평가 중입니다.")
 
     def test_긍정값은_단정_패턴과_맞아야_채택(self) -> None:
         fake = lambda messages, **kw: json.dumps({"label": "EARLY_ADOPTED", "evidence": "비교정보는 재작성됩니다"})
@@ -33,11 +37,17 @@ class JudgeWithLlmTests(unittest.TestCase):
             self.assertEqual((j.value, j.method), (UNDETERMINED, "none"))
 
     def test_프롬프트에_기준서번호와_블록이_들어간다(self) -> None:
+        """S-M3: evidence "x" 는 블록에 없어 예전엔 이 테스트가 (프롬프트만 단언하므로 무해하게)
+        앵커 실패 경로로 흘러갔다. 블록 안 실제 구절로 바꾸고 반환값도 같이 확인한다."""
         seen: dict = {}
         def fake(messages, **kw):
-            seen["content"] = messages[-1]["content"]; return json.dumps({"label": "NOT_ADOPTED", "evidence": "x"})
-        judge_with_llm(self.spec, _blk("제1118호 본문"), call_fn=fake)
-        self.assertIn("1118", seen["content"]); self.assertIn("제1118호 본문", seen["content"])
+            seen["content"] = messages[-1]["content"]
+            return json.dumps({"label": "NOT_ADOPTED", "evidence": "본문 내용을 검토 중"})
+        block = _blk("제1118호 본문 내용을 검토 중입니다.")
+        j = judge_with_llm(self.spec, block, call_fn=fake)
+        self.assertIn("1118", seen["content"]); self.assertIn("제1118호 본문 내용을 검토 중입니다.", seen["content"])
+        self.assertEqual((j.value, j.method), ("NOT_ADOPTED", "llm"))
+        self.assertIn("검토 중", j.evidence)
 
     def test_LLM_호출_실패는_UNDETERMINED(self) -> None:
         from dart_search_mcp.tools.kam_tagger import KamLlmError
