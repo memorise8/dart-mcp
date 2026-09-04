@@ -836,6 +836,27 @@ def policy_stance_gate_cmd(stances: str, positives: str | None, hardneg: str | N
         raise SystemExit(2)
 
 
+@cli.command("policy-stance-audit")
+@click.option("--stances", default="dart_collected/policy_stance.jsonl", show_default=True)
+@click.option("--docs", default="dart_collected/docs", show_default=True)
+@click.option("-o", "--report", default="dart_collected/policy_stance_audit.md", show_default=True)
+@click.option("--sample-per-flag", type=int, default=20, show_default=True, help="플래그별 위반 예시 표시 상한(md 리포트)")
+def policy_stance_audit_cmd(stances: str, docs: str, report: str, sample_per_flag: int) -> None:
+    """policy_stance.jsonl 의 근거 품질(evidence 가 원문 블록에 있는지·판정 패턴과 맞는지 등)을
+    기계적으로 감사한다. 게이트(policy-stance-gate)는 값만 보고, 이 명령은 근거를 본다.
+    evidence_in_block 위반이 1건이라도 있으면 종료 코드 2."""
+    from dart_search_mcp.tools.policy_stance_audit import run_policy_stance_audit
+    rep = run_policy_stance_audit(
+        stances_path=Path(stances), docs_dir=Path(docs), report_path=Path(report), sample_per_flag=sample_per_flag
+    )
+    for _key, g in sorted(rep["by_group"].items()):
+        flag_disp = " ".join(f"{flag} 위반{fs['violations']}/{fs['checked']}" for flag, fs in g["flags"].items())
+        click.echo(f"{g['topic']}/{g['method']}: 행 {g['rows']}건 — {flag_disp}")
+    click.echo(f"-> {report}")
+    if rep["totals"]["evidence_in_block"]["violations"] > 0:
+        raise SystemExit(2)
+
+
 @cli.command()
 def serve():
     """MCP 서버를 시작합니다."""
