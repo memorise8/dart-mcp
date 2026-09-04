@@ -574,6 +574,16 @@ class RevenueRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk(text, None, "수익인식"))
         self.assertEqual(j.value, "POINT_IN_TIME")
 
+    def test_진행률_트리거와_진짜_POINT가_한_문장에_있으면_BOTH_재리뷰_X3(self) -> None:
+        """재리뷰 Minor X3 재현: N2 가 pre-pass 앵커를 좁히면서 동시에 `진행률|진행기준|
+        투입법` 을 넓혀 새 오탐 경로를 만들었다 — "공사수익은 진행률에 따라 인식하며,
+        상품매출은 인도되는 시점에 수익을 인식합니다."에서 진행기준 서술이 앵커가 돼 뒤의
+        진짜 시점기준 진술까지 지워 BOTH 가 OVER_TIME 으로 강등됐다. N2(b)(group2 가 "시점"
+        토큰을 같이 지우는 문제)를 닫기 전까지는 앵커에서 진행률/진행기준/투입법 을 뺀다."""
+        text = "공사수익은 진행률에 따라 인식하며, 상품매출은 인도되는 시점에 수익을 인식합니다."
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, "BOTH")
+
     def test_시점에_수익을_인식하지_않습니다_단독은_UNDETERMINED_재리뷰_I3a(self) -> None:
         """재리뷰 Important #3(a) 단독 검증("기간에 걸쳐" 없이도): 부정형 "시점에 수익을
         인식하지 않습니다"만 있으면 POINT_IN_TIME 으로 잡히지 않아야 한다."""
