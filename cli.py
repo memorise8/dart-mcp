@@ -798,6 +798,22 @@ def extract_policy_stances_cmd(facts: str, docs: str, output: str, topics: str, 
         click.echo(f"  {topic}: {dist} (상한 도달 {s['capped_ratio'].get(topic, 0):.1%})")
 
 
+@cli.command("policy-stance-gate")
+@click.option("--stances", default="dart_collected/policy_stance.jsonl", show_default=True)
+@click.option("--positives", default=None, help="양성 대조군 jsonl (rcept_no,topic,subject,expected)")
+@click.option("--hardneg", default=None, help="하드 네거티브 jsonl (expected=NOT_POSITIVE)")
+@click.option("-o", "--report", default="dart_collected/policy_stance_gate.md", show_default=True)
+def policy_stance_gate_cmd(stances: str, positives: str | None, hardneg: str | None, report: str) -> None:
+    """주제별 게이트 리포트. 미달 주제가 있으면 종료코드 2."""
+    from dart_search_mcp.tools.policy_stance_gate import build_gate_report
+    rep = build_gate_report(stances_path=Path(stances), positives_path=Path(positives) if positives else None,
+                            hardneg_path=Path(hardneg) if hardneg else None, report_path=Path(report))
+    for code, t in rep["topics"].items():
+        click.echo(f"{code}: {'통과' if t['passed'] else '미달'} 판단불가 {t['undetermined_ratio']:.1%} 재현 {t['positive_recall']} 오탐 {t['hardneg_false_positive']}")
+    if not rep["passed"]:
+        raise SystemExit(2)
+
+
 @cli.command()
 def serve():
     """MCP 서버를 시작합니다."""
