@@ -1,3 +1,4 @@
+import re
 import unittest
 from dart_search_mcp.policy_blocks import PolicyBlock
 from dart_search_mcp.policy_rules import TOPICS, UNDETERMINED, evidence_sentence, judge, positive_pattern_matches
@@ -321,27 +322,90 @@ class PpeRulesTests(unittest.TestCase):
         self.assertEqual(j.value, "REVALUATION_MODEL")
 
 
+_KOREAN_ALT_GROUP_RE = re.compile(r"\(\?:([가-힣|]+)\)")
+
+
+def _last_pure_korean_alt_group(pattern_source: str) -> list[str]:
+    """정규식 SOURCE 문자열(`Pattern.pattern`)에서, regex 메타문자가 섞이지 않은(=순수 한글과
+    "|" 로만 된) `(?:…)` 대안 그룹을 전부 찾아 마지막 것을 돌려준다. "원가…(?:모형|모델)…"
+    구조에서는 조사 그룹(을|를|으로|로 등)도 순수 한글+"|" 라 같이 걸리지만, 조사 그룹은 항상
+    동사 그룹보다 앞에 나오고 어미 그룹(…했을|하였을|…\\s*경우 등)은 "\\s*" 가 섞여 있어
+    이 필터에 안 걸린다 — 그래서 "마지막"을 취하면 항상 동사 그룹이 남는다."""
+    groups = _KOREAN_ALT_GROUP_RE.findall(pattern_source)
+    return groups[-1].split("|") if groups else []
+
+
+def _cost_positive_verbs() -> set[str]:
+    """`TOPICS["PPE_MEASUREMENT"].positive`(=_T2_POS)에서 "원가…(?:모형|모델)…<동사>" 측정
+    패턴들(취득원가 패턴·정책변경 패턴은 다른 구조라 제외)의 동사 alternation 을 소스에서
+    직접 유도해 합집합으로 돌려준다. 하드코딩 리터럴이 없어, positive 쪽에 새 동사가
+    추가되면 다음 실행에서 자동으로 이 집합에 들어온다(N5)."""
+    spec = TOPICS["PPE_MEASUREMENT"]
+    verbs: set[str] = set()
+    for pat, value in spec.positive:
+        s = pat.pattern
+        if (
+            value == "COST_MODEL"
+            and "(?:모형|모델)" in s
+            and "취득원가" not in s
+            and "변경" not in s
+            and "전환" not in s
+        ):
+            verbs.update(_last_pure_korean_alt_group(s))
+    return verbs
+
+
+def _cost_strip_verbs() -> set[str]:
+    """`TOPICS["PPE_MEASUREMENT"].strip` 에서 가정형(…했을|하였을|되었을|…경우 어미) strip 의
+    동사 alternation 을 소스에서 직접 유도한다. 마찬가지로 하드코딩 없음(N5)."""
+    spec = TOPICS["PPE_MEASUREMENT"]
+    verbs: set[str] = set()
+    for pat in spec.strip:
+        s = pat.pattern
+        if "(?:모형|모델)" in s and ("했을" in s or "하였을" in s or "되었을" in s or "경우" in s):
+            verbs.update(_last_pure_korean_alt_group(s))
+    return verbs
+
+
 class PpeCostVerbSyncInvariantTests(unittest.TestCase):
     """C1/I4: R1(positive 동사 확장)과 R2(가정형 strip)가 서로 다른 동사 집합을 쓰면, positive
     가 strip 보다 넓은 동사를 인정하는 순간 그 동사로만 나오는 표 열 제목·가정형 문구가
     strip 을 통과해 COST 트리거로 오판된다(C1 이 실측한 사고). 이 불변식을 고정한다:
     "유형자산…원가모형(을|를|으로|로)?<동사>" 로 COST_MODEL 이 되는 모든 동사는, 같은 동사가
     가정형 어미(…하는 경우 등)와 결합했을 때도 반드시 strip 되어 UNDETERMINED 가 되어야 한다.
-    이 목록(`_COST_VERBS`)은 `dart_search_mcp/policy_rules.py` 의 COST 확장 positive 패턴
-    (`_T2_POS`)의 동사 집합과 정확히 같아야 한다 — 둘 중 하나만 바뀌면 이 테스트가 깨진다."""
+
+    재리뷰 N5: 첫 버전은 검증할 동사 목록(`_COST_VERBS`)이 테스트에 하드코딩된 리터럴이라,
+    C1 을 만든 바로 그 변경(positive 동사 집합만 넓히고 strip 은 그대로 두기)이 이 테스트를
+    그대로 통과했다(테스트가 "무엇이 실제로 바뀌었는지"를 전혀 보지 않았기 때문). 이제
+    `_cost_positive_verbs()`/`_cost_strip_verbs()` 가 `policy_rules.py` 의 실제 정규식
+    SOURCE 문자열에서 동사 alternation 을 파싱해 유도한다 — 어느 쪽 목록만 바뀌어도(동사를
+    추가하거나 빼도) 두 집합이 갈라져 이 테스트가 깨진다(양방향)."""
 
     spec = TOPICS["PPE_MEASUREMENT"]
-    _COST_VERBS = ("적용", "채택", "사용", "평가", "측정")
+
+    def test_동사_목록을_소스에서_유도할_수_있다(self) -> None:
+        """유도 자체가 실패(빈 집합)하면 이후 테스트가 공허하게 통과하므로 먼저 확인한다."""
+        self.assertTrue(_cost_positive_verbs())
+        self.assertTrue(_cost_strip_verbs())
+
+    def test_positive_동사_집합과_strip_동사_집합이_같다(self) -> None:
+        positive_verbs = _cost_positive_verbs()
+        strip_verbs = _cost_strip_verbs()
+        self.assertEqual(
+            positive_verbs, strip_verbs,
+            f"positive={sorted(positive_verbs)} strip={sorted(strip_verbs)} "
+            f"— 대칭 차: {sorted(positive_verbs ^ strip_verbs)}",
+        )
 
     def test_모든_COST_동사가_긍정에서_발화한다(self) -> None:
-        for verb in self._COST_VERBS:
+        for verb in sorted(_cost_positive_verbs()):
             with self.subTest(verb=verb):
                 text = f"(5) 유형자산 당사는 원가모형을 {verb}하고 있습니다."
                 j = judge(self.spec, _blk(text, None, "유형자산"))
                 self.assertEqual(j.value, "COST_MODEL")
 
     def test_모든_COST_동사가_가정형_strip에서도_제거된다(self) -> None:
-        for verb in self._COST_VERBS:
+        for verb in sorted(_cost_positive_verbs()):
             with self.subTest(verb=verb):
                 text = f"(5) 유형자산 원가모형을 {verb}하는 경우의 장부금액입니다."
                 j = judge(self.spec, _blk(text, None, "유형자산"))
