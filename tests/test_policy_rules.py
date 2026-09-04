@@ -169,6 +169,20 @@ class PpeRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk(text, None, "유형자산"))
         self.assertEqual(j.value, "REVALUATION_MODEL")
 
+    def test_원가모형_적용하여_측정하였을_경우도_가정형_strip_V6_R2(self) -> None:
+        """V6 R2: 기존 가정형 strip("원가모형으로 평가되었을 경우")은 동사와 어미 사이에
+        "하여 측정"이 끼는 변형("적용하여 측정하였을 경우")을 못 잡아 COST_MODEL 로 오판했다."""
+        text = "재평가된 유형자산이 원가모형을 적용하여 측정하였을 경우의 장부금액입니다."
+        j = judge(self.spec, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, UNDETERMINED)
+
+    def test_재평가모형을_적용하는_자산_문구는_손상_회계정책이지_선택이_아니다_V6_R2(self) -> None:
+        """V6 R2: "재평가모형을 적용하는 자산으로서 …"는 손상 회계정책 문구지 회사의 측정모형
+        선택 진술이 아니다."""
+        text = "재평가모형을 적용하는 자산으로서 손상징후가 있는 경우 회수가능액을 추정합니다."
+        j = judge(self.spec, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, UNDETERMINED)
+
 
 class RevenueRulesTests(unittest.TestCase):
     spec = TOPICS["REVENUE_METHOD"]
