@@ -80,7 +80,11 @@ def judge(spec: TopicSpec, block: PolicyBlock) -> Judgement:
     if hit is None:
         stripped = text
         for pat in spec.strip:
-            stripped = pat.sub(" ", stripped)
+            # 길이 보존 치환(Q-I2) — 지운 구절 자리에 같은 길이의 공백을 넣어 오프셋이 block.text
+            # 와 정확히 같게 만든다. 보통 sub(" ", …)로 한 칸만 남기면 지워진 구절 뒤 위치들이
+            # block.text 와 어긋나, 그 뒤에서 잡힌 pos 로 뽑은 근거가 원문에 없는 문자열이 된다
+            # (예: T1_STRIP "조기적용하기로 선택하는 경우…" 가 문장 중간에 있는 실제 보일러플레이트).
+            stripped = pat.sub(lambda m: " " * len(m.group(0)), stripped)
         for group in (spec.positive, spec.fallback):
             hit = _first_in_order(group, stripped)
             if hit is not None:
@@ -94,7 +98,11 @@ def judge(spec: TopicSpec, block: PolicyBlock) -> Judgement:
         found = {v for pat, v in spec.positive if pat.search(text)}
         if len(found) >= 2:
             value = spec.combo_value
-    return Judgement(spec.code, subject, value, evidence_sentence(text, pos), "rule")
+    # 근거는 항상 block.text(원문)에서 뽑는다 — stripped 텍스트는 매치 위치(pos)를 찾는 데만 쓰고,
+    # 길이 보존 치환 덕에 그 pos 는 block.text 에서도 같은 글자를 가리킨다. 그래서 evidence 는
+    # 항상 원문 축자(verbatim)다(Q-I2) — 그렇지 않으면 감사(policy_stance_audit)의
+    # evidence_in_block 이 실데이터에서 상시 위반으로 잡힌다.
+    return Judgement(spec.code, subject, value, evidence_sentence(block.text, pos), "rule")
 
 
 def positive_pattern_matches(spec: TopicSpec, value: str, evidence: str) -> bool:

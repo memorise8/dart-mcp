@@ -46,6 +46,20 @@ class EarlyAdoptionRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk("동 기준서는 조기 적용이 허용되며, 회사는 아직 채택하지 않았습니다.", "1118"))
         self.assertEqual(j.value, "NOT_ADOPTED")
 
+    def test_strip_이후_근거는_원문_축자다_Q_I2_재현(self) -> None:
+        """리뷰 Q-I2 재현: _T1_STRIP("조기적용하기로 선택하는 경우…") 이 문장 중간의 실제
+        보일러플레이트를 지운다. 길이 보존 치환 전에는 지워진 구절 뒤에서 잡힌 pos 로 뽑은
+        evidence 가 원문에 없는 문자열이었다 — 이제는 항상 block.text 의 부분 문자열이어야 한다."""
+        text = (
+            "기업회계기준서 제1118호 수익 당사가 동 기준서를 조기적용하기로 선택하는 경우 "
+            "그 사실과 영향을 주석에 공시합니다. 회사는 동 기준서의 조기적용이 허용됨을 확인하였습니다."
+        )
+        block = _blk(text, "1118")
+        j = judge(self.spec, block)
+        self.assertEqual(j.value, "PERMITTED_ONLY")
+        self.assertIn(j.evidence, text)
+        self.assertEqual(j.evidence, "회사는 동 기준서의 조기적용이 허용됨을 확인하였습니다.")
+
 
 class PpeRulesTests(unittest.TestCase):
     spec = TOPICS["PPE_MEASUREMENT"]
