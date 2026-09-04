@@ -306,5 +306,54 @@ class CliLlmWiringTests(unittest.TestCase):
             httpx.Client = original_client  # type: ignore[assignment]
 
 
+class CliConsoleGatewayVisibilityTests(unittest.TestCase):
+    """재리뷰 N5: 게이트웨이가 전면 장애(전부 KamLlmError)라도 llm_failures=0(예외가 아니라
+    judge_with_llm 내부에서 삼켜짐)·llm_unanchored=0 이라 콘솔에 그 사실이 전혀 안 보였다 —
+    summary json 을 열어야만 알 수 있었다. 콘솔 한 줄에 게이트웨이·파싱 실패 건수를 덧붙인다."""
+
+    def test_게이트웨이_전면_장애가_콘솔에_보인다(self) -> None:
+        import httpx
+        import server  # noqa: F401
+        import cli
+        from click.testing import CliRunner
+
+        class _DownClient:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            def __enter__(self) -> "_DownClient":
+                return self
+
+            def __exit__(self, *exc_info) -> bool:
+                return False
+
+            def post(self, url: str, json: dict):
+                raise httpx.ConnectError("실제 네트워크 없음 - 테스트가 의도적으로 발생시킨 예외")
+
+        original_client = httpx.Client
+        httpx.Client = _DownClient  # type: ignore[assignment]
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp) / "s.jsonl"
+                runner = CliRunner()
+                result = runner.invoke(
+                    cli.cli,
+                    [
+                        "extract-policy-stances",
+                        "--facts", str(FIX / "audit_facts.jsonl"),
+                        "--docs", str(FIX / "docs"),
+                        "-o", str(out),
+                        "--topics", "STD_EARLY_ADOPTION",
+                        "--llm",
+                    ],
+                )
+                self.assertEqual(result.exit_code, 0, result.output)
+                self.assertIn("게이트웨이 실패 1", result.output)
+                self.assertIn("파싱 실패 0", result.output)
+                self.assertIn("실패 0", result.output)  # llm_failures — 예외가 아니라 정상 흐름
+        finally:
+            httpx.Client = original_client  # type: ignore[assignment]
+
+
 if __name__ == "__main__":
     unittest.main()
