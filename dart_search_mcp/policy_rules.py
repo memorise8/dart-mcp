@@ -73,11 +73,20 @@ def evidence_sentence(text: str, pos: int) -> str:
 
 
 def _first_in_order(patterns: tuple[tuple[re.Pattern[str], str], ...], text: str) -> tuple[str, int] | None:
-    """목록 순서가 우선순위 — 먼저 나열된 패턴이 어디에 있든 먼저 이긴다."""
+    """목록 순서가 우선순위 — 먼저 나열된 패턴이 어디에 있든 먼저 이긴다.
+
+    근거용 위치는 매치의 끝(m.end() - 1)을 쓴다(컨트롤러 지시, V5+fix2 재리뷰) — 값 판정 자체는
+    그대로 매치 여부만 본다. `투자부동산.{0,80}원가모형…적용`/`유형자산.{0,60}원가모형…적용` 처럼
+    "." 로 임의 글자를 건너뛰는 간격 패턴은, 그 간격 안에 실제 문장 마침표가 있으면 매치 시작이
+    이전 문장(예: 블록 표제)에 남는다 — evidence_sentence(text, m.start()) 가 트리거 구절이 아예
+    없는 엉뚱한 문장을 뽑아버린다(실측: IP 66행 중 10행·PPE 2,924행 중 2행의 evidence 에 모형
+    문구가 없었다). 매치는 트리거 구절("원가모형을 적용" 등) 자체로 끝나므로 끝 위치는 항상 그
+    구절이 실제로 있는 문장 안에 있다. 짧은 패턴(간격이 없거나 좁은 경우)은 시작과 끝이 어차피
+    같은 문장이라 결과가 바뀌지 않는다."""
     for pat, value in patterns:
         m = pat.search(text)
         if m:
-            return (value, m.start())
+            return (value, m.end() - 1)
     return None
 
 

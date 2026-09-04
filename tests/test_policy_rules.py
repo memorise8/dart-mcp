@@ -190,6 +190,21 @@ class IpRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk("(6) 투자부동산 투자부동산은 원가모형 또는 공정가치모형 중 하나를 선택하여 적용할 수 있습니다.", None, "투자부동산"))
         self.assertEqual(j.value, UNDETERMINED)
 
+    def test_표제_앞_투자부동산_토큰_때문에_엉뚱한_문장이_근거로_뽑히지_않는다(self) -> None:
+        """컨트롤러 지시(재리뷰 실측: IP 66행 중 10행·PPE 2,924행 중 2행의 evidence 에 모형 문구가
+        없었다): "투자부동산.{0,80}원가모형…적용" 처럼 "." 로 임의 글자를 건너뛰는 간격 패턴은 그
+        간격에 실제 문장 마침표가 있으면 매치 시작이 이전 문장(표제)에 남는다 — evidence_sentence
+        가 m.start() 를 쓰면 트리거 구절이 아예 없는 문장을 뽑는다. 매치의 끝(m.end()-1)을 쓰면
+        항상 트리거 구절이 있는 문장이 나온다."""
+        text = (
+            "(9) 투자부동산 연결실체는 임대수익이나 시세차익을 목적으로 보유하고 있는 부동산은 "
+            "투자부동산으로 분류하고 있습니다. 최초 인식 후 원가모형을 적용하고 있습니다."
+        )
+        j = judge(self.spec, _blk(text, None, "투자부동산"))
+        self.assertEqual(j.value, "COST_MODEL")
+        self.assertIn("원가모형을 적용", j.evidence)
+        self.assertEqual(j.evidence, "최초 인식 후 원가모형을 적용하고 있습니다.")
+
     def test_범주_대체_상용문은_회사의_선택이_아니다(self) -> None:
         """R2: "(주1) …범주에서…범주로 대체한 사항은 없습니다"는 표 각주 상용문이다."""
         text = "(주1) 원가모형을 적용하는 투자부동산 범주에서 공정가치모형을 적용하는 투자부동산의 범주로 대체한 사항은 없습니다."
