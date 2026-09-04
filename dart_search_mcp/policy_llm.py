@@ -7,10 +7,14 @@ evidence 가 맞을 때만 채택한다(llm_verified).
 from __future__ import annotations
 
 import json
+import re
 
 from dart_search_mcp.policy_blocks import PolicyBlock
-from dart_search_mcp.policy_rules import UNDETERMINED, Judgement, TopicSpec, positive_pattern_matches
+from dart_search_mcp.policy_rules import UNDETERMINED, Judgement, TopicSpec, evidence_sentence, positive_pattern_matches
 from dart_search_mcp.tools.kam_tagger import DEFAULT_BASE_URL, DEFAULT_MODEL, CallFn, KamLlmError, call_llm
+
+_WS_RE = re.compile(r"\s+")
+_ANCHOR_PREFIX_LEN = 20
 
 _BLOCK_MAX = 2500
 _LABEL_HELP = {
@@ -33,9 +37,52 @@ def build_prompt(spec: TopicSpec, block: PolicyBlock, subject: str | None) -> st
         "당신은 한국 감사보고서 주석을 읽는 회계 전문가입니다. 아래 지문은 회사의 회계정책 주석 항목입니다. "
         f"{head}\n회사의 상태를 다음 중 하나로 판정하세요.\n{_LABEL_HELP[spec.code]}\n"
         "- UNDETERMINED: 위 어디에도 해당하지 않아 판단 불가\n"
-        '반드시 JSON 한 줄로만 답하세요: {"label": "...", "evidence": "판정 근거가 된 원문 구절 40자 이내"}\n\n'
+        '반드시 JSON 한 줄로만 답하세요: '
+        '{"label": "...", "evidence": "판정 근거가 된 원문 구절을 원문 그대로 40자 이내로 인용"}\n\n'
         f"지문:\n{block.text[:_BLOCK_MAX]}"
     )
+
+
+def _normalize(s: str) -> str:
+    return _WS_RE.sub(" ", s).strip()
+
+
+def _normalize_with_map(text: str) -> tuple[str, list[int]]:
+    """`_normalize`와 같은 규칙(연속 공백→한 칸, 양끝 strip)으로 text 를 정규화하되,
+    정규화된 각 글자가 원문 text 의 어느 인덱스에서 왔는지 같이 돌려준다 — 정규화된 문자열
+    안에서 찾은 위치를 원문 pos 로 되돌리기 위해서다."""
+    out: list[str] = []
+    idx_map: list[int] = []
+    prev_was_space = True  # 처음에 공백으로 취급 — 앞쪽 공백을 건너뛴다(strip 효과)
+    for i, c in enumerate(text):
+        if c.isspace():
+            if not prev_was_space:
+                out.append(" ")
+                idx_map.append(i)
+            prev_was_space = True
+        else:
+            out.append(c)
+            idx_map.append(i)
+            prev_was_space = False
+    while out and out[-1] == " ":
+        out.pop()
+        idx_map.pop()
+    return "".join(out), idx_map
+
+
+def _locate(text: str, evidence: str) -> int | None:
+    """evidence(공백 정규화)를 block.text(같은 정규화) 안에서 찾아, 원문 text 기준 시작 위치를
+    돌려준다. 못 찾으면 evidence 앞 20자로 한 번 더 찾는다. 그래도 없으면 None."""
+    norm_evidence = _normalize(evidence)
+    if not norm_evidence:
+        return None
+    norm_text, idx_map = _normalize_with_map(text)
+    idx = norm_text.find(norm_evidence)
+    if idx == -1 and len(norm_evidence) > _ANCHOR_PREFIX_LEN:
+        idx = norm_text.find(norm_evidence[:_ANCHOR_PREFIX_LEN])
+    if idx == -1:
+        return None
+    return idx_map[idx]
 
 
 def _parse(reply: str) -> tuple[str, str] | None:
@@ -68,6 +115,12 @@ def judge_with_llm(
     value, evidence = parsed
     if value not in spec.values or value == UNDETERMINED:
         return none
+    # 근거 앵커링(R2) — LLM 이 돌려준 구절이 블록 원문 어디에 있는지 찾아 문장 전체로 넓힌다.
+    # 원문에서 찾을 수 없는 근거는 어휘 §1("근거 없는 행은 만들지 않는다")에 따라 채택하지 않는다.
+    anchor = _locate(block.text, evidence)
+    if anchor is None:
+        return none
+    evidence = evidence_sentence(block.text, anchor)
     if value in spec.positive_values:
         if not positive_pattern_matches(spec, value, evidence):
             return none

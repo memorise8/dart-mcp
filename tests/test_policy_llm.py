@@ -47,5 +47,31 @@ class JudgeWithLlmTests(unittest.TestCase):
         self.assertEqual((j.value, j.method, j.evidence, j.subject), (UNDETERMINED, "none", "", "1118"))
 
 
+class EvidenceAnchoringTests(unittest.TestCase):
+    """R2: LLM 근거는 블록 원문에서 확인될 때만 채택하고, 채택되면 문장 전체로 넓힌다."""
+
+    spec = TOPICS["STD_EARLY_ADOPTION"]
+
+    def test_블록_안_구절이면_evidence가_그_구절을_품은_문장_전체가_된다(self) -> None:
+        fake = lambda messages, **kw: json.dumps({"label": "NOT_ADOPTED", "evidence": "영향을 평가 중"})
+        block = _blk("당사는 다른 기준서를 검토하였습니다. 회사는 제1118호를 아직 채택하지 않았으며 영향을 평가 중입니다.")
+        j = judge_with_llm(self.spec, block, call_fn=fake)
+        self.assertEqual((j.value, j.method), ("NOT_ADOPTED", "llm"))
+        self.assertEqual(j.evidence, "회사는 제1118호를 아직 채택하지 않았으며 영향을 평가 중입니다.")
+
+    def test_블록에_없는_구절이면_UNDETERMINED_none_빈_evidence(self) -> None:
+        fake = lambda messages, **kw: json.dumps({"label": "NOT_ADOPTED", "evidence": "전혀 다른 구절입니다"})
+        block = _blk("당사는 다른 기준서를 검토하였습니다. 회사는 제1118호를 아직 채택하지 않았으며 영향을 평가 중입니다.")
+        j = judge_with_llm(self.spec, block, call_fn=fake)
+        self.assertEqual((j.value, j.method, j.evidence), (UNDETERMINED, "none", ""))
+
+    def test_긍정_라벨_앵커된_문장_안에_단정_패턴이_있으면_llm_verified(self) -> None:
+        fake = lambda messages, **kw: json.dumps({"label": "EARLY_ADOPTED", "evidence": "조기적용하였습니다"})
+        block = _blk("제1109호 개정. 조기적용이 허용됨에 따라 당사는 동 기준서를 조기적용하였습니다.", "1109")
+        j = judge_with_llm(self.spec, block, call_fn=fake)
+        self.assertEqual((j.value, j.method), ("EARLY_ADOPTED", "llm_verified"))
+        self.assertIn("조기적용하였습니다", j.evidence)
+
+
 if __name__ == "__main__":
     unittest.main()
