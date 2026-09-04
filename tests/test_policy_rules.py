@@ -180,6 +180,18 @@ class PpeRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk(text, None, "유형자산"))
         self.assertEqual(j.value, "MIXED")
 
+    def test_취득원가로_평가_앵커가_다른_자산_문장을_넘지_않는다_재리뷰_I2(self) -> None:
+        """재리뷰 Important #2 재현(20260424000208): "유형자산…취득원가로 평가" 앵커가
+        `.{0,60}` 간격 안의 실제 문장 마침표를 넘어, 60자 앞의 블록 표제 토큰 "유형자산"이
+        전혀 다른 자산(매도가능증권)의 "취득원가로 평가" 문장에 앵커를 채워버렸다 —
+        `[^.]{0,60}` 로 문장 경계를 넘지 않게 좁힌다."""
+        text = (
+            "다. 유형자산 유형자산의 내용연수 및 잔존가액의 결정은 법인세법의 규정을 적용하였습니다. "
+            "매도가능증권 시장성 없는 지분증권은 취득원가로 평가하였으나 손상차손 인식 대상은 아닙니다."
+        )
+        j = judge(self.spec, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, UNDETERMINED)
+
     def test_원가모형에서_재평가모형으로_회계정책_변경은_REVALUATION_MODEL_V6_R1(self) -> None:
         """V6 R1: "원가모형에서 재평가모형으로 회계정책을 변경하였습니다"는 변경 후 모형(REVAL)이
         최종값이다. "원가모형에서"는 strip(구절만) 해 COST 오탐을 막는다."""
