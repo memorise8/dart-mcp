@@ -46,10 +46,14 @@ def _normalize(s: str) -> str:
     return _WS_RE.sub(" ", s).strip()
 
 
-def _evidence_in_block(evidence: str, method: str, text: str | None, block_offset: Any) -> bool:
-    """block_offset 이 없거나 원문 길이를 벗어나면 확인 불가 — 위반으로 본다(True 를 확인됨으로
-    쓰므로 여기선 False 를 돌려준다)."""
-    if text is None or not isinstance(block_offset, int) or block_offset < 0 or block_offset >= len(text):
+def _evidence_in_block(evidence: str, method: str, text: str | None, block_offset: Any) -> bool | None:
+    """text 가 None(=rcept_no 의 XML 을 못 읽음)이면 확인 자체가 불가능하므로 None(검사 제외) —
+    호출자가 missing_xml 로 별도 집계하고 위반·종료코드 판정에서 뺀다(Q-I4: `--docs` 오지정이나
+    XML 결손을 "근거의 100% 가 블록 밖"으로 잘못 읽는 사고를 막는다). block_offset 이 없거나
+    원문 길이를 벗어나면(문서는 있는데 오프셋이 이상함) 위반으로 본다."""
+    if text is None:
+        return None
+    if not isinstance(block_offset, int) or block_offset < 0 or block_offset >= len(text):
         return False
     check = evidence
     if method == "none" and check.startswith(_NONE_PREFIX):
@@ -179,11 +183,14 @@ def run_policy_stance_audit(
     group_flags: dict[tuple[str, str], dict[str, dict[str, int]]] = defaultdict(lambda: defaultdict(lambda: {"checked": 0, "violations": 0}))
     violations: dict[str, list[list[Any]]] = defaultdict(list)
     samples: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    missing_xml = 0
 
     for row in rows:
         rcept_no = row["rcept_no"]
         topic = row["topic"]
         text = _doc_text(rcept_no)
+        if text is None:
+            missing_xml += 1
         flags = _row_flags(row, text)
         key = (topic, _effective_method(row))
         group_rows[key] += 1
@@ -232,6 +239,7 @@ def run_policy_stance_audit(
 
     result: dict[str, Any] = {
         "rows": len(rows),
+        "missing_xml": missing_xml,
         "by_group": by_group,
         "totals": totals,
         "violations": {flag: violations.get(flag, []) for flag in FLAGS},
@@ -244,7 +252,13 @@ def run_policy_stance_audit(
 
 
 def _write_report(report_path: Path, result: dict[str, Any], samples: dict[str, list[dict[str, Any]]]) -> None:
-    lines = ["# 회계정책 선택 사실 근거 품질 감사", "", f"행 {result['rows']}건.", "", "## 전체 플래그 요약", ""]
+    lines = ["# 회계정책 선택 사실 근거 품질 감사", "", f"행 {result['rows']}건."]
+    if result["missing_xml"]:
+        lines.append(
+            f"XML 없음(rcept_no 의 문서를 못 읽음): {result['missing_xml']}건 — "
+            "evidence_in_block 검사·종료코드 판정에서 제외했다(Q-I4)."
+        )
+    lines += ["", "## 전체 플래그 요약", ""]
     lines += ["| 플래그 | 검사 | 위반 | 비율 |", "|---|---|---|---|"]
     for flag in FLAGS:
         t = result["totals"][flag]

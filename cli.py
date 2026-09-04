@@ -853,6 +853,8 @@ def policy_stance_audit_cmd(stances: str, docs: str, report: str, sample_per_fla
     for _key, g in sorted(rep["by_group"].items()):
         flag_disp = " ".join(f"{flag} 위반{fs['violations']}/{fs['checked']}" for flag, fs in g["flags"].items())
         click.echo(f"{g['topic']}/{g['method']}: 행 {g['rows']}건 — {flag_disp}")
+    if rep["missing_xml"]:
+        click.echo(f"XML 없음: {rep['missing_xml']}건 (evidence_in_block·종료코드 판정에서 제외)")
     click.echo(f"-> {report}")
     if rep["totals"]["evidence_in_block"]["violations"] > 0:
         raise SystemExit(2)

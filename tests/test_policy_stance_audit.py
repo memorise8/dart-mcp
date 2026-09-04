@@ -191,5 +191,96 @@ class ComboAuditTests(unittest.TestCase):
             self.assertEqual(rep["violations"]["pattern_in_evidence"], [["C2", "PPE_MEASUREMENT", None]])
 
 
+class MissingXmlTests(unittest.TestCase):
+    """Q-I4: rcept_no 의 XML 을 못 읽으면(--docs 오지정·문서 결손) evidence_in_block 을 위반으로
+    잡지 않고 missing_xml 로 따로 센다 — 그래야 "근거의 100% 가 블록 밖"으로 잘못 읽히지 않는다."""
+
+    def test_XML이_없는_행은_evidence_in_block_위반이_아니라_missing_xml로_센다(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            docs = t / "docs"
+            docs.mkdir(parents=True, exist_ok=True)  # docs_dir 는 있지만 이 rcept_no 폴더는 없다
+            rows = [
+                {
+                    "rcept_no": "NOXML", "corp_code": "1", "fiscal_year": 2025,
+                    "topic": "STD_EARLY_ADOPTION", "subject": "1118", "value": "NOT_ADOPTED",
+                    "evidence": "회사는 아직 채택하지 않았습니다.", "method": "rule",
+                    "confidence": 1.0, "block_offset": 0, "parser_version": "ps-v1",
+                },
+            ]
+            stances = t / "policy_stance.jsonl"
+            _write_stances(stances, rows)
+            rep = run_policy_stance_audit(stances_path=stances, docs_dir=docs, report_path=t / "audit.md")
+
+            self.assertEqual(rep["missing_xml"], 1)
+            self.assertEqual(rep["totals"]["evidence_in_block"]["checked"], 0)
+            self.assertEqual(rep["totals"]["evidence_in_block"]["violations"], 0)
+            self.assertEqual(rep["violations"]["evidence_in_block"], [])
+            md = (t / "audit.md").read_text(encoding="utf-8")
+            self.assertIn("XML 없음", md)
+
+
+class CliExitCodeTests(unittest.TestCase):
+    """Q-I6/Q-M4/Q-M5: policy-stance-audit CLI 의 종료 코드를 CliRunner 로 직접 고정한다 —
+    지금까지 exit 2 는 리뷰어가 수동으로만 확인했고 회귀 방어가 없었다."""
+
+    def test_evidence_in_block_위반이_있으면_exit_2(self) -> None:
+        import server  # noqa: F401  — 레포 관례: server -> cli -> dart_search_mcp.tools.* 순서로 import
+        import cli
+        from click.testing import CliRunner
+
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            docs = t / "docs"
+            _write_doc(docs, "BAD1", "본문 텍스트입니다.")
+            rows = [
+                {
+                    "rcept_no": "BAD1", "corp_code": "1", "fiscal_year": 2025,
+                    "topic": "STD_EARLY_ADOPTION", "subject": "1118", "value": "UNDETERMINED",
+                    "evidence": "판정 불가: 이 문구는 문서에 전혀 없습니다", "method": "none",
+                    "confidence": 0.0, "block_offset": 0, "parser_version": "ps-v1",
+                },
+            ]
+            stances = t / "policy_stance.jsonl"
+            _write_stances(stances, rows)
+            report = t / "audit.md"
+
+            runner = CliRunner()
+            result = runner.invoke(
+                cli.cli,
+                ["policy-stance-audit", "--stances", str(stances), "--docs", str(docs), "-o", str(report)],
+            )
+            self.assertEqual(result.exit_code, 2, result.output)
+
+    def test_missing_xml만_있으면_exit_0(self) -> None:
+        import server  # noqa: F401
+        import cli
+        from click.testing import CliRunner
+
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            docs = t / "docs"
+            docs.mkdir(parents=True, exist_ok=True)  # 이 rcept_no 의 XML 은 없다
+            rows = [
+                {
+                    "rcept_no": "NOXML2", "corp_code": "1", "fiscal_year": 2025,
+                    "topic": "STD_EARLY_ADOPTION", "subject": "1118", "value": "NOT_ADOPTED",
+                    "evidence": "회사는 아직 채택하지 않았습니다.", "method": "rule",
+                    "confidence": 1.0, "block_offset": 0, "parser_version": "ps-v1",
+                },
+            ]
+            stances = t / "policy_stance.jsonl"
+            _write_stances(stances, rows)
+            report = t / "audit.md"
+
+            runner = CliRunner()
+            result = runner.invoke(
+                cli.cli,
+                ["policy-stance-audit", "--stances", str(stances), "--docs", str(docs), "-o", str(report)],
+            )
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertIn("XML 없음", result.output)
+
+
 if __name__ == "__main__":
     unittest.main()
