@@ -234,6 +234,15 @@ _T4_STRIP = (
     _p(r"시점에\s*수익(?:을|으로)\s*인식하지\s*(?:않|아니)"),
 )
 _POINT_AFTER_OVER_TIME_RE = re.compile(r"(기간에\s*걸쳐[^.]{0,80}?)(시점에\s*수익(?:을|으로)\s*인식)")
+# Fix round 2(리뷰 I3(a) 실측, 표본 A OVER_TIME→BOTH 9건 중 4건): 부수수익(K-IFRS 1115 수익이
+# 아니라 기타수익인 배당·이자·로열티·임대·수수료 수익) 보일러플레이트가 "…확정되는 시점에
+# 수익을 인식하고 있습니다"로 끝나면, 그 자체가 회사의 (진행기준과 대비되는) 시점기준 수익인식
+# 방침 선언이 아니다 — 진행기준으로 공사수익을 인식하는 회사가 부수수익 문장 하나 때문에
+# BOTH 로 잘못 라벨링됐다.
+_INCOME_BOILERPLATE_POINT_RE = re.compile(
+    r"((?:배당\s*수익|배당금|이자\s*수익|로열티\s*수익|임대\s*수익|수수료\s*수익)[^.]{0,60}?)"
+    r"(시점에\s*수익(?:을|으로)\s*인식)"
+)
 
 
 def _strip_point_after_over_time(text: str) -> str:
@@ -243,8 +252,16 @@ def _strip_point_after_over_time(text: str) -> str:
     9건 중 4건)은 동일 부수수익(배당수익) 보일러플레이트가 "…확정되는 시점에 수익을 인식"
     으로 끝나 OVER_TIME 단독 회사를 잘못 BOTH 로 승격시켰다. 일반 spec.strip(매치 전체를
     지움)으로는 "기간에 걸쳐"(앞쪽, 보존해야 함)와 "시점에 수익을 인식"(뒤쪽, 지워야 함)을
-    분리할 수 없어 별도 전처리 함수로 둔다 — 길이 보존(Q-I2, group 2 만 같은 길이 공백으로)."""
-    return _POINT_AFTER_OVER_TIME_RE.sub(lambda m: m.group(1) + " " * len(m.group(2)), text)
+    분리할 수 없어 별도 전처리 함수로 둔다 — 길이 보존(Q-I2, group 2 만 같은 길이 공백으로).
+
+    Fix round 2: "기간에 걸쳐"가 근처에 아예 없어도(OVER_TIME 트리거가 다른 문장에 있거나
+    없어도) 부수수익 보일러플레이트 자체가 "시점에 수익을 인식" 구절을 무의미하게 만든다 —
+    같은 문장·60자 이내에 배당/이자/로열티/임대/수수료 수익 키워드가 먼저 나오면 그 뒤의
+    "시점에 수익을 인식" 구절만 지운다. "인도 시점"·"통제가 … 이전되는 시점" 계열 구 패턴은
+    이번 라운드에서 실데이터로 부수수익 오탐을 재현하지 못해 그대로 둔다(브리프 지시)."""
+    text = _POINT_AFTER_OVER_TIME_RE.sub(lambda m: m.group(1) + " " * len(m.group(2)), text)
+    text = _INCOME_BOILERPLATE_POINT_RE.sub(lambda m: m.group(1) + " " * len(m.group(2)), text)
+    return text
 
 
 _T4_POS = (

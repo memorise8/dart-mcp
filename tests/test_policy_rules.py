@@ -395,6 +395,33 @@ class RevenueRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk(text, None, "수익인식"))
         self.assertEqual(j.value, UNDETERMINED)
 
+    def test_배당수익_보일러플레이트는_OVER_TIME_단독_회사를_BOTH로_승격하지_않는다_재리뷰_I3a_round2(
+        self,
+    ) -> None:
+        """Fix round 2(리뷰 I3(a) 실측, 표본 A OVER_TIME→BOTH 9건 중 4건): 부수수익(K-IFRS
+        1115 수익이 아닌 기타수익) 보일러플레이트 "배당수익은 …확정되는 시점에 수익을
+        인식하고 있습니다"는 회사의 시점기준 방침 선언이 아니다 — 진행기준 단독 회사가 이
+        문장 하나로 BOTH 로 잘못 승격되면 안 된다."""
+        text = "배당수익은 배당금을 받을 권리가 확정되는 시점에 수익을 인식하고 있습니다. 공사수익은 진행률에 따라 인식하고 있습니다."
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, "OVER_TIME")
+
+    def test_통제가_이전되는_시점은_배당보일러플레이트_가드의_영향을_받지_않는다_재리뷰_round2(
+        self,
+    ) -> None:
+        """Fix round 2 회귀 확인: 부수수익 가드는 배당/이자/로열티/임대/수수료 키워드가 선행할
+        때만 적용된다 — 진짜 회사 진술("통제가 이전되는 시점에 수익을 인식")은 여전히
+        POINT_IN_TIME 으로 잡혀 BOTH 로 승격돼야 한다."""
+        text = "재화의 판매는 통제가 이전되는 시점에 수익을 인식하고 있습니다. 공사수익은 진행률에 따라 인식하고 있습니다."
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, "BOTH")
+
+    def test_이자수익_보일러플레이트는_POINT_IN_TIME이_아니다_재리뷰_round2(self) -> None:
+        """Fix round 2: 이자수익도 부수수익 가드 대상이다."""
+        text = "이자수익은 유효이자율법을 적용하여 시점에 수익으로 인식하고 있습니다."
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertNotEqual(j.value, "POINT_IN_TIME")
+
 
 class IpRulesTests(unittest.TestCase):
     spec = TOPICS["IP_MEASUREMENT"]
