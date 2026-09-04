@@ -117,12 +117,18 @@ def judge_with_llm(
         return none
     # 근거 앵커링(R2) — LLM 이 돌려준 구절이 블록 원문 어디에 있는지 찾아 문장 전체로 넓힌다.
     # 원문에서 찾을 수 없는 근거는 어휘 §1("근거 없는 행은 만들지 않는다")에 따라 채택하지 않는다.
-    anchor = _locate(block.text, evidence)
+    # _locate 탐색은 프롬프트가 실제로 실은 구간(block.text[:_BLOCK_MAX])으로 좁힌다(Q-M5) —
+    # 모델이 보지 않은 2,500~3,000자 구간에서 우연히 일치해 "확인됨"으로 오채택되는 것을 막는다.
+    anchor = _locate(block.text[:_BLOCK_MAX], evidence)
     if anchor is None:
         return none
-    evidence = evidence_sentence(block.text, anchor)
+    # 검증(positive_pattern_matches)은 LLM 이 실제로 인용한 구절(quoted)로 한다 — 저장(evidence)은
+    # 문장 전체로 넓히되, 검증까지 넓혀버리면 문장 안 아무 단정 패턴이나 걸려 통과해 버린다(Q-C1:
+    # "제1116호를 조기적용" 문장 조각이 "제1118호" 행을 승인하는 위양성을 신설했었다). R18 가드가
+    # 지키는 성질(긍정값은 LLM 이 실제로 지목한 구절이 단정형일 때만 채택)은 quoted 로만 지켜진다.
+    quoted, evidence = evidence, evidence_sentence(block.text, anchor)
     if value in spec.positive_values:
-        if not positive_pattern_matches(spec, value, evidence):
+        if not positive_pattern_matches(spec, value, quoted):
             return none
         return Judgement(spec.code, subject, value, evidence[:400], "llm_verified")
     return Judgement(spec.code, subject, value, evidence[:400], "llm")

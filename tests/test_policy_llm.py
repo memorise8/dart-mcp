@@ -72,6 +72,22 @@ class EvidenceAnchoringTests(unittest.TestCase):
         self.assertEqual((j.value, j.method), ("EARLY_ADOPTED", "llm_verified"))
         self.assertIn("조기적용하였습니다", j.evidence)
 
+    def test_문장_확장_후_검증하면_안된다_Q_C1_재현(self) -> None:
+        """리뷰 Q-C1 재현: LLM 이 인용한 구절("제1118호는 조기적용이 허용됨")은 그 자체로는 단정
+        패턴이 아니다. 같은 문장 안에 다른 기준서(제1116호)를 조기적용했다는 단정 문구가 있어도,
+        검증은 인용구 자체로 해야 한다 — 문장 전체로 넓혀서 검증하면 제1116호 문장 조각이 제1118호
+        행을 잘못 승인한다(수정 전엔 EARLY_ADOPTED/llm_verified 로 잘못 채택됨)."""
+        fake = lambda messages, **kw: json.dumps(
+            {"label": "EARLY_ADOPTED", "evidence": "제1118호는 조기적용이 허용됨"}
+        )
+        txt = (
+            "기업회계기준서 제1118호 수익 당사는 제1116호를 조기적용하였으나 "
+            "제1118호는 조기적용이 허용됨에 따라 적용 여부를 검토 중입니다."
+        )
+        block = _blk(txt, "1118")
+        j = judge_with_llm(self.spec, block, call_fn=fake)
+        self.assertEqual((j.value, j.method), (UNDETERMINED, "none"))
+
 
 if __name__ == "__main__":
     unittest.main()
