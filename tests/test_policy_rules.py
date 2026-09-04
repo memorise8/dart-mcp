@@ -469,18 +469,34 @@ class RevenueRulesTests(unittest.TestCase):
     def test_통제가_이전되는_시점은_배당보일러플레이트_가드의_영향을_받지_않는다_재리뷰_round2(
         self,
     ) -> None:
-        """Fix round 2 회귀 확인: 부수수익 가드는 배당/이자/로열티/임대/수수료 키워드가 선행할
-        때만 적용된다 — 진짜 회사 진술("통제가 이전되는 시점에 수익을 인식")은 여전히
-        POINT_IN_TIME 으로 잡혀 BOTH 로 승격돼야 한다."""
+        """Fix round 2 회귀 확인: 부수수익 가드는 배당/이자/로열티 키워드가 문장 시작에서
+        조사와 함께 선행할 때만 적용된다(재리뷰 F1 로 임대·수수료는 목록에서 빠지고
+        문장-시작·조사 조건이 추가됐다) — 진짜 회사 진술("통제가 이전되는 시점에 수익을
+        인식")은 여전히 POINT_IN_TIME 으로 잡혀 BOTH 로 승격돼야 한다."""
         text = "재화의 판매는 통제가 이전되는 시점에 수익을 인식하고 있습니다. 공사수익은 진행률에 따라 인식하고 있습니다."
         j = judge(self.spec, _blk(text, None, "수익인식"))
         self.assertEqual(j.value, "BOTH")
 
     def test_이자수익_보일러플레이트는_POINT_IN_TIME이_아니다_재리뷰_round2(self) -> None:
-        """Fix round 2: 이자수익도 부수수익 가드 대상이다."""
+        """Fix round 2: 이자수익도 부수수익 가드 대상이다(문장 시작에서 "이자수익은"으로
+        시작하는 형태)."""
         text = "이자수익은 유효이자율법을 적용하여 시점에 수익으로 인식하고 있습니다."
         j = judge(self.spec, _blk(text, None, "수익인식"))
         self.assertNotEqual(j.value, "POINT_IN_TIME")
+
+    def test_수수료수익_대리인_회계_진술은_POINT_IN_TIME_재리뷰_F1_20260430000055(self) -> None:
+        """재리뷰 Important F1 재현(20260430000055, dart_collected 실측): "수수료수익"은
+        중개·대리인 회사에서는 기타수익이 아니라 주된 1115 수익이다 — "…수수료수익으로
+        인식하고 있으며, 상품이 …배송완료된 시점에 수익으로 인식하고 있습니다"는 대리인
+        회계의 정석적 시점기준 진술인데, 첫 버전 가드(임대·수수료수익 포함)가 이를 지워
+        POINT_IN_TIME 을 UNDETERMINED 로 잃었다 — 임대·수수료수익을 키워드 목록에서 뺀다."""
+        text = (
+            "연결실체는 재화의 판매 등을 중개하고 이에 대한 수수료를 수취하는 거래는 "
+            "수수료수익으로 인식하고 있으며, 해당 용역의 경우 상품이 고객에게 배송완료된 "
+            "시점에 수익으로 인식하고 있습니다."
+        )
+        j = judge(self.spec, _blk(text, None, "수익인식"))
+        self.assertEqual(j.value, "POINT_IN_TIME")
 
 
 class IpRulesTests(unittest.TestCase):
