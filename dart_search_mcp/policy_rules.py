@@ -9,7 +9,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from dart_search_mcp.policy_blocks import _HEADING_AFTER_RE, PolicyBlock
+from dart_search_mcp.policy_blocks import PolicyBlock
 
 UNDETERMINED = "UNDETERMINED"
 _EVIDENCE_MAX = 400
@@ -17,6 +17,10 @@ _SENT_SPLIT_RE = re.compile(r"(?<=다\.)\s+|(?<=니다\.)\s+|(?<=음\.)\s+")
 # V6 R4: 표 조각(숫자 나열) 뒤에 항목이 이어지는 경우, "문장"의 시작이 그 표 조각까지 거슬러
 # 올라간다(문장 경계가 없어서). 근거를 항목 기호부터 시작하도록 별도로 잘라낸다.
 _ITEM_MARKER_RE = re.compile(r"\(\d{1,2}\)|\d{1,2}\)|\d{1,2}-\d{1,2}\.|[①-⑳]|[가-힣]\.\s|\d{1,2}\.\s(?=[가-힣])")
+# 재리뷰 Minor #8: policy_blocks._HEADING_AFTER_RE(private, "_" 접두)를 모듈 간 직접 import 해
+# 쓰면 그쪽 리팩터링이 조용히 이 모듈을 깰 수 있다 — 같은 조건("기호 뒤에 한글이 이어지는가")을
+# 이 모듈 안에 독립적으로 정의한다(의도적 중복, policy_blocks._HEADING_AFTER_RE 와 동일 패턴).
+_HEADING_AFTER_RE = re.compile(r"\s*[가-힣]")
 
 
 def _last_item_marker_start(text: str, start: int, pos: int) -> int | None:
@@ -206,6 +210,10 @@ _T2_POS = (
     # 정책 변경 문장은 변경 후 모형(REVAL)이 최종값이다 — "원가모형에서 재평가모형으로 …
     # 변경하였습니다".
     (_p(r"재평가\s*(?:모형|모델)(?:으로|로)\s*(?:회계정책을\s*)?(?:변경|전환)(?:하였|했|하기로)"), "REVALUATION_MODEL"),
+    # 재리뷰 Minor #2: 위 REVAL 방향 정책변경 패턴만 있고 반대 방향(COST)이 없어 "재평가모형에서
+    # 원가모형으로 회계정책을 변경하였습니다"가 UNDETERMINED 로 남았다 — 대칭 패턴을 추가한다
+    # (IP_MEASUREMENT 의 _T3_POS 가 공정가치·원가 양방향을 두는 것과 같은 구조).
+    (_p(r"원가\s*(?:모형|모델)(?:으로|로)\s*(?:회계정책을\s*)?(?:변경|전환)(?:하였|했|하기로)"), "COST_MODEL"),
     # 재리뷰 Important #1(I1): 가드 없는 "재평가모형에 따라"는 R2 가 막 strip 한 손상정책 오탐
     # 클래스를 다른 표면형으로 다시 들여왔다 — "재평가모형을 도입하여 재평가모형에 따라
     # 재평가금액을 장부금액으로 하는 경우 …"(손상차손 회계처리 규정, 조건절)가 회사의 측정모형

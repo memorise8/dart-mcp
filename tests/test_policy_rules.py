@@ -199,6 +199,14 @@ class PpeRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk(text, None, "유형자산"))
         self.assertEqual(j.value, "REVALUATION_MODEL")
 
+    def test_재평가모형에서_원가모형으로_회계정책_변경은_COST_MODEL_재리뷰_Minor_2(self) -> None:
+        """재리뷰 Minor #2: REVAL 방향 정책변경 패턴만 있고 반대 방향(COST)이 없어 "재평가모형에서
+        원가모형으로 회계정책을 변경하였습니다"가 UNDETERMINED 로 남아 있었다 — 대칭 패턴을
+        추가한다(IP_MEASUREMENT 의 _T3_POS 가 이미 공정가치·원가 양방향을 갖는 것과 같은 구조)."""
+        text = "재평가모형에서 원가모형으로 회계정책을 변경하였습니다."
+        j = judge(self.spec, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, "COST_MODEL")
+
     def test_재평가모형에_따라는_REVALUATION_MODEL_V6_R1(self) -> None:
         text = "유형자산 재평가모형에 따라 토지, 건물에 대해 재평가를 실시하였습니다."
         j = judge(self.spec, _blk(text, None, "유형자산"))
