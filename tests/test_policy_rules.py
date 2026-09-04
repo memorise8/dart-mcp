@@ -321,6 +321,26 @@ class PpeRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk(text, None, "유형자산"))
         self.assertEqual(j.value, "REVALUATION_MODEL")
 
+    def test_재평가모형에_따라_계상하는_경우_손상차손_조건절은_REVAL이_아니다_재리뷰_X4(
+        self,
+    ) -> None:
+        """재리뷰 Minor X4 재현: N1 이 새로 넓힌 "계상" 표면형이 I1 이 닫으려던 손상 조건절
+        클래스를 다시 열었다 — "재평가모형에 따라 재평가금액을 장부금액으로 계상하는 경우
+        손상차손은 …"는 손상 회계처리 규정이지 회사의 측정모형 선택 진술이 아니다."""
+        text = "다.유형자산 재평가모형에 따라 재평가금액을 장부금액으로 계상하는 경우 손상차손은 재평가잉여금과 상계합니다."
+        j = judge(self.spec, _blk(text, None, "유형자산"))
+        self.assertNotEqual(j.value, "REVALUATION_MODEL")
+
+    def test_재평가모형에_따라_평가되어_있는_자산의_손상차손은_REVAL이_아니다_재리뷰_X4(
+        self,
+    ) -> None:
+        """재리뷰 Minor X4 재현: N1 이 새로 넓힌 "평가되어" 표면형도 같은 손상 조건절
+        클래스를 열었다 — "재평가모형에 따라 평가되어 있는 자산의 손상차손은 …"도 손상
+        회계처리 규정이다."""
+        text = "다.유형자산 재평가모형에 따라 평가되어 있는 자산의 손상차손은 재평가잉여금과 우선 상계합니다."
+        j = judge(self.spec, _blk(text, None, "유형자산"))
+        self.assertNotEqual(j.value, "REVALUATION_MODEL")
+
     def test_원가모형_적용하여_측정하였을_경우도_가정형_strip_V6_R2(self) -> None:
         """V6 R2: 기존 가정형 strip("원가모형으로 평가되었을 경우")은 동사와 어미 사이에
         "하여 측정"이 끼는 변형("적용하여 측정하였을 경우")을 못 잡아 COST_MODEL 로 오판했다."""
