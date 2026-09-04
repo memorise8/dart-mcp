@@ -396,6 +396,21 @@ class PpeRulesTests(unittest.TestCase):
         self.assertNotEqual(j.value, "REVALUATION_MODEL")
         self.assertNotEqual(j.value, "MIXED")
 
+    def test_손상차손누계액_차감_표시는_손상_조건절이_아니다_재리뷰_V11(self) -> None:
+        """재리뷰 Important 재현(V11, 실데이터 42건): V10 의 블랭킷
+        `(?![^.]{0,60}손상)` 룩어헤드가 진짜 재평가 선언을 억눌렀다 — "재평가모형을
+        회계정책으로 선택하여 토지 및 건물을 공정가치로 측정하고 있으며, 건물의 경우
+        공정가치에서 재평가시점 이후의 감가상각누계액과 손상차손누계액을 차감하여
+        표시하고 있습니다."는 통상적인 장부금액 표시 서술이지 손상 조건절이 아니다 —
+        "경우"류 조건 표지가 "손상" 바로 앞(20자 이내)에 있을 때만 배제하도록 좁힌다."""
+        text = (
+            "재평가모형을 회계정책으로 선택하여 토지 및 건물을 공정가치로 측정하고 있으며, "
+            "건물의 경우 공정가치에서 재평가시점 이후의 감가상각누계액과 손상차손누계액을 "
+            "차감하여 표시하고 있습니다."
+        )
+        j = judge(self.spec, _blk(text, None, "유형자산"))
+        self.assertEqual(j.value, "REVALUATION_MODEL")
+
     def test_원가모형_적용하여_측정하였을_경우도_가정형_strip_V6_R2(self) -> None:
         """V6 R2: 기존 가정형 strip("원가모형으로 평가되었을 경우")은 동사와 어미 사이에
         "하여 측정"이 끼는 변형("적용하여 측정하였을 경우")을 못 잡아 COST_MODEL 로 오판했다."""
