@@ -34,7 +34,7 @@ import json
 from pathlib import Path
 from typing import Any, Final
 
-from dart_search_mcp.kam_split import split_kam_items
+from dart_search_mcp.kam_split import SPLITTER_VERSION, split_kam_items
 
 _REQUIRED_SETTLEMENT_MONTH: Final[int] = 12
 _CORRECTION_MARKERS: Final[tuple[str, ...]] = ("[기재정정]", "[첨부추가]")
@@ -111,6 +111,9 @@ def build_kam_item_records(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "title": item.title,
                     "body": item.body,
                     "item_kind": item.kind.value,
+                    # 어느 분할 규칙 판으로 쪼갠 행인지 — 적재 쪽에서 `kam-v1`
+                    # 백필과 섞이지 않게 구분하는 데 쓴다.
+                    "splitter_version": SPLITTER_VERSION,
                 }
             )
     return records
