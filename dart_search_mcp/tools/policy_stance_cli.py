@@ -15,13 +15,15 @@ from typing import Any
 from dart_search_mcp.audit_xml_parser import _strip_tags_to_text
 from dart_search_mcp.policy_blocks import PolicyBlock, split_policy_blocks
 from dart_search_mcp.policy_llm import DEFAULT_BASE_URL, DEFAULT_MODEL, judge_with_llm
-from dart_search_mcp.policy_rules import TOPICS, UNDETERMINED, Judgement, judge_all
+from dart_search_mcp.policy_rules import HELD_CONFLICT, TOPICS, UNDETERMINED, Judgement, judge_all
 from dart_search_mcp.tools.extract_facts import select_xml_path
 from dart_search_mcp.tools.kam_tagger import CallFn, call_llm
 
 PARSER_VERSION = "ps-v2"
 _CONFIDENCE = {"rule": 1.0, "llm_verified": 0.9, "llm": 0.6, "none": 0.0}
 _RANK = {"rule": 3, "llm_verified": 2, "llm": 1, "none": 0}
+# 판단 보류 행의 근거 접두어 — `_record` 와 `policy_stance_audit._NONE_PREFIX` 가 쓰는 것과 같다.
+_NONE_PREFIX = "판정 불가: "
 
 
 class PolicyStanceSourceError(Exception):
@@ -60,32 +62,54 @@ def _more_informative(j: Judgement, prev: dict[str, Any]) -> bool:
     )
 
 
-def promote_cross_block_combos(
+def resolve_cross_block_conflicts(
     by_key: dict[tuple[str, str, str | None], dict[str, Any]],
     seen_values: dict[tuple[str, str], set[str]],
-) -> int:
-    """한 보고서 안에서 값이 갈리면 회사 수준 행(subject None)을 조합값으로 올린다. 올린 행 수.
+) -> tuple[int, int]:
+    """한 보고서 안에서 값이 갈릴 때 회사 수준 행(subject None)을 정리한다. (조합 승격, 충돌 보류).
 
     Fix round 1(리뷰 I1): 블록 단위 조합 승격(`policy_rules.judge_all`)만으로는 **블록이 여럿인**
     보고서를 못 다룬다 — 「(4) 유형자산 …그 외의 모든 유형자산은 취득원가에서 …」(원가)와
     「(5) 유형자산 …토지에 대하여 재평가모형을 …」(재평가)이 다른 블록에 있으면 dedup 이 먼저
     나온 블록을 남겨 COST_MODEL 로 확정됐다(실측 6건). 더 나쁜 것은 같은 파일 안에서 회사 수준
     행이 자기 자산군 행과 모순되는 경우다(20260403000370: {None: COST, 토지: REVALUATION}).
-    한 (rcept_no, topic) 에서 확정값이 둘 이상이면 — 회사 수준 행끼리든, 회사 수준 행과 자산군
-    행 사이든 — 회사 수준 행을 `spec.combo_value` 로 바꾼다. 근거·보류 사유·문장 메타는 그대로
-    두어(먼저 나온 블록의 것) "어느 문장에서 시작된 판단인가"를 잃지 않는다. 자산군 행은 손대지
-    않는다 — 자산군별 값이야말로 이 승격의 근거다."""
+
+    처리는 주제 어휘에 조합값이 있는지로 갈린다.
+    - 조합값이 있으면(PPE=MIXED, REVENUE=BOTH) 회사 수준 행을 그 값으로 올린다. Fix round 2
+      (리뷰 b): 값만 바꾸면 안 된다 — 감사(`policy_stance_audit._is_combo_row`)가 `method=="rule"`
+      로 콤보 행을 갈라내므로, 블록 안 승격 경로(`policy_rules.judge_all`)와 똑같이
+      method·confidence·held_reason 까지 맞춘다.
+    - 조합값이 없으면(IP — 어휘가 COST/FAIR_VALUE/UNDETERMINED 로 닫혀 있다) 없는 값을 지어내지
+      않는다. Fix round 2(리뷰 c, 컨트롤러 판정): 판단 보류로 내리고 사유를 CONFLICT 로 남긴다.
+
+    근거는 두 경로 모두 먼저 나온 블록의 것을 그대로 둔다(보류 행은 `_record` 와 같은 접두어를
+    붙인다) — "어느 문장에서 시작된 판단인가"를 잃지 않기 위해서다. 자산군 행은 손대지 않는다.
+    """
     promoted = 0
+    conflicts = 0
     for (rcept_no, code), values in seen_values.items():
         spec = TOPICS.get(code)
-        if spec is None or not spec.combo_value or len(values) < 2:
+        if spec is None or len(values) < 2:
             continue
         rec = by_key.get((rcept_no, code, None))
-        if rec is None or rec["value"] in (spec.combo_value, UNDETERMINED):
+        if rec is None or rec["value"] == UNDETERMINED:
             continue
-        rec["value"] = spec.combo_value
-        promoted += 1
-    return promoted
+        if spec.combo_value:
+            if rec["value"] == spec.combo_value:
+                continue
+            rec["value"] = spec.combo_value
+            rec["method"] = "rule"
+            rec["confidence"] = _CONFIDENCE["rule"]
+            rec["held_reason"] = ""
+            promoted += 1
+        else:
+            rec["evidence"] = _NONE_PREFIX + rec["evidence"]
+            rec["value"] = UNDETERMINED
+            rec["method"] = "none"
+            rec["confidence"] = _CONFIDENCE["none"]
+            rec["held_reason"] = HELD_CONFLICT
+            conflicts += 1
+    return promoted, conflicts
 
 
 def _record(fact: dict[str, Any], j: Judgement, block: PolicyBlock) -> dict[str, Any]:
@@ -95,7 +119,7 @@ def _record(fact: dict[str, Any], j: Judgement, block: PolicyBlock) -> dict[str,
     적재)는 새 열을 몰라도 되고, 알면 "이 근거가 누구의 어떤 문장인가"와 "왜 보류인가"를 읽을
     수 있다."""
     fy = fact.get("fiscal_year")
-    evidence = j.evidence if j.value != UNDETERMINED else "판정 불가: " + block.text[:120]
+    evidence = j.evidence if j.value != UNDETERMINED else _NONE_PREFIX + block.text[:120]
     return {
         "rcept_no": fact["rcept_no"],
         "corp_code": fact.get("corp_code"),
@@ -167,11 +191,15 @@ def run_extract_policy_stances(
                 # T5: 블록 하나가 여러 행을 낼 수 있다(유형자산 자산군별 행). 상한 도달률은
                 # 여전히 블록당 한 번만 센다 — 행 수가 아니라 블록 수의 비율이기 때문이다.
                 capped[spec.code].append(1 if block.capped else 0)
+                # I1: 회사 수준 행(subject None)이 있는 주제만 모은다 — STD_EARLY_ADOPTION 은
+                # subject 가 기준서 번호라 회사 수준 행이 없고, 기준서끼리 값이 다른 것은 충돌이
+                # 아니다.
+                has_company_row = spec.subject_of(block) is None
                 for j in judge_all(spec, block):
                     key = (fact["rcept_no"], spec.code, j.subject)
-                    if spec.combo_value and j.value != UNDETERMINED:
-                        # I1: 블록·자산군을 가로질러 어떤 확정값들이 나왔는지 모은다(dedup 이
-                        # 한 행만 남기므로 여기서 기록해 두지 않으면 나중에 알 수 없다).
+                    if has_company_row and j.value != UNDETERMINED:
+                        # 블록·자산군을 가로질러 어떤 확정값들이 나왔는지 모은다(dedup 이 한 행만
+                        # 남기므로 여기서 기록해 두지 않으면 나중에 알 수 없다).
                         seen_values[(fact["rcept_no"], spec.code)].add(j.value)
                     if j.value == UNDETERMINED and use_llm and (llm_subjects is None or j.subject in llm_subjects):
                         pending.append((fact, spec, block, key))
@@ -199,7 +227,7 @@ def run_extract_policy_stances(
         pending = list(best.values())
     # I1: 보고서 단위 조합값 승격은 dedup 이 끝난 뒤에 한 번 한다(블록 루프 안에서는 아직 어느
     # 행이 최종인지 모른다). LLM 판정 뒤에 한 번 더 부른다 — 그때 값이 바뀔 수 있기 때문이다.
-    combo_promoted = promote_cross_block_combos(by_key, seen_values)
+    combo_promoted, combo_conflicts = resolve_cross_block_conflicts(by_key, seen_values)
     # LLM 단계 진입 전, 규칙만으로 낸 결과를 먼저 원자적으로 써 둔다 — LLM 단계(게이트웨이 호출)가
     # 프로세스를 통째로 죽이는 사고(OOM·강제종료 등)를 내더라도 이 파일은 남는다. 최종 결과가 덮어쓴다.
     _write_atomic(output_path, by_key.values())
@@ -242,9 +270,11 @@ def run_extract_policy_stances(
             prev = by_key.get(key)
             if prev is None or _RANK[j.method] > _RANK[prev["method"]]:
                 by_key[key] = _record(fact, j, block)
-                if spec.combo_value and j.value != UNDETERMINED:
+                if spec.subject_of(block) is None and j.value != UNDETERMINED:
                     seen_values[(fact["rcept_no"], spec.code)].add(j.value)
-        combo_promoted += promote_cross_block_combos(by_key, seen_values)
+        more_promoted, more_conflicts = resolve_cross_block_conflicts(by_key, seen_values)
+        combo_promoted += more_promoted
+        combo_conflicts += more_conflicts
     llm_calls = len(pending)
     for rec in by_key.values():
         by_topic[rec["topic"]][rec["value"]] += 1
@@ -255,6 +285,7 @@ def run_extract_policy_stances(
         "skipped_no_xml": skipped_no_xml,
         "rows": len(by_key),
         "cross_block_combo_promoted": combo_promoted,
+        "cross_block_conflict_held": combo_conflicts,
         "by_topic": {t: dict(c) for t, c in by_topic.items()},
         "capped_ratio": {t: (sum(v) / len(v) if v else 0.0) for t, v in capped.items()},
         "llm_pending_raw": llm_pending_raw,

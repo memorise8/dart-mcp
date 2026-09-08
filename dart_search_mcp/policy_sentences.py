@@ -36,6 +36,13 @@ _SUBJECT_RE = re.compile(
 )
 _COMPANY_SUBJECTS = frozenset({"당사", "회사", "경영진", "당기업"})
 _GROUP_SUBJECTS = frozenset({"연결실체", "연결회사", "연결기업", "연결집단", "그룹"})
+# 회사(또는 연결실체)가 주어인 자리. 위 두 어휘 집합에서 그대로 유도한다 — 회사 주어 목록이
+# 여기 하나뿐이어야 다른 모듈(policy_rules_measurement 의 절 경계 판별)이 같은 것을 본다.
+# 긴 이름을 먼저 시도해야 "연결회사"가 "회사"로 잘리지 않는다.
+COMPANY_SUBJECT_RE = re.compile(
+    r"(?:" + "|".join(sorted(_COMPANY_SUBJECTS | _GROUP_SUBJECTS, key=len, reverse=True))
+    + r")\s*(?:은|는|이|가)(?![가-힣])"
+)
 
 SUBJECT_COMPANY = "회사"
 SUBJECT_GROUP = "연결실체"

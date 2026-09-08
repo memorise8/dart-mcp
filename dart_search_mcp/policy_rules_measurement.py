@@ -19,9 +19,10 @@
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 
 from dart_search_mcp.policy_blocks import PolicyBlock
-from dart_search_mcp.policy_sentences import KIND_CONDITIONAL, split_sentences
+from dart_search_mcp.policy_sentences import COMPANY_SUBJECT_RE, KIND_CONDITIONAL, split_sentences
 
 _COST_MODEL = "COST_MODEL"
 _REVALUATION_MODEL = "REVALUATION_MODEL"
@@ -32,28 +33,82 @@ _REVALUATION_MODEL = "REVALUATION_MODEL"
 # 환입·재평가잉여금 상계 등). 실측(디와이디 20260430001895)에서 이 조항 하나가 원가모형
 # 회사를 REVALUATION_MODEL 로 뒤집었다.
 #
-# 절이 어디서 시작하는지가 이 규칙의 전부다. Fix round 1(리뷰 minor): 첫 버전은 "앞으로 60자
-# 안에서 시작"이라는 walk-back 이라, 구두점이 없는 문장에서는 앞 절까지 삼켰다 — 리뷰 재현
-# 「연결회사는 유형자산에 대하여 원가모형을 적용하고 있으며 자산의 장부금액이 회수가능액을
-# 초과하는 경우 손상차손을 인식합니다」가 통째로 지워져 COST_MODEL 을 잃었다. 이제 절의 시작을
-# **명시적 경계**로 못 박는다: 문자열 처음 · 구두점(`.,;·ㆍ`) 뒤 · 연결어미 「…며」 뒤.
-# 「며」를 넣은 이유는 위 재현처럼 구두점 없이 절이 이어지는 형태가 코퍼스의 표준이기 때문이고,
-# 「고」·「나」 같은 어미를 넣지 않은 이유는 낱말 안("보고기간", "하나")에서도 걸려 조건절의
-# 핵심부만 남기고 트리거를 살려 보내기 때문이다(디와이디 「…적용하고 있는 자산의 경우에는」).
-# 「다만」 절만 구두점을 넘어간다 — 「다만, …의 경우」가 이 정형구의 표준 표면형이다.
-# 정규식은 언제나 **가장 왼쪽** 매치를 고르므로, 경계를 대안으로 나열하기만 하면 맨 앞 경계가
-# 늘 이겨 walk-back 과 다를 바 없다. 그래서 절 본문이 또 다른 경계(「며」)를 넘지 못하게 막는다
-# (tempered dot) — 그러면 「…는 경우」 바로 앞의 **마지막** 경계에서 절이 시작한다.
-_CLAUSE_START = r"(?:^|(?<=[.,;·ㆍ])|(?<=며))"
-_COND_CLAUSE_RE = re.compile(
-    r"다만[^.]{0,120}?(?:의|는)\s*경우(?:에는)?"
-    rf"|{_CLAUSE_START}(?:(?!며)[^.,;·ㆍ]){{0,120}}?는\s*경우(?:에는)?"
-)
+# 절이 어디서 시작하는지가 이 규칙의 전부다. 정규식 하나로는 표현할 수 없어(정규식은 늘 가장
+# **왼쪽** 매치를 고르는데 우리에게 필요한 것은 조건절 바로 앞의 **마지막** 경계다) 경계를
+# 명시적으로 구해 쓴다.
+#
+# 경계(절이 시작할 수 있는 자리):
+#   ① 문자열 처음, ② 문장 구두점(`.,;·ㆍ`) 뒤,
+#   ③ 연결어미 「…며」 뒤 — 단, 그 「며」가 **회사의 진술을 닫을 때만**.
+#
+# ③의 단서가 이 규칙의 핵심이다. Fix round 1 은 「며」를 무조건 경계로 삼았는데, 조건절 자신의
+# 서술 안에 「며」가 있으면 조건절의 머리가 살아남았다(리뷰 재현:
+# 「연결회사는 재평가모형을 적용하고 있는 자산이 손상되었으며 회수가능액에 미달하는 경우 …」
+# → 「재평가모형을 적용하고 있는 자산이 손상되었으며」가 남아 REVALUATION_MODEL 오탐).
+# 반대로 「며」를 아예 경계에서 빼면 앞 절의 확정 진술까지 삼킨다(fix round 1 이 고친 그 결함:
+# 「연결회사는 유형자산에 대하여 원가모형을 적용하고 있으며 자산의 장부금액이 …초과하는 경우 …」
+# → COST_MODEL 소실). 두 재현을 가르는 것은 「며」가 닫는 절의 **주어**다 — 앞은 「자산이」가
+# 주어(조건절 서술의 일부)이고, 뒤는 「연결회사는」이 주어(회사의 확정 진술)다.
+#
+# 그래서 「며」는 다음 둘 중 하나일 때만 경계다(주어 어휘는 `policy_sentences` 정본을 그대로 쓴다):
+#   (i)  그 「며」가 닫는 절의 주어가 회사다 — 직전 경계 이후에 회사 주어가 있고, 그 뒤에 다른
+#        주어(「…이/가」)가 끼지 않았다.
+#   (ii) 「며」 바로 뒤가(쉼표·공백을 건너뛰어) 회사 주어로 새 절을 연다.
+# (컨트롤러 지시는 (ii)만 적었으나, (ii)만으로는 위 두 번째 재현(뒤에 오는 주어가 「자산의
+#  장부금액이」라 회사 주어가 아니다)이 COST_MODEL 을 다시 잃는다 — 지시가 함께 요구한 세 재현을
+#  모두 만족시키려면 (i)이 필요하다. 보고서에 근거를 적었다.)
+#
+# 「고」·「나」 같은 다른 연결어미는 경계에 넣지 않는다 — 낱말 안("보고기간", "하나")에서도 걸려
+# 조건절의 핵심만 남기고 트리거를 살려 보낸다(디와이디 「…적용하고 있는 자산의 경우에는」).
+# 「다만 …의 경우」는 구두점을 넘어가는 별도 정형구라 정규식 하나로 따로 잡는다.
+_DAMAN_CLAUSE_RE = re.compile(r"다만[^.]{0,120}?(?:의|는)\s*경우(?:에는)?")
+_COND_CORE_RE = re.compile(r"는\s*경우(?:에는)?")
+_PUNCT_OR_MI_RE = re.compile(r"[.,;·ㆍ]|며")
+# 다른 주어("자산이", "장부금액이"). 두 글자 이상을 요구해 "추가 "·"평가 "·"높이 " 같은 낱말이
+# 주어로 오인되지 않게 한다.
+_OTHER_SUBJECT_RE = re.compile(r"(?<![가-힣])[가-힣]{2,10}(?:이|가)(?=\s)")
+_COMPANY_SUBJECT_AFTER_RE = re.compile(rf"[,\s]*(?:{COMPANY_SUBJECT_RE.pattern})")
+# 경계를 못 찾아 절이 이 길이를 넘으면 아예 지우지 않는다 — 표처럼 구두점이 없는 텍스트에서
+# 절 하나가 수백 자로 늘어나 확정 진술을 통째로 삼키는 것을 막는다(못 지우는 쪽이 안전하다).
+_CLAUSE_MAX = 200
+
+
+def _mi_closes_company_clause(text: str, clause_from: int, mi_start: int, after: int) -> bool:
+    """「며」가 절 경계인가 — 위 주석의 (i)·(ii)."""
+    if _COMPANY_SUBJECT_AFTER_RE.match(text, after) is not None:
+        return True  # (ii) 뒤가 회사 주어로 새 절을 연다
+    subject = COMPANY_SUBJECT_RE.search(text, clause_from, mi_start)
+    if subject is None:
+        return False
+    return _OTHER_SUBJECT_RE.search(text, subject.end(), mi_start) is None  # (i)
+
+
+def _clause_starts(text: str) -> list[int]:
+    """절이 시작할 수 있는 자리(오름차순). 왼쪽에서 오른쪽으로 훑는다 — (i) 판정이 "직전
+    경계 이후"를 봐야 하기 때문이다."""
+    starts = [0]
+    for m in _PUNCT_OR_MI_RE.finditer(text):
+        if m.group(0) != "며":
+            starts.append(m.end())
+        elif _mi_closes_company_clause(text, starts[-1], m.start(), m.end()):
+            starts.append(m.end())
+    return starts
 
 
 def strip_conditional_clauses(text: str) -> str:
     """조건절을 길이 보존 치환으로 지운다(Q-I2 — 오프셋이 원문과 정확히 같아야 근거가 축자다)."""
-    return _COND_CLAUSE_RE.sub(lambda m: " " * len(m.group(0)), text)
+    spans = [(m.start(), m.end()) for m in _DAMAN_CLAUSE_RE.finditer(text)]
+    starts = _clause_starts(text)
+    for m in _COND_CORE_RE.finditer(text):
+        begin = starts[bisect_right(starts, m.start()) - 1]
+        if m.start() - begin <= _CLAUSE_MAX:
+            spans.append((begin, m.end()))
+    if not spans:
+        return text
+    chars = list(text)
+    for begin, end in spans:
+        chars[begin:end] = " " * (end - begin)
+    return "".join(chars)
 
 
 # ---- 유형자산 표제 판별 ----------------------------------------------------------

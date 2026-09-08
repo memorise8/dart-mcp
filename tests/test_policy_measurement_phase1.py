@@ -77,8 +77,9 @@ class MeasurementPhase1(unittest.TestCase):
         self.assertEqual((silent.value, silent.held_reason), ("UNDETERMINED", ""))
 
     def test_conditional_clause_does_not_swallow_the_preceding_clause(self) -> None:
-        """Fix round 1(리뷰 minor): 조건절의 시작은 명시적 경계(구두점·연결어미 「며」·문자열 처음)다.
-        구두점 없이 절이 이어지는 문장에서 60자 walk-back 을 하면 앞 절의 확정 진술까지 지운다."""
+        """Fix round 1(리뷰 minor): 조건절의 시작은 명시적 경계(구두점·회사 진술을 닫는 「며」·
+        문자열 처음)다. 구두점 없이 절이 이어지는 문장에서 walk-back 을 하면 앞 절의 확정
+        진술까지 지운다."""
         spec = TOPICS["PPE_MEASUREMENT"]
         kept = judge(spec, _blk(
             "연결회사는 유형자산에 대하여 원가모형을 적용하고 있으며 자산의 장부금액이 "
@@ -88,6 +89,30 @@ class MeasurementPhase1(unittest.TestCase):
             "(9) 유형자산 토지는 재평가모형을 적용하고 있으며, 손상징후가 있는 경우 "
             "회수가능액을 추정합니다.", "유형자산"))
         self.assertEqual(comma.value, "REVALUATION_MODEL")
+
+    _MI_INSIDE_CONDITIONAL = (
+        "연결회사는 재평가모형을 적용하고 있는 자산이 손상되었으며 회수가능액에 "
+        "미달하는 경우 손상차손을 인식합니다."
+    )
+
+    def test_conditional_clause_with_an_internal_mi_is_fully_stripped(self) -> None:
+        """Fix round 2(리뷰 a): 조건절 자신의 서술 안에 「며」가 있으면(「…자산이 손상되었으며
+        …미달하는 경우」) fix round 1 의 「며=무조건 경계」 규칙이 조건절의 머리를 남겨
+        REVALUATION_MODEL 오탐을 냈다. 「며」가 닫는 절의 주어가 회사가 아니면 경계가 아니다."""
+        spec = TOPICS["PPE_MEASUREMENT"]
+        alone = judge(spec, _blk("(9) 유형자산 " + self._MI_INSIDE_CONDITIONAL, "유형자산"))
+        self.assertEqual((alone.value, alone.held_reason), ("UNDETERMINED", "CONDITIONAL_ONLY"))
+        with_cost = judge(spec, _blk(
+            "(9) 유형자산 연결회사는 유형자산을 원가모형으로 측정하고 있습니다. "
+            + self._MI_INSIDE_CONDITIONAL, "유형자산"))
+        self.assertEqual(with_cost.value, "COST_MODEL")
+
+    def test_mi_followed_by_a_company_subject_is_a_clause_boundary(self) -> None:
+        """「며」 뒤가 회사 주어로 새 절을 열면 그 자리는 경계다 — 앞 절의 확정 진술이 살아남는다."""
+        j = judge(TOPICS["PPE_MEASUREMENT"], _blk(
+            "(9) 유형자산 연결회사는 토지에 재평가모형을 적용하였으며 회사는 장부금액이 "
+            "회수가능액을 초과하는 경우 손상차손을 인식합니다.", "유형자산"))
+        self.assertEqual(j.value, "REVALUATION_MODEL")
 
     def test_impairment_heading_block_does_not_apply(self) -> None:
         """「(1) 유형자산, 사용권자산 손상차손 및 환입」(흥아해운 20260318000745 실측 표제)은
@@ -180,7 +205,17 @@ class MeasurementPhase1(unittest.TestCase):
         "</BODY></DOCUMENT>"
     )
 
-    def _run_cli(self, tmp: Path, xml: str) -> dict[tuple[str, str | None], dict]:
+    _TWO_BLOCK_IP_XML = (
+        "<DOCUMENT><BODY>"
+        "<P>2. 중요한 회계정책</P>"
+        "<P>(6) 투자부동산 당사는 투자부동산에 대하여 원가모형을 적용하고 있습니다.</P>"
+        "<P>(7) 투자부동산 평가당사는 투자부동산에 대하여 공정가치모형을 적용하고 있습니다.</P>"
+        "</BODY></DOCUMENT>"
+    )
+
+    def _run_cli(
+        self, tmp: Path, xml: str, topics: tuple[str, ...] = ("PPE_MEASUREMENT",)
+    ) -> dict[tuple[str, str | None], dict]:
         rcept = "20260001000009"
         docs = tmp / "docs" / rcept
         docs.mkdir(parents=True)
@@ -192,7 +227,7 @@ class MeasurementPhase1(unittest.TestCase):
         out = tmp / "policy_stance.jsonl"
         run_extract_policy_stances(
             facts_path=facts, docs_dir=tmp / "docs", output_path=out,
-            topics=("PPE_MEASUREMENT",), use_llm=False)
+            topics=topics, use_llm=False)
         rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines() if line.strip()]
         return {(r["topic"], r["subject"]): r for r in rows}
 
@@ -211,6 +246,25 @@ class MeasurementPhase1(unittest.TestCase):
             self.assertTrue(all(company in ("MIXED", v) for v in asset_values), (company, asset_values))
             # 근거·근거 메타는 먼저 나온 블록의 것을 그대로 둔다(어디서 시작된 판단인지 남긴다).
             self.assertIn("취득원가에서 감가상각누계액", by[("PPE_MEASUREMENT", None)]["evidence"])
+            # Fix round 2(리뷰 b): 값만 바꾸면 안 된다 — 감사가 method=="rule" 로 콤보 행을
+            # 갈라내므로 블록 안 승격 경로와 같은 method·confidence·held_reason 이어야 한다.
+            company = by[("PPE_MEASUREMENT", None)]
+            self.assertEqual((company["method"], company["confidence"], company["held_reason"]),
+                             ("rule", 1.0, ""))
+
+    def test_ip_cross_block_disagreement_is_held_as_conflict(self) -> None:
+        """Fix round 2(리뷰 c): 투자부동산 어휘에는 조합값이 없다(COST/FAIR_VALUE/UNDETERMINED).
+        없는 값을 지어내는 대신 판단 보류로 내리고 사유를 CONFLICT 로 남긴다."""
+        with tempfile.TemporaryDirectory() as tmp:
+            by = self._run_cli(Path(tmp), self._TWO_BLOCK_IP_XML, topics=("IP_MEASUREMENT",))
+            row = by[("IP_MEASUREMENT", None)]
+            self.assertEqual(
+                (row["value"], row["method"], row["confidence"], row["held_reason"]),
+                ("UNDETERMINED", "none", 0.0, "CONFLICT"))
+            # 근거는 먼저 나온 블록의 것을 보류 접두어와 함께 남긴다.
+            self.assertTrue(row["evidence"].startswith("판정 불가: "), row["evidence"])
+            self.assertIn("원가모형을 적용하고 있습니다", row["evidence"])
+            self.assertNotIn("MIXED", {r["value"] for r in by.values()})
 
     def test_single_value_report_is_not_promoted(self) -> None:
         """값이 하나뿐이면 승격하지 않는다 — 승격 조건은 "확정값이 둘 이상"이다."""
