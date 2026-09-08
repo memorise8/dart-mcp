@@ -80,6 +80,27 @@ class RegressionChecks(unittest.TestCase):
             # kam_items 는 item_kind == "kam" 인 행만 센다(preamble 은 제외).
             self.assertIn(("KAM", "kam 항목 수", "1"), [(c.section, c.field, c.expected) for c in checks])
 
+    def test_evidence_contains_accepts_alternatives(self) -> None:
+        """근거 기대가 튜플이면 그중 하나만 들어도 통과한다 — 한 블록에 회사 주어 문장이 둘일 때
+        어느 쪽이 뽑히는지는 위치가 정하므로, 축("회사 주어 문장인가")만 시험한다."""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = _out_dir(tmp, audit=[], kam=[], policy=[dict(_POLICY_ROW, evidence="회사는 아직 채택하지 않았다.")])
+            def _checks(wanted):
+                return reg.run_checks(
+                    d,
+                    audit_expectations=(),
+                    policy_expectations=(
+                        reg.PolicyExpectation("1", "가", "STD_EARLY_ADOPTION", "1118",
+                                              evidence_contains=wanted),
+                    ),
+                )
+            hit = _checks(("검토 중", "채택하지 않"))[0]
+            self.assertTrue(hit.passed)
+            self.assertEqual(hit.expected, "검토 중 또는 채택하지 않")
+            self.assertFalse(_checks(("검토 중", "평가 중"))[0].passed)
+            # 문자열 하나를 주는 기존 계약은 그대로다.
+            self.assertFalse(_checks("검토 중")[0].passed)
+
     def test_value_mismatch_fails_and_records_actual(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             d = _out_dir(tmp, audit=[_AUDIT_ROW], kam=[], policy=[_POLICY_ROW])

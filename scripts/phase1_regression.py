@@ -61,6 +61,10 @@ class PolicyExpectation:
     """정책 한 (공시, 주제[, 대상]).
 
     - `value`/`evidence_contains`: (rcept, topic, subject) 행 하나를 지목해 본다.
+      `evidence_contains` 에 튜플을 주면 **그중 하나만 들어도 통과**다 — 회계사가 확인한 축이
+      "근거가 회사 주어 문장인가"이고, 한 블록 안에 그런 문장이 둘 이상일 때 어느 쪽이 뽑히는지는
+      위치(먼저 나온 문장이 이긴다)로 정해지기 때문이다. 특정 문장 하나를 못 박으면 축이 아니라
+      순서를 시험하게 된다.
     - `present_values`/`absent_values`: 같은 (rcept, topic) 의 **행 집합**에 그 값이
       있어야/없어야 한다(디와이디형 기대: 「REVALUATION_MODEL 행이 없어야 한다」).
     """
@@ -70,7 +74,7 @@ class PolicyExpectation:
     topic: str
     subject: str | None = None
     value: str | None = None
-    evidence_contains: str | None = None
+    evidence_contains: str | tuple[str, ...] | None = None
     present_values: tuple[str, ...] = ()
     absent_values: tuple[str, ...] = ()
     note: str = ""
@@ -126,10 +130,10 @@ POLICY_EXPECTATIONS: tuple[PolicyExpectation, ...] = (
                       evidence_contains="검토 중"),
     PolicyExpectation(
         "20260320001388", "나이벡", "STD_EARLY_ADOPTION", "1118", value="NOT_ADOPTED",
-        evidence_contains="검토 중",
-        note="브리프 Step 1 원문 기대. Task 4 는 같은 블록의 앞 문장(「회사는 제1118호를 아직 "
-             "채택하지 않았으며 …」)을 근거로 고정했다(tests/test_policy_evidence_phase1.py) — "
-             "축(회사 문장)은 같고 문장만 다르다",
+        evidence_contains=("검토 중", "채택하지 않"),
+        note="회계사가 확인한 축은 「근거가 회사 주어 문장인가」다. 이 블록에는 그런 문장이 둘 "
+             "(「…아직 채택하지 않았으며 …」·「…검토 중에 있으며 …」)이고 먼저 나온 쪽이 이긴다 "
+             "— 어느 쪽이든 통과(컨트롤러 판정 2026-09-08, Task 4 리뷰가 받아들인 규칙)",
     ),
     PolicyExpectation("20260318001024", "이마트", "STD_EARLY_ADOPTION", "1118", value="NOT_ADOPTED"),
     PolicyExpectation("20260316001663", "에스텍", "STD_EARLY_ADOPTION", "1118", value="NOT_ADOPTED"),
@@ -256,11 +260,16 @@ def check_policy(
             actual = MISSING if row is None else _norm(row.get("value"))
             checks.append(Check("정책", target, "value", exp.value, actual, actual == exp.value, exp.note))
         if exp.evidence_contains is not None:
+            wanted = (
+                (exp.evidence_contains,)
+                if isinstance(exp.evidence_contains, str)
+                else tuple(exp.evidence_contains)
+            )
             evidence = None if row is None else _norm(row.get("evidence"))
             actual = MISSING if evidence is None else evidence[:120]
-            passed = evidence is not None and exp.evidence_contains in evidence
+            passed = evidence is not None and any(w in evidence for w in wanted)
             checks.append(
-                Check("정책", target, "evidence ⊃", exp.evidence_contains, actual, passed, exp.note)
+                Check("정책", target, "evidence ⊃", " 또는 ".join(wanted), actual, passed, exp.note)
             )
         values = {_norm(r.get("value")) for r in rows}
         for value in exp.present_values:
