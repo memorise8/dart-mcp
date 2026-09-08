@@ -35,10 +35,18 @@ analysis §2 A1) **그 유지 약속을 여기서 깬다**: 「핵심감사사�
    여전히 도입 문구다.
 4. **제목 = 소절 앞** — 제목은 첫 소절 문구 앞까지로 자른다(꼬리 마커 제거).
 
-`item_kind` 쪽도 하나 좁힌다: `going_concern_notice` 는 **도입 문장뿐인
-조각**에만 준다. 본문에 「결정된 이유」·「다루어진 방법」 소절이 있으면
-제목이 「계속기업…」이어도 실제 핵심감사사항이다(코이즈 2번 항목
-「계속기업가정」이 그 예다).
+`item_kind` 쪽도 손본다.
+
+- `going_concern_notice`·`preamble` 은 **도입 문구뿐인 조각**에만 준다:
+  본문에 「결정된 이유」·「다루어진 방법」 소절이 있으면 제목이 도입 문구를
+  닮았어도 실제 핵심감사사항이다. (실측 코퍼스에서 이 가드로 판정이 뒤집히는
+  행은 아직 없다. 브리프가 요구한 규칙이라 넣었고 테스트로 양쪽 갈래를
+  고정한다 — 코이즈의 「계속기업가정」은 애초에 계속기업 도입 표지를 갖고
+  있지 않아 이 가드와 무관하게 `kam` 이다.)
+- 반대로 **제목만으로는 못 잡던 두 부류를 본문으로 잡는다**: 계속기업
+  불확실성 문단(3번 규칙)과 「보고할 핵심감사사항이 없다」 선언(6번 규칙).
+  도입 문장을 걷어낸 뒤 남은 본문이 50자를 넘으면 그대로 `kam` 으로 새던
+  것들이다.
 
 바뀐 판(version)은 `SPLITTER_VERSION` 으로 산출물 각 행에 실린다 —
 temis-backend 에 이미 적재된 `kam-v1` 백필과 뒤섞이지 않게 하기 위해서다.
@@ -166,7 +174,11 @@ def _extract_title(body: str) -> str:
     if subsection is not None:
         # 소절 문구 앞까지가 제목이다("재고자산의 평가(1) 핵심감사사항으로
         # 결정된 이유..." -> "재고자산의 평가"). 소절 문구로 시작하는 조각은
-        # 잘라낼 제목이 없으므로 아래 기존 규칙으로 내려간다.
+        # 잘라낼 제목이 없으므로(head == "") 아래 기존 규칙으로 내려간다 —
+        # 원문에 제목 줄이 아예 없는 보고서(무림P&P 2025 등 33건)가 그렇고,
+        # 그 경우 제목에 소절 문구가 남는 것은 `kam-v1`과 같다. head 에
+        # 최소 길이를 요구하면 안 된다: "수익인식"(4자)·"재고자산 평가"(7자)
+        # 처럼 짧고 정확한 제목이 214행 있어 그쪽을 되레 망가뜨린다.
         head = _TRAILING_MARKER_RE.sub("", cleaned[: subsection.start()]).strip()
         if head:
             return head[:_TITLE_MAX_LEN]
@@ -324,6 +336,30 @@ _GOING_CONCERN_UNCERTAINTY_MARK: Final[str] = "계속기업관련중요한불확
 # 기술된 사항을 제외하고는…". 위 정형 19건과 합쳐 B 유형 21건.
 _QUALIFIED_OPINION_BASIS_MARK: Final[str] = "한정의견근거단락에기술된사항을제외하고는"
 
+# 유형 B 중 **제목에 표지가 안 잡히는** 판 — 계속기업 불확실성 문단 자체가
+# 핵심감사사항 구역에 통째로 들어온 경우(동진글로벌 2024 20250821000379:
+# 앞 문장이 "...다른 핵심감사사항이 없다고 결정하였습니다"라 40자 제목에는
+# 계속기업 표지가 하나도 안 들어온다). ISA 570 의 정형 문구라 본문에서 찾는다.
+# "중요한불확실성이존재"는 진짜 계속기업 KAM 본문에도 나올 수 있어 단독으로는
+# 판정하지 않고, 아래 어휘 중 2개 이상일 때만 도입 문단으로 본다
+# (`_AUDIT_COMMUNICATION_MARKERS`와 같은 방식).
+_GOING_CONCERN_BODY_MARKS: Final[tuple[str, ...]] = (
+    "존속능력에대해유의적의문",
+    "우리의의견은이사항으로부터영향을받지않습니다",
+    "중요한불확실성이존재",
+)
+_GOING_CONCERN_BODY_MIN_MARKS: Final[int] = 2
+
+# 「보고할 핵심감사사항이 없다」 선언(스팩·소규모 회사 다수). 항목이 아니라
+# 항목이 없다는 선언이므로 유형 A 와 같은 도입 문구다. 유형 A 선언문이
+# "않습니다"로 끝나지 않아 `_PREAMBLE_RE`가 통째로 실패하는 원문이 많고
+# (교보19호스팩 2025 20260305000633), 그러면 남은 선언 문장이 항목으로 샌다.
+_NO_KAM_DECLARATION_MARKS: Final[tuple[str, ...]] = (
+    "핵심감사사항이없",
+    "핵심감사사항은없",
+    "핵심감사사항이존재하지않",
+)
+
 # 유형 A (선정 선언, 74건): "핵심감사사항은 우리의 전문가적 판단에 따라
 # 당기 재무제표감사에서 가장 유의적…" 또는 수주산업(건설 등) 특유의
 # "수주산업핵심감사사항은…"으로 시작.
@@ -361,41 +397,65 @@ def _count_audit_communication_markers(body: str) -> int:
     return sum(1 for marker in _AUDIT_COMMUNICATION_MARKERS if marker in body)
 
 
+def _is_going_concern_paragraph(body: str) -> bool:
+    """본문이 계속기업 불확실성 문단인가(공백 제거 기준, 표지 2개 이상)."""
+    normalized = _strip_all_whitespace(body)
+    return (
+        sum(1 for mark in _GOING_CONCERN_BODY_MARKS if mark in normalized)
+        >= _GOING_CONCERN_BODY_MIN_MARKS
+    )
+
+
+def _declares_no_kam(body: str) -> bool:
+    """본문이 「보고할 핵심감사사항이 없다」 선언인가(공백 제거 기준)."""
+    normalized = _strip_all_whitespace(body)
+    return any(mark in normalized for mark in _NO_KAM_DECLARATION_MARKS)
+
+
 def classify_item_kind(title: str, body: str = "") -> ItemKind:
     """항목 제목(및 본문)으로 `item_kind`를 판정한다.
 
     아래 순서대로 검사한다:
     1. 계속기업 관련 불확실성 단락 도입 문구 포함(제목, 공백 제거 기준) -> GOING_CONCERN_NOTICE
     2. 한정의견 근거 단락 도입 문구 포함(제목, 공백 제거 기준) -> GOING_CONCERN_NOTICE
-    3. 핵심감사사항 선정 선언으로 시작(제목, 공백 제거 기준) -> PREAMBLE
-    4. 커뮤니케이션 선언으로 시작하거나 그 표현을 포함(제목, 공백 제거 기준) -> PREAMBLE
-    5. 유형 A 선언의 둘째 문장("해당 사항들은 ... 별도의 의견을 제공하지는
-       않습니다")으로 시작하는 본문 -> PREAMBLE. 제목 40자에는 "별도의 의견"이
-       들어오지 않아 제목만으로는 못 잡는다 — 도입 문구뿐인 원문(동성제약
-       20260506000528)이 항목으로 둔갑하는 것을 막는다
-    6. 「외부감사 실시내용」 표 어휘가 본문에 2개 이상(원문 그대로, 공백
-       제거 없이) -> AUDIT_COMMUNICATION — 도입 문구(1~5)보다 나중에 본다
-    7. 그 외 -> KAM
+    3. 계속기업 불확실성 문단 표지가 본문에 2개 이상(공백 제거 기준)
+       -> GOING_CONCERN_NOTICE. 앞 문장이 "...다른 핵심감사사항이 없다고
+       결정하였습니다"라 40자 제목에 계속기업 표지가 안 들어오는 원문
+       (동진글로벌 2024 20250821000379)을 본문으로 잡는다
+    4. 핵심감사사항 선정 선언으로 시작(제목, 공백 제거 기준) -> PREAMBLE
+    5. 커뮤니케이션 선언으로 시작하거나 그 표현을 포함(제목, 공백 제거 기준) -> PREAMBLE
+    6. 유형 A 선언의 둘째 문장("해당 사항들은 ... 별도의 의견을 제공하지는
+       않습니다")으로 시작하거나, 「보고할 핵심감사사항이 없다」 선언인 본문
+       -> PREAMBLE. 둘 다 제목만으로는 못 잡는다 — 도입 문구뿐인 원문(동성제약
+       20260506000528, 교보19호스팩 20260305000633)이 항목으로 둔갑하는 것을 막는다
+    7. 「외부감사 실시내용」 표 어휘가 본문에 2개 이상(원문 그대로, 공백
+       제거 없이) -> AUDIT_COMMUNICATION — 도입 문구(1~6)보다 나중에 본다
+    8. 그 외 -> KAM
 
-    kam-v2: 1·2번은 **도입 문장뿐인 조각**에만 적용한다. 본문에 「결정된 이유」
-    ·「다루어진 방법」 소절이 있으면 그 조각은 이유와 절차를 갖춘 실제
-    핵심감사사항이므로, 제목이 계속기업 도입 문구를 닮았어도 KAM 이다
-    (코이즈 2025 의 두 번째 항목 「계속기업가정」이 그 예다).
+    kam-v2: 1~3·6번은 **도입 문구뿐인 조각**에만 적용한다 — 본문에 「결정된
+    이유」·「다루어진 방법」 소절이 있으면 그 조각은 이유와 절차를 갖춘 실제
+    핵심감사사항이므로 제목이 도입 문구를 닮았어도 KAM 이다. 실측 코퍼스
+    (2,789 공시)에서는 이 가드 때문에 판정이 뒤집히는 행이 아직 없다 —
+    브리프가 요구한 규칙이고 `tests/test_kam_split_phase1.py`의
+    `GoingConcernNarrowingPhase1`이 양쪽 갈래를 고정한다.
 
-    `body`를 생략하면(빈 문자열) 5·6번 검사는 항상 통과하지 못한다 — 제목만
+    `body`를 생략하면(빈 문자열) 3·6·7번 검사는 항상 통과하지 못한다 — 제목만
     으로는 유형 E를 판정할 수 없기 때문이다(위 이유 참조).
     """
     normalized = _strip_all_whitespace(title)
-    if not _has_subsection_phrase(body):
+    has_subsection = _has_subsection_phrase(body)
+    if not has_subsection:
         if _GOING_CONCERN_UNCERTAINTY_MARK in normalized:
             return ItemKind.GOING_CONCERN_NOTICE
         if _QUALIFIED_OPINION_BASIS_MARK in normalized:
+            return ItemKind.GOING_CONCERN_NOTICE
+        if _is_going_concern_paragraph(body):
             return ItemKind.GOING_CONCERN_NOTICE
     if normalized.startswith(_KAM_DECLARATION_PREFIXES):
         return ItemKind.PREAMBLE
     if normalized.startswith(_COMMUNICATION_PREFIX) or _COMMUNICATION_MARK in normalized:
         return ItemKind.PREAMBLE
-    if not _has_subsection_phrase(body) and _is_preamble_tail(body):
+    if not has_subsection and (_is_preamble_tail(body) or _declares_no_kam(body)):
         return ItemKind.PREAMBLE
     if _count_audit_communication_markers(body) >= _AUDIT_COMMUNICATION_MIN_MARKERS:
         return ItemKind.AUDIT_COMMUNICATION

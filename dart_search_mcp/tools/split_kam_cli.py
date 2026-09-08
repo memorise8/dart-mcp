@@ -17,9 +17,13 @@ temis-backend `app/services/dart_mvp_import.py::_select_deduped_rows`가
 `kam_items.jsonl`을 **그대로** 적재하게 되면(finov2 `docs/ops/
 37_dart_temis_boundary_20260902.md` 단계 2) 그 선택 로직이 temis 쪽에 더
 남아있지 않으므로, item_kind 판정과 별개로 이 선택도 여기로 옮기지 않으면
-산출되는 (rcept_no, seq) 집합이 운영 3,543행과 달라진다 — 실측으로 확인:
-이 선택 없이 `audit_facts.jsonl`의 `kam_present=true` 행을 그대로 돌리면
-정정본·비12월결산이 섞여 항목 수가 어긋난다.
+산출되는 (rcept_no, seq) 집합이 달라진다 — 실측으로 확인: 이 선택 없이
+`audit_facts.jsonl`의 `kam_present=true` 행을 그대로 돌리면 정정본·비12월결산이
+섞여 항목 수가 어긋난다.
+
+행 수는 분할 규칙 판에 따라 달라진다. 공시 2,789건 기준 `kam-v1`이 3,543행,
+`kam-v2`(항목 경계 교정, 2026-09-08)가 3,183행이다 — 어느 판으로 만든
+행인지는 각 행의 `splitter_version` 으로 구분한다.
 
 규칙(원본과 동일, 값만 옮김):
 1. `settlement_month == 12`인 행만 본다.

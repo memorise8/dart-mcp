@@ -21,9 +21,14 @@
 | `20260407003361-sambo-kam.txt` | `20260407003361_00761.xml` | `[1645:2372]` | 727 |
 | `20260318001001-hyosungitx-kam.txt` | `20260318001001_00761.xml` | `[1262:2075]` | 813 |
 | `20260323001089-hchomecenta-kam.txt` | `20260323001089_00761.xml` | `[1321:2223]` | 902 |
+| `20260305000633-kyobo19spac-kam.txt` | `20260305000633_00760.xml` | `[1417:1583]` | 166 |
+| `20250821000379-dongjin-kam.txt` | `20250821000379_00760.xml` | `[1506:2138]` | 632 |
 
-앞 5건이 회계사가 틀렸다고 지적한 건이고, 뒤 2건(효성ITX·HC홈센타)은 현행
-결과가 이미 정답(1건)인 회귀 고정용이다. 네트워크·LLM 을 쓰지 않는다.
+앞 5건이 회계사가 틀렸다고 지적한 건이고, 그다음 2건(효성ITX·HC홈센타)은 현행
+결과가 이미 정답(1건)인 회귀 고정용이다. 마지막 2건은 1차 검토(Important 1·2)
+에서 드러난 「항목이 아닌데 항목이 된」 두 부류다 — 「핵심감사사항이 없다」
+선언(교보19호스팩)과 계속기업 불확실성 문단(동진글로벌). 네트워크·LLM 을 쓰지
+않는다.
 """
 
 from __future__ import annotations
@@ -31,14 +36,22 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from dart_search_mcp.kam_split import SPLITTER_VERSION, ItemKind, split_kam_items
+from dart_search_mcp.kam_split import (
+    SPLITTER_VERSION,
+    ItemKind,
+    classify_item_kind,
+    split_kam_items,
+)
 
 FX = Path(__file__).parent / "fixtures" / "phase1"
 
 
+def _items(name: str) -> list:
+    return split_kam_items((FX / name).read_text(encoding="utf-8"))
+
+
 def _kam_titles(name: str) -> list[str]:
-    items = split_kam_items((FX / name).read_text(encoding="utf-8"))
-    return [item.title for item in items if item.kind == ItemKind.KAM]
+    return [item.title for item in _items(name) if item.kind == ItemKind.KAM]
 
 
 class KamBoundaryPhase1(unittest.TestCase):
@@ -72,6 +85,47 @@ class KamBoundaryPhase1(unittest.TestCase):
 
     def test_version_constant(self) -> None:
         self.assertEqual(SPLITTER_VERSION, "kam-v2")
+
+
+class NotAnItemPhase1(unittest.TestCase):
+    """항목이 아닌 것이 항목으로 새지 않는지 — 1차 검토 Important 1·2."""
+
+    def test_no_kam_declaration_is_not_an_item(self) -> None:
+        # 교보19호스팩 2025: 원문 전체가 「...보고해야 할 핵심감사사항이 없다고
+        # 결정하였습니다」 선언뿐이다. 유형 A 도입 문장을 걷어낸 뒤 남는 본문이
+        # 50자를 넘어 kam 으로 새던 부류(스팩 다수).
+        items = _items("20260305000633-kyobo19spac-kam.txt")
+        self.assertEqual(_kam_titles("20260305000633-kyobo19spac-kam.txt"), [])
+        self.assertTrue(all(item.kind is ItemKind.PREAMBLE for item in items), items)
+
+    def test_going_concern_uncertainty_paragraph_is_a_notice(self) -> None:
+        # 동진글로벌 2024: 「다른 핵심감사사항이 없다」 + 계속기업 불확실성 문단.
+        # 제목에는 계속기업 도입 표지가 없고 본문에만 있어, 본문을 봐야 잡힌다.
+        items = _items("20250821000379-dongjin-kam.txt")
+        self.assertEqual(_kam_titles("20250821000379-dongjin-kam.txt"), [])
+        self.assertEqual([item.kind for item in items], [ItemKind.GOING_CONCERN_NOTICE])
+
+
+class GoingConcernNarrowingPhase1(unittest.TestCase):
+    """브리프 Step 4 의 좁히기 규칙 자체를 건너는 두 갈래 — 1차 검토 Important 3.
+
+    같은 계속기업 도입 제목이라도 본문에 「결정된 이유」 소절이 있으면 이유와
+    절차를 갖춘 실제 항목이므로 `kam` 이다.
+    """
+
+    TITLE = (
+        "우리는 계속기업 관련 중요한 불확실성 단락에 기술된 사항에 추가하여, "
+        "아래에 기술된 사항을 핵심감사사항으로 결정하였습니다"
+    )
+
+    def test_plain_body_stays_going_concern_notice(self) -> None:
+        self.assertEqual(
+            classify_item_kind(self.TITLE, self.TITLE), ItemKind.GOING_CONCERN_NOTICE
+        )
+
+    def test_body_with_reason_subsection_is_kam(self) -> None:
+        body = self.TITLE + " 수익인식 핵심감사사항으로 결정된 이유 연결실체는 상장회사로서..."
+        self.assertEqual(classify_item_kind(self.TITLE, body), ItemKind.KAM)
 
 
 if __name__ == "__main__":
