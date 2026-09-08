@@ -77,7 +77,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from dart_search_mcp.audit_xml_parser import PARSER_VERSION, ParsedAuditReport, parse_audit_xml
+from dart_search_mcp.audit_xml_parser import ParsedAuditReport, parse_audit_xml
 
 logger = logging.getLogger(__name__)
 
@@ -243,7 +243,9 @@ def deserialize_parsed_report(row: dict[str, Any]) -> ParsedAuditReport:
         icfr_opinion=str(row.get("icfr_opinion", "") or ""),
         icfr_opinion_snippet=str(row.get("icfr_opinion_snippet", "") or ""),
         audit_report_count=int(row.get("audit_report_count") or 1),
-        parser_version=str(row.get("parser_version", "") or PARSER_VERSION),
+        # af-v1 시절 행에는 이 키가 없다. PARSER_VERSION으로 채우면 v1 산출물이
+        # v2인 척하게 되므로 빈 문자열("알 수 없음/레거시")로 남긴다.
+        parser_version=str(row.get("parser_version", "") or ""),
     )
 
 

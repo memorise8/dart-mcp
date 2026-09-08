@@ -27,8 +27,8 @@ dart_search_mcp.audit_xml_parser``), 패키지 ``__init__.py``가 top-level에�
 또한 구형식(2018년 이전 회계연도 재감사·정정 보고서, "부속명세서" 감사의견 등)은
 "감사의견" 헤더 자체가 없이 ``본 감사인의 의견으로는 ...`` 문장만 존재하는 경우도
 실제로 발견되었다(예: 부속명세서 감사의견). 이 때문에 의견 문단 추출은 헤더
-탐색을 우선 시도하되, 실패하거나 판정 근거 문구가 없으면 전체 텍스트에서 의견
-문장을 직접 정규식으로 찾는 방식으로 폴백한다(``_extract_opinion_paragraph``).
+탐색을 우선 시도하되, 실패하거나 판정 근거 문구가 없으면 의견 문장을 직접
+정규식으로 찾는 방식으로 폴백한다(``extract_fs_opinion``).
 
 부정어 표현도 실측 기준 ``표시하고 있지 않습니다`` 외에 ``표시하고 있지
 아니합니다`` 변형이 실제 부적정의견 보고서에서 발견되어 함께 처리한다.
@@ -58,10 +58,28 @@ af-v2는 평문을 **구역(section)**으로 먼저 나눈다:
 (``_CLASSIFY_MARKERS``)를 실제로 담은 첫 구역**을 의견으로 채택하고, 그런 구역
 개수를 ``audit_report_count``에 적는다.
 
+구역 나누기만으로는 부족하다 - 랜드마크 표기가 문서마다 일정하지 않기 때문이다
+(실측 1,500건 중 48건은 내부회계관리제도를 언급하면서도 랜드마크에 걸리는 표기가
+없었다). 그래서 **문장 가드**를 함께 둔다: 분류기에 넣는 텍스트는
+``_strip_icfr_sentences``(내부회계 문장 제거) + ``_fs_verdict_text``(재무제표/
+연결재무제표를 가리키면서 판정 문구를 담은 문장만 남김)를 거치고, 의견 문장
+정규식 폴백도 내부회계 문장이면 건너뛴다. 구역 나누기가 통하지 않는 문서에서
+이 가드가 마지막 방어선이다.
+
 ``opinion_status``/``opinion_source``는 그 값이 어떻게 나왔는지를 밝힌다 -
 헤더 기반으로 분류에 성공하면 ``confirmed``/``header``, 문장 정규식 폴백은
 값을 만들되 **항상** ``unconfirmed``/``sentence_fallback``이다(폴백은 확정값을
 만들지 않는다). 값 자체(``audit_opinion``)는 v1과 같은 규칙으로 계산한다.
+
+두 열을 읽을 때 주의할 점 두 가지:
+
+- ``opinion_source == "header"``는 **1단(구역)과 2단(문서 전체 - 내부회계 구역)
+  경로를 모두** 가리킨다. 둘 다 헤더 기반이지만 확신도가 같지는 않다 - 1단은
+  "재무제표 감사보고서 구역 안에서 찾았다"이고, 2단은 "구역을 못 나눠 문서
+  전체에서 찾았다"이다. 열 하나로 두 경로를 더 쪼개지 않은 것은 하류 계약을
+  늘리지 않기 위해서다.
+- ``audit_report_count``는 **1단에서만 의미가 있다**(판정 문구를 담은 구역
+  개수). 2단·폴백 경로는 구역을 세지 못하므로 언제나 1이다.
 """
 
 from __future__ import annotations
@@ -270,7 +288,8 @@ _FS_REPORT_LANDMARK_RE = re.compile(r"독립된\s*감사인의\s*(?:연결)?감�
 # 관찰된 표기: "내부회계관리제도 감사보고서", "내부회계관리제도 검토보고서",
 # "내부회계관리제도검토보고서", "내부회계관리제도 감사 또는 검토의견",
 # "내부회계관리제도에 대한 (감사|검토|부적정)의견", "내부회계관리제도에 대한
-# 의견", "내부회계관리제도 (감사|검토|부적정)의견".
+# 의견", "내부회계관리제도 (감사|검토|부적정)의견", "내부회계관리제도에 대한
+# 감사인의 (감사)보고서".
 #
 # "내부회계관리제도 운영실태보고서"(회사가 쓰는 보고서)는 일부러 제외한다 -
 # 감사인의 의견 구역이 아니다. "내부회계관리제도 설계 및 운영 개념체계",
@@ -280,7 +299,7 @@ _FS_REPORT_LANDMARK_RE = re.compile(r"독립된\s*감사인의\s*(?:연결)?감�
 _ICFR_LANDMARK_RE = re.compile(
     r"(?:독립된\s*감사인의\s*)?내부회계관리제도\s*(?:에\s*대한\s*)?"
     r"(?:감사\s*(?:또는|및)\s*검토\s*)?"
-    r"(?:감사|검토|적정|부적정|한정)?\s*(?:의견|감사보고서|검토보고서)"
+    r"(?:감사인의\s*(?:감사|검토)?보고서|(?:감사|검토|적정|부적정|한정)?\s*(?:의견|감사보고서|검토보고서))"
 )
 
 
@@ -382,6 +401,81 @@ _OPINION_SENTENCE_FALLBACK_RE = re.compile(
     r"(?:우리(?:의|는)|본\s*감사인(?:의|은))\s*의견[^.]{0,400}\.", re.DOTALL
 )
 
+# --- 문장 가드 (af-v2): 분류기에 넣는 텍스트를 재무제표 의견 문장으로 한정한다 ---
+#
+# 구역 나누기는 랜드마크에 기대는데 랜드마크 표기가 문서마다 일정하지 않다.
+# 실측 1,500건 중 48건(3.2%)은 내부회계관리제도를 언급하면서도 랜드마크에 걸리는
+# 표기가 없었고, 2단 경로(`_fs_text_excluding_icfr`)는 애초에 문서 전체를 본다.
+# 그런 문서에서 마지막 방어선이 이 가드다 - **내부회계 판정 문장은 어떤 경로로도
+# 재무제표 의견 분류기에 들어가지 않는다.**
+
+# 한국어 공시문은 사실상 모든 문장이 "...다."로 끝난다. 원문에는 "구성되어
+# 있습니다.우리의 의견으로는"처럼 마침표 뒤 공백이 없는 경우가 흔해 공백을
+# 요구하지 않는다.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=다\.)\s*")
+
+# 재무제표 의견 문장은 반드시 그 대상(재무제표/연결재무제표)을 가리킨다.
+_FS_SUBJECT_RE = re.compile(r"(?:연결)?재무제표")
+
+
+def _split_sentences(text: str) -> list[str]:
+    return [s for s in (part.strip() for part in _SENTENCE_SPLIT_RE.split(text)) if s]
+
+
+def _is_icfr_sentence(sentence: str) -> bool:
+    """내부회계관리제도를 말하면서 재무제표를 가리키지 않는 문장.
+
+    재무제표 감사보고서 의견 문단 끝에 흔히 붙는 상호참조 문장("우리는 또한 ...
+    내부회계관리제도를 감사하였으며, ...자 감사보고서에서 부적정의견을
+    표명하였습니다")과 내부회계 판정 문장("우리의 의견으로는 ... 내부회계관리제도는
+    ... 효과적으로 설계 및 운영되고 있(지 않)습니다")이 여기 해당한다."""
+
+    return "내부회계관리제도" in sentence and not _FS_SUBJECT_RE.search(sentence)
+
+
+def _strip_icfr_sentences(para: str) -> str:
+    """문단에서 내부회계 문장만 걷어낸다(재무제표 문장 순서는 그대로)."""
+
+    if "내부회계관리제도" not in para:
+        return para
+    return " ".join(s for s in _split_sentences(para) if not _is_icfr_sentence(s))
+
+
+def _fs_verdict_text(para: str) -> str:
+    """`classify_opinion`에 넣을 텍스트: 재무제표 의견을 말하는 문장(무리)만.
+
+    「우리의 의견으로는 별첨된 회사의 재무제표는 ... 공정하게 표시하고 있습니다」
+    처럼 **재무제표/연결재무제표를 가리키면서 판정 문구를 담은 문장**을 찾아,
+    거기서부터 이어지는 판정 문장들을 함께 남긴다("문장 무리"). 의견 문단이 한
+    문장으로 끝나지 않는 실측 형태가 있기 때문이다 - 신창모터스
+    20260413003086은 당기(적정) 문장 다음에 비교표시 전기에 대한 한정 문장
+    (「...수정사항의 영향을 제외하고는, 2024년 12월 31일 현재의 재무상태...」)이
+    이어지고, 그 문장은 「재무제표」라는 낱말을 쓰지 않는다. 앞 문장만 봤다면
+    한정이 적정으로 바뀌었을 것이다.
+
+    내부회계 문장은 무리에 들어오지 못한다. 판정 문장을 하나도 못 찾으면(문단이
+    문장 중간에서 잘렸거나 구형식 문구인 경우) 문단을 그대로 돌려준다 - 가드가
+    판정을 없애 버리지는 않는다."""
+
+    sentences = _split_sentences(para)
+    start = next(
+        (
+            i
+            for i, s in enumerate(sentences)
+            if _FS_SUBJECT_RE.search(s) and any(marker in s for marker in _CLASSIFY_MARKERS)
+        ),
+        None,
+    )
+    if start is None:
+        return para
+
+    group = [
+        s
+        for s in sentences[start:]
+        if not _is_icfr_sentence(s) and any(marker in s for marker in _CLASSIFY_MARKERS)
+    ]
+    return " ".join(group)
+
 
 def classify_opinion(opinion_para: str) -> str:
     """감사의견 문단 텍스트를 4분류(+unknown)한다. 순서가 중요하다:
@@ -456,31 +550,42 @@ def extract_fs_opinion(full_text: str) -> tuple[str, str, str, str, int]:
        (「외부감사인의 감사보고서」, 「... - 계속」 머리말 등) 구역 나누기가
        빗나갈 수 있는데, 그때 v1이 찾던 의견까지 잃지는 않게 하는 안전망이다.
 
+    어느 경로든 분류기에 들어가는 텍스트는 ``_strip_icfr_sentences`` +
+    ``_fs_verdict_text``를 거친다 - 내부회계 판정 문장은 분류기에 닿지 않는다.
+    의견 문장 정규식 폴백도 내부회계 문장에 걸리면 건너뛰고 다음 문장을 본다.
+
     폴백(의견 문장 정규식) 경로는 값은 만들되 확정하지 않는다 - 항상
     ``unconfirmed``다.
     """
 
-    header_paras = [_header_opinion_paragraph(section) for section in carve_fs_sections(full_text)]
-    confirmed = [para for para in header_paras if any(m in para for m in _CLASSIFY_MARKERS)]
+    header_paras = [
+        _strip_icfr_sentences(_header_opinion_paragraph(section))
+        for section in carve_fs_sections(full_text)
+    ]
+    confirmed = [
+        para for para in header_paras if any(m in _fs_verdict_text(para) for m in _CLASSIFY_MARKERS)
+    ]
 
     if confirmed:
         para = confirmed[0]
-        opinion = classify_opinion(para)
+        opinion = classify_opinion(_fs_verdict_text(para))
         status = "confirmed" if opinion != "unknown" else "unconfirmed"
         return opinion, para, status, "header", len(confirmed)
 
     fs_text = _fs_text_excluding_icfr(full_text)
-    para = _header_opinion_paragraph(fs_text)
-    if any(marker in para for marker in _CLASSIFY_MARKERS):
-        opinion = classify_opinion(para)
+    para = _strip_icfr_sentences(_header_opinion_paragraph(fs_text))
+    if any(marker in _fs_verdict_text(para) for marker in _CLASSIFY_MARKERS):
+        opinion = classify_opinion(_fs_verdict_text(para))
         status = "confirmed" if opinion != "unknown" else "unconfirmed"
         return opinion, para, status, "header", 1
 
-    match = _OPINION_SENTENCE_FALLBACK_RE.search(fs_text)
-    if match:
-        return classify_opinion(match.group(0)), match.group(0), "unconfirmed", "sentence_fallback", 1
+    for match in _OPINION_SENTENCE_FALLBACK_RE.finditer(fs_text):
+        sentence = match.group(0)
+        if _is_icfr_sentence(sentence):
+            continue
+        return classify_opinion(sentence), sentence, "unconfirmed", "sentence_fallback", 1
 
-    return classify_opinion(para), para, "unconfirmed", "header" if para else "", 1
+    return classify_opinion(_fs_verdict_text(para)), para, "unconfirmed", "header" if para else "", 1
 
 
 # ---------------------------------------------------------------------------
