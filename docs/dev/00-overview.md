@@ -22,6 +22,7 @@
 - [05 데이터셋](05-datasets.md) — dart_collected/ 수집물 목록
 - [06 재개 Runbook](06-resume-runbook.md) — 새 클론·새 세션의 환경 복원, 비추적 자산, 외부 의존성 점검
 - [07 로컬 아티팩트 인벤토리](07-local-artifact-inventory.md) — Git 제외 데이터의 스냅샷·행 수·SHA-256 복원 확인값
+- [Phase 1 결함 수정·전량 재추출 (2026-09-08)](phase1-20260908.md) — 감사의견 축 분리·계속기업 위치·KAM 경계·회계정책 어휘(af-v2/kam-v2/ps-v2)와 인계 절차
 
 ## 데이터 흐름 (큰 그림)
 ```
