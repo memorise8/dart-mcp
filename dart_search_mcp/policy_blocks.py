@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from dart_search_mcp.policy_sentences import find_lead, find_section
+from dart_search_mcp.policy_sentences import SECTION_RE, find_lead, find_section
 
 BLOCK_CAP = 3000
 
@@ -59,15 +59,13 @@ _SENTENCE_END_RE = re.compile(r"(?:다|니다|음|함|(?<!\d)\.)\s*$")
 # 블록 자신의 양식을 못 찾을 때(예: 따옴표 제목 헤더처럼 항목 기호 없이 시작하는 기준서 블록)만 쓰는
 # 대체 탐색 오프셋 — 시작 직후 텍스트가 자기 자신을 경계로 오인하지 않도록 여유를 둔다.
 _GENERIC_FALLBACK_OFFSET = 60
-# 절 번호 표제("2.3 연결", "2.2.2 회사가 …"). 항목 기호와 달리 앞이 문장 끝일 것을 요구하지
-# 않는다 — 평문화된 원문에서는 "…제정 기준서 2.3 연결"처럼 앞 문장에 붙어 나오는 쪽이 오히려
-# 흔하다(실측: 에스텍 20260316001663). 대신 뒤에 한글 두 자 이상이 오고 그 첫 낱말이 단위
-# 명사가 아닐 것을 요구해 소수("1.5 배로", "2.3 배")를 표제로 오인하지 않는다.
-_SECTION_HDR_RE = re.compile(
-    r"(?<![\d.])\d{1,2}(?:\.\d{1,2}){1,3}\s*"
-    r"(?!(?:배|억|만|천|원|개|명|년|월|일|시간|퍼센트|포인트|미터|톤|리터|프로)(?![가-힣]))"
-    r"(?=[가-힣]{2})"
-)
+# 절 번호 표제("2.3 연결", "2.2.2 회사가 …")는 블록 종료 경계다. 항목 기호와 달리 앞이 문장
+# 끝일 것을 요구하지 않는다 — 평문화된 원문에서는 "…제정 기준서 2.3 연결"처럼 앞 문장에 붙어
+# 나오는 쪽이 오히려 흔하다(실측: 에스텍 20260316001663).
+# Fix round 2: 패턴을 policy_sentences 의 정본(SECTION_RE)과 **같은 것**으로 통일한다 —
+# 경계 판단(여기)과 절 조회(find_section)가 서로 다른 패턴을 쓰면, 한쪽만 표제를 놓치고도 두
+# 절 번호가 "일치"해 서문 귀속 검사가 조용히 통과한다(1차 리뷰 잔여 결함).
+_SECTION_HDR_RE = SECTION_RE
 
 
 def _own_marker(text: str, pos: int) -> tuple[re.Pattern[str], int] | None:

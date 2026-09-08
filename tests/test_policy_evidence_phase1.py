@@ -22,6 +22,7 @@ from pathlib import Path
 
 from dart_search_mcp.policy_blocks import split_policy_blocks
 from dart_search_mcp.policy_rules import TOPICS, judge, positive_pattern_matches
+from dart_search_mcp.policy_sentences import find_section
 
 FX = Path(__file__).parent / "fixtures" / "phase1"
 
@@ -87,25 +88,43 @@ class PolicyEvidencePhase1(unittest.TestCase):
             "(4) 기업회계기준서 제1118호 제정 손익계산서에 새로운 중간합계를 도입합니다.")[0])
         self.assertEqual((silent.value, silent.held_reason), ("UNDETERMINED", "EVIDENCE_INSUFFICIENT"))
 
+    _TWO_PREAMBLE_TEXT = (
+        "2.2 회계정책과 공시의 변경 2.2.1 회사가 채택한 제ㆍ개정 기준서 및 해석서 회사는 "
+        "2025년 1월 1일로 개시하는 회계기간부터 다음의 제ㆍ개정 기준서 및 해석서를 신규로 "
+        "적용하였습니다. (1) 기업회계기준서 제1021호 '환율변동효과' 개정 교환가능성 평가 "
+        "지침을 추가하였습니다.{gap}2.2.2{gap}공표되었으나 아직 시행되지 않은 기준서{gap}"
+        "(1) 기업회계기준서 제1117호 '보험계약' 개정 추정기법의 차이에 대한 추가공시 규정입니다."
+    )
+
+    def _two_preamble_blocks(self, gap: str) -> dict:
+        return {b.standard_no: b for b in split_policy_blocks(self._TWO_PREAMBLE_TEXT.format(gap=gap))}
+
     def test_lead_does_not_cross_a_section_heading(self) -> None:
-        """Fix round 1(Important 2): 다음 절 표제가 인식되지 않는 형태여도 앞 절의 채택 서문이
+        r"""Fix round 1(Important 2): 다음 절 표제가 인식되지 않는 형태여도 앞 절의 채택 서문이
         딸려 오면 안 된다. 2.2.2 항목은 2.2.1 의 「신규로 적용하였습니다」 를 근거로 삼을 수
-        없다 — 귀속 불명으로 보류한다."""
-        text = (
-            "2.2 회계정책과 공시의 변경 2.2.1 회사가 채택한 제ㆍ개정 기준서 및 해석서 회사는 "
-            "2025년 1월 1일로 개시하는 회계기간부터 다음의 제ㆍ개정 기준서 및 해석서를 신규로 "
-            "적용하였습니다. (1) 기업회계기준서 제1021호 '환율변동효과' 개정 교환가능성 평가 "
-            "지침을 추가하였습니다. 2.2.2 공표되었으나 아직 시행되지 않은 기준서 "
-            "(1) 기업회계기준서 제1117호 '보험계약' 개정 추정기법의 차이에 대한 추가공시 규정입니다."
-        )
+        없다 — 귀속 불명으로 보류한다.
+
+        Fix round 2: 절 표제 앞뒤 공백이 없는 형태(평문화 과정에서 흔히 사라진다)도 같아야 한다.
+        예전 lookbehind `(?<![\d.])` 는 앞이 마침표이기만 하면 절 표제를 못 봐서, 2.2.2 항목의
+        절이 2.2.1 로 읽히고 서문의 절과 **거짓 일치**해 검사가 통과했다."""
         spec = TOPICS["STD_EARLY_ADOPTION"]
-        by_std = {b.standard_no: b for b in split_policy_blocks(text)}
-        same_section = judge(spec, by_std["1021"])
-        self.assertEqual((same_section.value, by_std["1021"].section), ("ADOPTED", "2.2.1"))
-        crossing = judge(spec, by_std["1117"])
-        self.assertEqual(by_std["1117"].section, "2.2.2")
-        self.assertNotEqual(crossing.value, "ADOPTED")
-        self.assertEqual((crossing.value, crossing.held_reason), ("UNDETERMINED", "ATTRIBUTION_UNCLEAR"))
+        for gap in (" ", ""):
+            with self.subTest(gap=repr(gap)):
+                by_std = self._two_preamble_blocks(gap)
+                same_section = judge(spec, by_std["1021"])
+                self.assertEqual((same_section.value, by_std["1021"].section), ("ADOPTED", "2.2.1"))
+                crossing = judge(spec, by_std["1117"])
+                self.assertEqual(by_std["1117"].section, "2.2.2")
+                self.assertNotEqual(crossing.value, "ADOPTED")
+                self.assertEqual((crossing.value, crossing.held_reason), ("UNDETERMINED", "ATTRIBUTION_UNCLEAR"))
+
+    def test_section_number_is_read_across_a_missing_space(self) -> None:
+        """Fix round 2: 절 조회와 블록 경계가 같은 패턴을 쓰고, 그 패턴은 문장 끝 마침표 뒤에
+        공백이 없어도 절 표제를 본다. 중첩 번호("1.2.2.2")의 안쪽 조각은 여전히 절이 아니다."""
+        text = self._TWO_PREAMBLE_TEXT.format(gap="")
+        self.assertEqual(find_section(text, text.index("제1117호")), "2.2.2")
+        self.assertEqual(find_section("보고서의 1.2.2.2 항목은 다음과 같습니다.", 30), "1.2.2.2")
+        self.assertEqual(find_section("직전 문장입니다.1.2.2.2 항목은 다음과 같습니다.", 30), "1.2.2.2")
 
     def test_mid_sentence_fragment_is_not_a_list_preamble(self) -> None:
         """Fix round 1(Important 2): 20250827000159/1115 재현 — 평문에서 마침표 뒤 공백이
