@@ -51,7 +51,7 @@ KIND_OTHER = ""
 # 기준서가 주어일 때 "기준서 설명문"으로 보는 서술어. 브리프 지정(적용됩니다/허용됩니다/
 # 요구합니다/대체합니다/정의하고) + 같은 부류의 실측 변형(개정/도입/포함/명확히).
 _DESCRIPTION_VERB_RE = re.compile(
-    r"적용(?:됩니다|되며|되고|되는|될|하되|해야|하여야|합니다)|허용(?:됩니다|되며|된|됨)|가능합니다"
+    r"적용(?:됩니다|되며|되고|되는|될|할|하되|해야|하여야|합니다)|허용(?:됩니다|되며|된|됨)|가능합니다"
     r"|요구(?:합니다|하고|됩니다|하며)|대체(?:합니다|하며|할)|정의(?:하고|합니다)"
     r"|도입(?:합니다|하며|한)|포함(?:합니다|하며)|개정(?:되었습니다|하였습니다)|명확히\s*하"
 )
@@ -63,6 +63,9 @@ _LIST_INTRO_RE = re.compile(r"다음(?:과\s*같|의|은)")
 # 서문의 극성. 채택(당기 신규 적용) 서문 / 미채택(시행일 미도래·조기적용 안 함) 서문.
 PREAMBLE_ADOPTED = "adopted"
 PREAMBLE_NOT_ADOPTED = "not_adopted"
+# 서문 후보는 찾았지만 그 서문이 항목과 **다른 절**에 있어 귀속을 확정할 수 없는 상태
+# (Fix round 1, Important 2). 값을 주지 않고 보류 사유(ATTRIBUTION_UNCLEAR)로 넘긴다.
+PREAMBLE_SECTION_MISMATCH = "section_mismatch"
 _PREAMBLE_NOT_ADOPTED_RE = re.compile(
     r"(?:조기\s*)?(?:적용|채택|도입)하지\s*(?:않은|않는|아니한|아니하였|않았)"
     r"|시행일이\s*도래하지\s*(?:않|아니)|아직\s*시행일이|공표되었으나\s*아직"
@@ -155,49 +158,6 @@ def split_sentences(text: str) -> list[Sentence]:
     return out
 
 
-LEAD_WINDOW = 2000
-
-# 목록 표제형 서문 — "2.2.1 회사가 채택한 제ㆍ개정 기준서" 처럼 문장(마침표)이 아니라 표제로만
-# 목록의 성격을 밝히는 형태다. 실측(20260310002005 등)에서 2.2.1 절이 표제뿐이고 "다음의 …
-# 신규로 적용하였습니다" 문장이 아예 없는 보고서가 있어, 문장 서문만 보면 그 절의 항목들이
-# 전부 판단 보류로 남는다.
-_HEADING_LEAD_RE = re.compile(
-    r"(?:\(\s*\d{1,2}\s*\)|\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}\)|[가-힣]\.)\s*"
-    r"[^.]{0,25}?(?:조기\s*적용하지\s*(?:않은|아니한)|적용하지\s*(?:않은|아니한)|채택하지\s*않은"
-    r"|신규\s*적용한|신규로\s*적용한|채택한|적용한)\s*"
-    r"[^.]{0,15}?(?:기준서|해석서|회계기준)"
-)
-
-
-def find_lead(text: str, pos: int, window: int = LEAD_WINDOW) -> tuple[str, str] | None:
-    """pos 앞의 가장 가까운 **극성 있는** 목록 서문 (서문, 극성). 없으면 None.
-
-    항목(블록)이 어느 목록에 속하는지는 그 항목 **앞** 서문이 정한다. 중간에 다른 항목들이
-    끼어 있어도 상관없다 — 같은 목록의 형제 항목들이기 때문이다. 반대로 새 목록이 시작되면
-    그 서문이 더 가까우므로 자연히 그쪽이 이긴다. `window` 는 엉뚱하게 먼 서문에 귀속되는
-    것을 막는 상한이다(실측 표본에서 서문-항목 거리는 최대 1,000자 남짓).
-
-    문장형 서문과 표제형 서문이 같은 자리(=한 문장 안에 표제와 서문 문장이 붙어 있는 흔한
-    모양)를 가리키면 문장형을 쓴다 — 근거로 더 많은 것을 말해 준다. 표제형은 그 문장 **뒤**에
-    새 목록이 열릴 때만 이긴다."""
-    chunk = text[max(0, pos - window) : pos]
-    best: tuple[str, str] | None = None
-    best_end = 0  # 지금까지 채택한 서문이 chunk 안에서 끝나는 자리
-    for sent in split_sentences(chunk):
-        polarity = preamble_polarity(sent.text)
-        if polarity:
-            best = (sent.text.strip(), polarity)
-            best_end = sent.end
-    for m in _HEADING_LEAD_RE.finditer(chunk):
-        if best is not None and m.start() < best_end:
-            continue
-        heading = m.group(0).strip()
-        polarity = PREAMBLE_NOT_ADOPTED if _PREAMBLE_NOT_ADOPTED_RE.search(heading) else PREAMBLE_ADOPTED
-        best = (heading, polarity)
-        best_end = m.end()
-    return best
-
-
 # 절 번호 표제("2.2.2 회사가 적용하지 않은 …") — 블록의 상위 절 경로를 만드는 데 쓴다.
 SECTION_RE = re.compile(r"(?<![\d.])(\d{1,2}(?:\.\d{1,2}){1,3})\s*(?=[가-힣])")
 SECTION_WINDOW = 3000
@@ -210,3 +170,79 @@ def find_section(text: str, pos: int, window: int = SECTION_WINDOW) -> str:
     for m in SECTION_RE.finditer(text, lo, pos):
         found = m.group(1)
     return found
+
+
+LEAD_WINDOW = 2000
+
+# 목록 표제형 서문 — "2.2.1 회사가 채택한 제ㆍ개정 기준서" 처럼 문장(마침표)이 아니라 표제로만
+# 목록의 성격을 밝히는 형태다. 실측(20260310002005 등)에서 2.2.1 절이 표제뿐이고 "다음의 …
+# 신규로 적용하였습니다" 문장이 아예 없는 보고서가 있어, 문장 서문만 보면 그 절의 항목들이
+# 전부 판단 보류로 남는다.
+_HEADING_LEAD_RE = re.compile(
+    r"(?:\(\s*\d{1,2}\s*\)|\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}\)|[가-힣]\.)\s*"
+    r"[^.]{0,25}?(?:조기\s*적용하지\s*(?:않은|아니한)|적용하지\s*(?:않은|아니한)|채택하지\s*않은"
+    r"|신규\s*적용한|신규로\s*적용한|채택한|적용한)\s*"
+    r"[^.]{0,15}?(?:기준서|해석서|회계기준)"
+)
+# 한글+마침표 항목 기호("가.", "나.", "다.")는 종결 어미와 생김새가 같다 — 평문에서 마침표
+# 뒤 공백이 사라지면 "…있다.회사가 리스제공자로서 비교기간에 적용한 회계정책은 기업회계기준…"
+# 의 "다." 가 항목 기호로 잡혀 문장 한가운데가 표제형 서문이 된다(실측 20250827000159/1115,
+# Fix round 1 Important 2). 이 기호로 시작하는 표제만 "문장 첫머리" 를 요구한다 — 숫자 기호
+# ("2.2.1", "(1)")는 앞 낱말에 붙어 나오는 일이 흔해서(예: "…공시사항의 변경2.2.1 …") 같은
+# 조건을 걸 수 없다.
+_HANGUL_DOT_MARKER_RE = re.compile(r"^[가-힣]\.")
+
+
+def _heading_start_ok(chunk: str, match: re.Match[str]) -> bool:
+    """한글+마침표 기호로 시작하는 표제형 서문만 문장 첫머리를 요구한다(위 주석 참고)."""
+    if _HANGUL_DOT_MARKER_RE.match(match.group(0)) is None:
+        return True
+    before = chunk[: match.start()].rstrip()
+    return not before or before.endswith(".")
+
+
+def find_lead(
+    text: str, pos: int, *, section: str = "", window: int = LEAD_WINDOW
+) -> tuple[str, str] | None:
+    """pos 앞의 가장 가까운 **극성 있는** 목록 서문 (서문, 극성). 없으면 None.
+
+    항목(블록)이 어느 목록에 속하는지는 그 항목 **앞** 서문이 정한다. 중간에 다른 항목들이
+    끼어 있어도 상관없다 — 같은 목록의 형제 항목들이기 때문이다. 반대로 새 목록이 시작되면
+    그 서문이 더 가까우므로 자연히 그쪽이 이긴다. `window` 는 엉뚱하게 먼 서문에 귀속되는
+    것을 막는 상한이다(실측 표본에서 서문-항목 거리는 최대 1,000자 남짓).
+
+    문장형 서문과 표제형 서문이 같은 자리(=한 문장 안에 표제와 서문 문장이 붙어 있는 흔한
+    모양)를 가리키면 문장형을 쓴다 — 근거로 더 많은 것을 말해 준다. 표제형은 그 문장 **뒤**에
+    새 목록이 열릴 때만 이긴다.
+
+    `section`(항목이 속한 절 번호)이 주어지면 서문이 **같은 절** 안에 있어야 한다
+    (Fix round 1, Important 2). 다음 절의 표제가 인식되지 않는 형태일 때 — 예: "2.2.2 공표
+    되었으나 아직 시행되지 않은 기준서" 처럼 극성 어휘가 없는 표제 — 거리만 보면 앞 절(2.2.1)의
+    채택 서문이 그대로 딸려 와 항목이 ADOPTED 로 뒤집힌다. 절이 다르면 값을 주지 않고
+    `PREAMBLE_SECTION_MISMATCH` 를 돌려준다(보류 사유로 남긴다)."""
+    lo = max(0, pos - window)
+    chunk = text[lo:pos]
+    best: tuple[str, str] | None = None
+    best_end = 0  # 지금까지 채택한 서문이 chunk 안에서 끝나는 자리
+    for sent in split_sentences(chunk):
+        polarity = preamble_polarity(sent.text)
+        if polarity:
+            best = (sent.text.strip(), polarity)
+            best_end = sent.end
+    for m in _HEADING_LEAD_RE.finditer(chunk):
+        if best is not None and m.start() < best_end:
+            continue
+        if not _heading_start_ok(chunk, m):
+            continue
+        heading = m.group(0).strip()
+        polarity = PREAMBLE_NOT_ADOPTED if _PREAMBLE_NOT_ADOPTED_RE.search(heading) else PREAMBLE_ADOPTED
+        best = (heading, polarity)
+        best_end = m.end()
+    if best is None:
+        return None
+    # 서문의 절은 그 서문이 **끝나는** 자리에서 읽는다 — 서문 문장은 절 표제를 앞에 달고
+    # 시작하는 일이 흔해서("2.2 회계정책과 공시의 변경 2.2.1 회사가 채택한 … 적용하였습니다.")
+    # 시작 위치에서 읽으면 한 단계 앞 절이 나온다.
+    if section and find_section(text, lo + best_end) != section:
+        return ("", PREAMBLE_SECTION_MISMATCH)
+    return best

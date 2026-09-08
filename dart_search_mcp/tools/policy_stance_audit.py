@@ -22,10 +22,15 @@ from dart_search_mcp.tools.extract_facts import select_xml_path
 # 되도록 값만 여기 다시 적고 그 모듈들을 import 하지는 않는다.
 _WINDOW = 3000 + 400
 # T4(ps-v2): 항목이 침묵하면 그 항목이 실린 목록의 서문(policy_blocks 의 lead — 블록 **앞**
-# 2,000자 안)이 근거가 된다. 창을 앞쪽으로도 그만큼 열어야 그 근거가 "원문에 없다"로 잘못
-# 잡히지 않는다. policy_sentences.LEAD_WINDOW 와 같은 값을 의도적으로 다시 적는다(이 모듈은
-# 다른 policy_* 모듈에 기대지 않는 자기완결 설계 — 한쪽을 고치면 다른 쪽도 맞출 것).
+# 2,000자 안)이 근거가 된다. 그런 행만 창을 앞쪽으로 그만큼 연다 —
+# 리뷰 Fix round 1(Important 1): 모든 행에 앞쪽 창을 열면 evidence_in_block 이 "이웃 항목의
+# 문장을 근거로 잘못 가져왔다"를 잡는 유일한 자동 검사인데, 오귀속이 실제로 일어나는 방향
+# (블록 앞쪽)에 2,000자짜리 사각지대가 생긴다. 서문에서 온 행은 sentence_kind ==
+# "list_preamble" 로 표시돼 있으므로 그 행에만 적용한다(표본 807행 중 85행).
+# policy_sentences.LEAD_WINDOW 와 같은 값을 의도적으로 다시 적는다(이 모듈은 다른 policy_*
+# 모듈에 기대지 않는 자기완결 설계 — 한쪽을 고치면 다른 쪽도 맞출 것).
 _LEAD_WINDOW = 2000
+_PREAMBLE_KIND = "list_preamble"
 _NONE_PREFIX = "판정 불가: "
 # evidence_sentence 가 400자 창을 strip() 해서 돌려주므로(양끝이 공백이면 398~399), 정확히
 # 400 을 기준으로 잡으면 R1 이 만들어낸 "표 한가운데를 잘라낸" 상한 도달 근거를 놓친다(S-M5).
@@ -76,11 +81,17 @@ def _normalize(s: str) -> str:
     return _WS_RE.sub(" ", s).strip()
 
 
-def _evidence_in_block(evidence: str, method: str, text: str | None, block_offset: Any) -> bool | None:
+def _evidence_in_block(
+    evidence: str, method: str, text: str | None, block_offset: Any, sentence_kind: Any = ""
+) -> bool | None:
     """text 가 None(=rcept_no 의 XML 을 못 읽음)이면 확인 자체가 불가능하므로 None(검사 제외) —
     호출자가 missing_xml 로 별도 집계하고 위반·종료코드 판정에서 뺀다(Q-I4: `--docs` 오지정이나
     XML 결손을 "근거의 100% 가 블록 밖"으로 잘못 읽는 사고를 막는다). block_offset 이 없거나
-    원문 길이를 벗어나면(문서는 있는데 오프셋이 이상함) 위반으로 본다."""
+    원문 길이를 벗어나면(문서는 있는데 오프셋이 이상함) 위반으로 본다.
+
+    `sentence_kind == "list_preamble"`(ps-v2) 인 행만 블록 **앞** `_LEAD_WINDOW` 까지 창을 넓힌다 —
+    그 행의 근거는 설계상 블록 앞의 목록 서문이다. 나머지 행은 예전처럼 블록 시작부터 앞으로만
+    본다(이웃 항목 오귀속을 계속 잡기 위해)."""
     if text is None:
         return None
     if not isinstance(block_offset, int) or block_offset < 0 or block_offset >= len(text):
@@ -91,7 +102,8 @@ def _evidence_in_block(evidence: str, method: str, text: str | None, block_offse
     norm_evidence = _normalize(check)
     if not norm_evidence:
         return True  # 빈 근거는 비교 대상이 없다 — 위반으로 잡지 않는다
-    window = text[max(0, block_offset - _LEAD_WINDOW) : block_offset + _WINDOW]
+    back = _LEAD_WINDOW if sentence_kind == _PREAMBLE_KIND else 0
+    window = text[max(0, block_offset - back) : block_offset + _WINDOW]
     return norm_evidence in _normalize(window)
 
 
@@ -182,7 +194,9 @@ def _row_flags(row: dict[str, Any], text: str | None) -> dict[str, bool | str]:
     subject = row.get("subject")
     value = row.get("value")
 
-    eib = _evidence_in_block(evidence, method, text, row.get("block_offset"))
+    eib = _evidence_in_block(
+        evidence, method, text, row.get("block_offset"), row.get("sentence_kind", "")
+    )
     flags: dict[str, bool | str] = {"evidence_in_block": _UNCHECKED if eib is None else eib}
 
     if method == "none":

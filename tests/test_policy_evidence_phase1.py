@@ -39,10 +39,10 @@ class PolicyEvidencePhase1(unittest.TestCase):
         """근거는 기준서 설명문이 아니라 회사가 주어인 문장이어야 한다(회계사 확인 P1·P2).
 
         나이벡의 `must` 는 브리프가 인용한 「경영진은 현재 … 검토 중에 있으며」 대신
-        같은 블록의 「회사는 제1118호를 아직 채택하지 않았으며 …」 로 둔다 — 둘 다 회사
-        문장이고, 뒤엣것은 검토 중이라는 정황이지만 앞엣것은 미적용을 직접 단정한다.
-        회계사가 지적한 축(기준서 설명문 → 회사 문장)은 그대로 지키면서 더 강한 근거를
-        고른 것이라, 규칙을 약한 문장 쪽으로 되돌리지 않고 기대값을 맞춘다."""
+        같은 블록의 「회사는 제1118호를 아직 채택하지 않았으며 …」 로 둔다. 규칙이 그 문장을
+        고르는 이유는 "더 강해서"가 아니라 **위치**다 — 두 문장 다 company_statement 이고 같은
+        패턴 묶음(A)에 걸려 순위가 같으므로, 블록에서 먼저 나오는 문장이 이긴다. 회계사가 지적한
+        축(기준서 설명문 → 회사 문장)은 그대로 지켜지므로 기대값을 이 문장으로 맞춘다."""
         for name, must in (("20260316001522-neopharm-policy.txt", "검토 중"),
                            ("20260320001388-nibec-policy.txt", "아직 채택하지 않았으며")):
             with self.subTest(name=name):
@@ -86,6 +86,54 @@ class PolicyEvidencePhase1(unittest.TestCase):
         silent = judge(spec, split_policy_blocks(
             "(4) 기업회계기준서 제1118호 제정 손익계산서에 새로운 중간합계를 도입합니다.")[0])
         self.assertEqual((silent.value, silent.held_reason), ("UNDETERMINED", "EVIDENCE_INSUFFICIENT"))
+
+    def test_lead_does_not_cross_a_section_heading(self) -> None:
+        """Fix round 1(Important 2): 다음 절 표제가 인식되지 않는 형태여도 앞 절의 채택 서문이
+        딸려 오면 안 된다. 2.2.2 항목은 2.2.1 의 「신규로 적용하였습니다」 를 근거로 삼을 수
+        없다 — 귀속 불명으로 보류한다."""
+        text = (
+            "2.2 회계정책과 공시의 변경 2.2.1 회사가 채택한 제ㆍ개정 기준서 및 해석서 회사는 "
+            "2025년 1월 1일로 개시하는 회계기간부터 다음의 제ㆍ개정 기준서 및 해석서를 신규로 "
+            "적용하였습니다. (1) 기업회계기준서 제1021호 '환율변동효과' 개정 교환가능성 평가 "
+            "지침을 추가하였습니다. 2.2.2 공표되었으나 아직 시행되지 않은 기준서 "
+            "(1) 기업회계기준서 제1117호 '보험계약' 개정 추정기법의 차이에 대한 추가공시 규정입니다."
+        )
+        spec = TOPICS["STD_EARLY_ADOPTION"]
+        by_std = {b.standard_no: b for b in split_policy_blocks(text)}
+        same_section = judge(spec, by_std["1021"])
+        self.assertEqual((same_section.value, by_std["1021"].section), ("ADOPTED", "2.2.1"))
+        crossing = judge(spec, by_std["1117"])
+        self.assertEqual(by_std["1117"].section, "2.2.2")
+        self.assertNotEqual(crossing.value, "ADOPTED")
+        self.assertEqual((crossing.value, crossing.held_reason), ("UNDETERMINED", "ATTRIBUTION_UNCLEAR"))
+
+    def test_mid_sentence_fragment_is_not_a_list_preamble(self) -> None:
+        """Fix round 1(Important 2): 20250827000159/1115 재현 — 평문에서 마침표 뒤 공백이
+        사라지면 종결 어미 "다." 가 한글 항목 기호로 보인다. 「…있다.회사가 … 적용한 회계정책은
+        기업회계기준…」 이 채택 서문으로 잡혀 뒤 항목이 ADOPTED 로 뒤집혔다."""
+        text = (
+            "기업회계기준서 제1116호 리스 관련 회계정책은 다음과 같이 적용하고 있다."
+            "회사가 리스제공자로서 비교기간에 적용한 회계정책은 기업회계기준서 제1115호와 "
+            "일관됩니다. (3) 기업회계기준서 제1115호 '고객과의 계약에서 생기는 수익' "
+            "수익인식 5단계 모형을 규정합니다."
+        )
+        block = next(b for b in split_policy_blocks(text) if b.standard_no == "1115")
+        self.assertEqual(block.lead_polarity, "")
+        j = judge(TOPICS["STD_EARLY_ADOPTION"], block)
+        self.assertEqual((j.value, j.held_reason), ("UNDETERMINED", "EVIDENCE_INSUFFICIENT"))
+
+    def test_적용_예정_서술은_주어에_따라_갈린다(self) -> None:
+        """Fix round 1(minor): 「적용할 예정」과 「적용될 예정」이 같게 움직인다 — 주어가
+        기준서면 PERMITTED_ONLY, 회사면 NOT_ADOPTED."""
+        spec = TOPICS["STD_EARLY_ADOPTION"]
+        for tail in ("적용할 예정입니다.", "적용될 예정입니다."):
+            with self.subTest(tail=tail):
+                std = judge(spec, split_policy_blocks(
+                    f"(4) 기업회계기준서 제1118호 '재무제표 표시와 공시' 제정 동 기준서는 2027년 1월 1일부터 {tail}")[0])
+                self.assertEqual((std.value, std.sentence_kind), ("PERMITTED_ONLY", "standard_description"))
+                company = judge(spec, split_policy_blocks(
+                    f"(4) 기업회계기준서 제1118호 '재무제표 표시와 공시' 제정 회사는 동 기준서를 2027년 1월 1일부터 {tail}")[0])
+                self.assertEqual((company.value, company.sentence_kind), ("NOT_ADOPTED", "company_statement"))
 
     def test_regressions(self) -> None:
         self.assertIn("EARLY_ADOPTED", {j.value for j in _judge_std("20260316000929-koreazinc-policy.txt", "1109")})

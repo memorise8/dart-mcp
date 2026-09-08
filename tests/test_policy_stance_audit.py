@@ -80,6 +80,49 @@ class RealExtractAuditTests(unittest.TestCase):
             self.assertEqual(rep["totals"]["pattern_in_evidence"]["violations"], 0)
 
 
+class EvidenceWindowTests(unittest.TestCase):
+    """Fix round 1(Important 1): 블록 **앞** 창은 목록 서문에서 온 행(sentence_kind ==
+    "list_preamble")에만 열린다 — 나머지 행에서 앞쪽 창을 열면 이웃 항목 오귀속을 잡는
+    유일한 자동 검사에 사각지대가 생긴다."""
+
+    def _doc_with_lead(self, tmp: Path) -> tuple[Path, str, int]:
+        from dart_search_mcp.audit_xml_parser import _strip_tags_to_text
+
+        lead = "2.2.1 회사가 채택한 제ㆍ개정 기준서 및 해석서 회사는 다음의 기준서를 신규로 적용하였습니다."
+        filler = "이 문단은 앞 항목의 본문입니다. " * 25  # 500자 남짓
+        block = "(9) 기업회계기준서 제1021호 '환율변동효과' 개정 교환가능성 평가 지침입니다."
+        docs = tmp / "docs"
+        _write_doc(docs, "W1", lead + " " + filler + block)
+        text = _strip_tags_to_text((docs / "W1" / "W1_00760.xml").read_bytes())
+        offset = text.index("(9) 기업회계기준서")
+        self.assertGreater(offset - text.index(lead[:10]), 500)
+        return docs, lead, offset
+
+    def _violations(self, tmp: Path, docs: Path, row: dict) -> int:
+        stances = tmp / f"s{row['sentence_kind'] or 'none'}.jsonl"
+        _write_stances(stances, [row])
+        rep = run_policy_stance_audit(
+            stances_path=stances, docs_dir=docs, report_path=tmp / "audit.md"
+        )
+        return rep["totals"]["evidence_in_block"]["violations"]
+
+    def test_서문_행만_앞쪽_창이_열린다(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            docs, lead, offset = self._doc_with_lead(t)
+            base = {
+                "rcept_no": "W1", "corp_code": "1", "fiscal_year": 2025,
+                "topic": "STD_EARLY_ADOPTION", "subject": "1021", "value": "ADOPTED",
+                "evidence": lead, "method": "rule", "confidence": 1.0,
+                "block_offset": offset, "parser_version": "ps-v2",
+            }
+            self.assertEqual(self._violations(t, docs, {**base, "sentence_kind": "list_preamble"}), 0)
+            # 같은 근거·같은 오프셋이라도 서문 행이 아니면 블록 밖 근거로 잡아야 한다.
+            self.assertEqual(
+                self._violations(t, docs, {**base, "value": "NOT_ADOPTED", "sentence_kind": "company_statement"}), 1
+            )
+
+
 class SyntheticFlagTests(unittest.TestCase):
     """손으로 만든 jsonl + 손으로 만든 XML 로 다섯 플래그를 각각 정확히 1건씩만 잡는지 확인한다.
     각 행은 자신이 겨냥한 플래그 하나만 위반하고 나머지 네 플래그는 통과하도록 설계했다."""

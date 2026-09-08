@@ -210,7 +210,9 @@ def split_policy_blocks(text: str) -> list[PolicyBlock]:
         body = text[pos:end]
         # 서문·절 번호는 기준서 항목 블록에만 붙인다 — 주제 블록(유형자산·수익인식 등)의
         # 판정은 목록 귀속과 무관하고, 괜히 붙이면 그쪽 판정 규칙이 쓰지도 않을 값을 들고 다닌다.
-        lead = find_lead(text, pos) if std is not None else None
+        # 절 번호를 먼저 구해 서문 탐색에 넘긴다 — 서문은 항목과 같은 절 안에 있어야 한다.
+        section = find_section(text, pos) if std is not None else ""
+        lead = find_lead(text, pos, section=section) if std is not None else None
         blocks.append(
             PolicyBlock(
                 heading=body[:60],
@@ -221,7 +223,7 @@ def split_policy_blocks(text: str) -> list[PolicyBlock]:
                 capped=capped,
                 lead=lead[0] if lead else "",
                 lead_polarity=lead[1] if lead else "",
-                section=find_section(text, pos) if std is not None else "",
+                section=section,
             )
         )
     return blocks

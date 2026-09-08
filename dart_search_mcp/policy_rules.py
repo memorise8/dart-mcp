@@ -17,6 +17,7 @@ from dart_search_mcp.policy_sentences import (
     KIND_PREAMBLE,
     KIND_STANDARD,
     PREAMBLE_ADOPTED,
+    PREAMBLE_SECTION_MISMATCH,
     Sentence,
     classify_sentence,
     preamble_polarity,
@@ -227,7 +228,7 @@ _T1_COMPANY_STANCE = (
     (_p(
         r"(?:채택|적용|도입)하지\s*(?:않|아니)|아직\s*채택|(?:검토|평가|파\s*악)\s*중"
         r"|영향을\s*(?:검토|평가|분석)\s*(?:중|하고\s*있)|적용에\s*따른\s*영향을\s*(?:검토|평가)"
-        r"|영향(?:은|이)?\s*(?:중요하지|없)|적용할\s*예정"
+        r"|영향(?:은|이)?\s*(?:중요하지|없)"
         r"|영향을\s*미치지\s*않을\s*것으로\s*예상|영향이\s*없을\s*것으로\s*예상"
         r"|최초\s*적용\s*시|적용하여\s*재무제표를\s*작성하는\s*경우"
         r"|재작성(?:됩니다|될|되며)|차이를\s*발생시킬\s*것으로\s*예상|영향(?:은|이)?\s*광범위할\s*것으로\s*예상"
@@ -237,13 +238,16 @@ _T1_COMPANY_STANCE = (
 # 못한다(v1 설계 §2.1). T4 에서 NOT_ADOPTED → PERMITTED_ONLY 로 옮겼다. 다만 이 서술이 회사가
 # 주어인 문장 안에 있으면("연결회사는 … 2027년부터 적용될 예정입니다") 회사 진술이므로
 # NOT_ADOPTED 로 승격한다(`_EFFECTIVE_DATE_IN_COMPANY_VALUE`).
+# Fix round 1(minor): "적용할 예정"도 여기 있다 — 예전에는 (A) 에 있어 주어와 무관하게 언제나
+# NOT_ADOPTED 였는데, 쌍둥이 표면형 "적용될 예정"(부터…적용될 로 여기서 잡힌다)과 갈렸다.
+# 이제 둘 다 주어가 기준서면 PERMITTED_ONLY, 회사면 NOT_ADOPTED 로 같게 움직인다.
 _T1_EFFECTIVE_DATE = (
     (_p(
         r"부터\s*(?:적용|시행)(?:됩니다|되며|될|합니다)"
         r"|(?:회계연도|보고기간)(?:에|부터)\s*적용(?:해야|하여야|됩니다|합니다|되며|될)"
         r"|(?:의무|소급)\s*적용(?:되며|됩니다|될|됨)"
         r"|부터\s*(?:의무|소급)?\s*적용(?:되며|되는|되고|됩니다|될|됨|하며|할)"
-        r"|적용하되|시행될\s*예정"
+        r"|적용하되|시행될\s*예정|적용할\s*예정"
     ), "PERMITTED_ONLY"),
 )
 # (C) 조기적용 허용·가능 — 그 자체로는 언제나 PERMITTED_ONLY 다(회사 문장 안에 있어도
@@ -353,6 +357,12 @@ def _judge_std_early(spec: TopicSpec, block: PolicyBlock) -> Judgement:
 
     neg = _best(_scan(_T1_NEG, stripped, usable))
     early_hits = _scan(_T1_EARLY, stripped, usable)
+    # 조건절 취급이 비대칭인 것은 의도다. 조기적용 **단정**(EARLY_ADOPTED)만 조건절 문장을
+    # 버린다 — "조기적용하기로 선택하는 경우 …" 류가 회사가 실제로 조기적용했다는 진술로
+    # 둔갑하면 긍정 오탐(R18 이 지적한 그 실패)이 되기 때문이다. 부정(_T1_NEG)과 회사의 미적용
+    # 진술(_T1_COMPANY_STANCE)은 조건절 안에 있어도 값이 "아직 적용하지 않았다" 쪽이라 같은
+    # 위험이 없고, 오히려 버리면 판단 보류만 늘어난다 — 대신 순위에서 가장 뒤로 밀고
+    # `is_conditional` 로 표시해 소비자가 걸러낼 수 있게 한다.
     early_asserted = [h for h in early_hits if h.sentence.kind != KIND_CONDITIONAL]
     early = _best(early_asserted)
     if neg is not None and early is not None and neg.sentence.start == early.sentence.start:
@@ -381,6 +391,9 @@ def _judge_std_early(spec: TopicSpec, block: PolicyBlock) -> Judgement:
     if best_permitted is not None:
         return _decide(spec, block, raw, best_permitted, "PERMITTED_ONLY")
 
+    if block.lead_polarity == PREAMBLE_SECTION_MISMATCH:
+        # 가까운 서문이 있긴 한데 다른 절의 것이다 — 이 항목이 어느 목록에 실렸는지 확정할 수 없다.
+        return _held(spec, block, HELD_ATTRIBUTION_UNCLEAR)
     if block.lead_polarity:
         # 항목 자체는 아무 말도 하지 않는다 — 이 항목이 실린 목록의 서문이 값을 정한다.
         kind, subject = classify_sentence(block.lead)
