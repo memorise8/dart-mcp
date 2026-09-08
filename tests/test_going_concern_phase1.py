@@ -64,6 +64,47 @@ class SectionLandmarkPhase1(unittest.TestCase):
         # 그러면서도 다음 표제에서는 정확히 끊긴다.
         self.assertNotIn("경영진과 지배기구의 책임", r.kam_raw)
 
+    def test_section_ends_at_heading_even_when_item_has_no_period(self) -> None:
+        """반대 방향 회귀 - 표제 규칙을 넓게 걸면 구역이 **끝나지 않는다**.
+
+        핵심감사사항 항목의 감사절차 목록은 마침표 없이 명사로 끝나는 것이 보통이라
+        (「… 변수의 합리성 평가」, 「… 외부조회 확인」), 바로 뒤에 오는 표제의 앞
+        글자가 한글이 된다. 「…경영진과 지배기구의 책임」·「기타사항」까지 표제
+        자리에서만 인정하면 그 표제들을 놓쳐 구역이 다음 구역들을 삼킨다(실측
+        kam_present 400건: 책임 문구 오염 1→246건, 기타/강조 구역 삼킴 0→86건)."""
+
+        vinatech = parse_fixture("20260319001215-vinatech-audit.txt")
+        # 「… 합리성 평가 연결재무제표에 대한 경영진과 지배기구의 책임 …」
+        self.assertIn("영업권 손상검사", vinatech.kam_raw)
+        self.assertTrue(vinatech.kam_raw.rstrip().endswith("합리성 평가"))
+        self.assertNotIn("경영진과 지배기구의 책임", vinatech.kam_raw)
+
+        sambo = parse_fixture("20260407003361-sambo-audit.txt")
+        # 「… 외부조회 확인 기타사항 삼보산업주식회사와 그 종속기업들의 …」
+        self.assertTrue(sambo.kam_raw.rstrip().endswith("외부조회 확인"))
+        self.assertNotIn("기타사항", sambo.kam_raw)
+        self.assertEqual(sambo.other_matter_status, "present")
+
+    def test_synthetic_item_without_period_before_responsibility_heading(self) -> None:
+        """같은 형태를 작성사례 6.1 골격의 합성 문서로도 고정한다."""
+
+        text = (
+            "독립된 감사인의 감사보고서 감사의견 우리의 의견으로는 별첨된 회사의 재무제표는 "
+            "중요성의 관점에서 공정하게 표시하고 있습니다. 핵심감사사항 핵심감사사항은 우리의 "
+            "전문가적 판단에 따라 당기 재무제표감사에서 가장 유의적인 사항들입니다. "
+            "매출채권의 회수가능성 평가 가. 핵심감사사항으로 결정한 이유 회수가능성 평가에는 "
+            "경영진의 유의적인 판단이 수반됩니다. 나. 감사에서 다루어진 방법 - 연령분석의 "
+            "정확성 검증- 표본추출을 통한 외부조회 확인 "
+            "재무제표에 대한 경영진과 지배기구의 책임 경영진은 재무제표를 작성할 때, 회사의 "
+            "계속기업으로서의 존속능력을 평가할 책임이 있습니다."
+        )
+
+        r = parse_audit_text(text, {"rcept_no": "R_SYNTH_KAM", "report_name": "감사보고서 (2025.12)"})
+
+        self.assertIn("매출채권의 회수가능성 평가", r.kam_raw)
+        self.assertTrue(r.kam_raw.rstrip().endswith("외부조회 확인"))
+        self.assertNotIn("경영진과 지배기구의 책임", r.kam_raw)
+
     def test_opinion_axis_unchanged_for_truncated_report(self) -> None:
         """구역 경계 규칙을 바꿔도 의견 축(Task 2)은 그대로여야 한다."""
 

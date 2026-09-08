@@ -178,15 +178,21 @@ class ParsedAuditReport:
 
     # --- af-v2: 계속기업 기재 위치·시점, 강조/기타사항 상태 ---
 
+    # 아래 네 열은 af-v2에서 새로 생겼다. jsonl을 되읽을 때 **빈 문자열**은
+    # "af-v2 이전(레거시) 행이라 이 열 자체가 없었다"는 뜻이다
+    # (`deserialize_parsed_report` 참조) - "unknown"("본문을 못 얻어 판정 못 함")과
+    # 구분된다.
+
     # 계속기업 관련 중요한 불확실성이 **당기 기재**로 있는가:
-    # "disclosed" | "not_disclosed" | "unknown"(본문 자체를 못 얻음).
+    # "disclosed" | "not_disclosed" | "unknown"(본문 자체를 못 얻음) | ""(레거시 행).
     # 기존 열 `going_concern`(bool)은 `gc_material_uncertainty == "disclosed"`다.
     gc_material_uncertainty: str = "unknown"
     # 그 기재가 어디에 있었나: "separate_section"(별도 구역 표제) |
     # "within_basis_for_opinion"(의견근거 단락 안) | "other"(그 밖의 본문) |
-    # ""(기재 없음) | "unknown"(본문 없음).
+    # ""(기재 없음, 그리고 레거시 행) | "unknown"(본문 없음).
     gc_location: str = "unknown"
-    # 강조사항/기타사항 구역: "present" | "absent" | "unknown"(본문 없음).
+    # 강조사항/기타사항 구역: "present" | "absent" | "unknown"(본문 없음) |
+    # ""(레거시 행).
     # `emphasis_raw`가 비어 있는 것만으로는 "구역이 없다"와 "본문을 못 얻었다"를
     # 구분할 수 없어 상태 열을 따로 둔다.
     emphasis_status: str = "unknown"
@@ -288,6 +294,49 @@ _SECTION_LANDMARKS: tuple[str, ...] = (
     "연결재무제표감사에 대한 감사인의 책임",
 )
 
+# 계속기업 불확실성을 **별도 구역**으로 세울 때 쓰는 표제(계속기업 판정의 상수이자
+# 구역 경계이기도 해서 랜드마크 곁에 둔다). "계속기업전제", "계속기업으로서의
+# 존속능력을 평가/초래할 수 있는" 같은 경영진/감사인 책임 표준 보일러플레이트
+# 문구는 실측 결과 거의 모든 보고서(계속기업 문제가 전혀 없는 보고서 포함)에
+# 등장하므로 오탐의 주범이다 - 절대 트리거로 쓰지 않는다.
+_GOING_CONCERN_HEADERS: tuple[str, ...] = (
+    "계속기업 관련 중요한 불확실성",
+    "계속기업 관련 중대한 불확실성",
+)
+
+# 이 중 **표제 자리에서만** 경계로 인정할 랜드마크(`_is_heading_position`).
+#
+# 문장 한가운데에 **낱말 그대로**(뒤에 조사 없이 공백이 오는 꼴) 나타나 상호참조로
+# 읽히는 것들만 넣는다 - 「우리는 한정의견근거 단락에 기술된 사항에 추가하여」,
+# 「우리는 계속기업 관련 중요한 불확실성 단락에 기술된 사항에 추가하여」(한국공인
+# 회계사회 「감사보고서 작성사례」 5.1·6.2)가 그 형태다. 조사가 붙은 상호참조
+# (「강조사항에서 언급한」, 「핵심감사사항으로 결정하였습니다」)는 랜드마크 뒤에 공백이
+# 와야 한다는 기존 규칙(`_HEADER_BOUNDARY_OK`)이 이미 걸러 낸다.
+#
+# 나머지는 **무조건** 경계다. 표제 규칙을 넓게 걸면 부작용이 훨씬 크기 때문이다 -
+# 구역 본문은 마침표 없이 글머리표나 명사로 끝나는 일이 흔한데(「…적정성 검토」),
+# 그러면 바로 뒤의 표제가 앞 글자(한글) 때문에 거부되어 구역이 다음 구역들을 삼킨다.
+# 실측(kam_present 400건, 같은 평문):
+#
+# | 표제 규칙 적용 범위 | 책임문구 오염 | 6,000자 상한 | 기타/강조 구역 삼킴 | 평균 길이 |
+# |---|---|---|---|---|
+# | cd3bdd0(규칙 없음) | 1 | 0 | 0 | 755 |
+# | 모든 랜드마크 | 246 | 15 | - | 1,182 |
+# | + 긴 표제 제외 | 1 | 1 | 86 | 807 |
+# | 여기(+강조사항·기타사항 제외) | 1 | 0 | 0 | 756 |
+#
+# 「우리는」에서 잘리던 구역 절단은 네 변이 중 마지막에서도 0건이다.
+_HEADING_ONLY_LANDMARKS: frozenset[str] = frozenset(
+    {
+        "감사의견근거",
+        "한정의견근거",
+        "부적정의견근거",
+        "의견거절근거",
+        "핵심감사사항",
+    }
+    | set(_GOING_CONCERN_HEADERS)  # "…불확실성 단락에 기술된 사항에 추가하여"
+)
+
 # 감사의견 분류에 쓰이는 판정 문구가 opinion_para 안에 하나라도 있어야
 # "헤더 기반 추출 성공"으로 간주한다. 없으면 전체 텍스트 폴백 탐색으로 넘어간다.
 _CLASSIFY_MARKERS: tuple[str, ...] = (
@@ -363,19 +412,23 @@ def _find_landmark(text: str, landmark: str, start: int = 0, *, heading_only: bo
 def _next_landmark_pos(
     text: str, after: int, exclude: str, *, landmarks: tuple[str, ...] = _SECTION_LANDMARKS
 ) -> int:
-    """`after` 위치 이후 가장 먼저 나오는 섹션 랜드마크 **표제** 위치.
+    """`after` 위치 이후 가장 먼저 나오는 섹션 랜드마크 위치(없으면 ``len(text)``).
 
-    없으면 ``len(text)``. 구역의 **끝**을 정하는 자리이므로 표제 자리만
+    ``_HEADING_ONLY_LANDMARKS``에 든 짧은 랜드마크는 **표제 자리**에서만 경계로
     인정한다 - 문장 안에 나오는 같은 문자열("…한정의견근거 단락에 기술된 사항에
     추가하여…")에서 끊으면 구역 본문이 통째로 날아간다(실측: 20260323001749
     다이나믹디자인·20260406004560 용마산건설의 핵심감사사항이 「우리는」에서
-    잘렸다)."""
+    잘렸다). 나머지 긴 표제는 문장 안에 그대로 나타나는 일이 없으므로 무조건
+    경계다 - 표제 규칙을 거기까지 걸면 마침표 없이 끝난 항목 뒤의 표제를 놓쳐
+    구역이 하염없이 늘어난다."""
 
     end = len(text)
     for landmark in landmarks:
         if landmark == exclude:
             continue
-        idx = _find_landmark(text, landmark, after, heading_only=True)
+        idx = _find_landmark(
+            text, landmark, after, heading_only=landmark in _HEADING_ONLY_LANDMARKS
+        )
         if idx != -1 and idx < end:
             end = idx
     return end
@@ -774,15 +827,6 @@ def extract_icfr_opinion(full_text: str) -> tuple[str, str]:
 # 계속기업(going concern) - 오탐 방지 + 기재 위치·시점 (af-v2)
 # ---------------------------------------------------------------------------
 
-# 계속기업 불확실성을 **별도 구역**으로 세울 때 쓰는 표제. "계속기업전제",
-# "계속기업으로서의 존속능력을 평가/초래할 수 있는" 같은 경영진/감사인 책임
-# 표준 보일러플레이트 문구는 실측 결과 거의 모든 보고서(계속기업 문제가 전혀
-# 없는 보고서 포함)에 등장하므로 오탐의 주범이다 - 절대 트리거로 쓰지 않는다.
-_GOING_CONCERN_HEADERS: tuple[str, ...] = (
-    "계속기업 관련 중요한 불확실성",
-    "계속기업 관련 중대한 불확실성",
-)
-
 # 계속기업 불확실성을 **서술하는** 문장. 표제 없이 의견근거 단락 안에만 있는
 # 실측 형태(팡스카이 20260323001719, 삼보산업 20260407003361)를 잡기 위한
 # 것이다. 판정의 갈림길은 "제기/초래합니다"(실제로 의문이 제기됨을 서술) 대
@@ -866,14 +910,18 @@ def _is_section_break_position(text: str, idx: int) -> bool:
     return before_dot == -1 or not text[before_dot].isdigit()
 
 
-def _basis_for_opinion_spans(text: str) -> list[tuple[int, int]]:
-    """의견근거 단락들의 [시작, 끝) 범위(표제 자리에 있는 것만)."""
+def _basis_for_opinion_spans(text: str, *, max_len: int = 6000) -> list[tuple[int, int]]:
+    """의견근거 단락들의 [시작, 끝) 범위(표제 자리에 있는 것만).
+
+    다음 표제를 못 찾으면 ``_section_text``와 같은 상한(6,000자)에서 끊는다 -
+    표제가 빠진 문서에서 「의견근거 단락」이 별첨 재무제표까지 뻗어 그 안의 주석
+    문단을 `within_basis_for_opinion`으로 만들지 않게 하는 안전장치다."""
 
     spans: list[tuple[int, int]] = []
     for m in _BASIS_HEADER_RE.finditer(text):
         if not _is_heading_position(text, m.start()):
             continue
-        end = len(text)
+        end = min(len(text), m.end() + max_len)
         for landmark in _GOING_CONCERN_BOUNDARY_LANDMARKS:
             pos = m.end()
             while True:
@@ -1230,6 +1278,8 @@ def parse_audit_text(text: str, meta: dict, *, doc_path: str = "") -> ParsedAudi
     kam_present = bool(kam_raw)
     if kam_present:
         flags.add("kam")
+    # `extract_emphasis`(공개 헬퍼)를 다시 부르지 않는다 - 상태와 원문을 한 번에
+    # 받아 구역 탐색이 두 번 돌지 않게 한다. 기타사항은 상태만 열로 낸다.
     emphasis_status, emphasis_raw = _labelled_section(full_text, "강조사항")
     other_matter_status, _other_matter_raw = _labelled_section(full_text, "기타사항")
 
