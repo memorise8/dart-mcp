@@ -37,7 +37,7 @@ import os
 import tempfile
 import unittest
 
-from dart_search_mcp.audit_xml_parser import parse_audit_text
+from dart_search_mcp.audit_xml_parser import extract_kam, parse_audit_text
 from dart_search_mcp.tools.extract_facts import deserialize_parsed_report, extract_audit_facts
 
 from tests.phase1_util import fixture_meta, fixture_text, parse_fixture
@@ -104,6 +104,65 @@ class SectionLandmarkPhase1(unittest.TestCase):
         self.assertIn("매출채권의 회수가능성 평가", r.kam_raw)
         self.assertTrue(r.kam_raw.rstrip().endswith("외부조회 확인"))
         self.assertNotIn("경영진과 지배기구의 책임", r.kam_raw)
+
+    def test_cross_reference_preamble_does_not_end_section(self) -> None:
+        """「우리는 X 단락에 기술된 사항에 추가하여」의 X 자리에 무엇이 오든 경계가 아니다.
+
+        작성사례 5.1·6.2의 핵심감사사항 서문 표준 문안이다. 자료에는 그 자리에
+        「계속기업 관련 중요한 불확실성」·「한정의견근거」가 들어간 형태로 실려 있지만,
+        구조가 같은 「강조사항」·「기타사항」도 실제로 쓰인다. 그 자리에서 끊으면
+        핵심감사사항 구역이 「우리는」에서 잘린다."""
+
+        for landmark in ("강조사항", "기타사항", "한정의견근거", "계속기업 관련 중요한 불확실성"):
+            with self.subTest(landmark=landmark):
+                text = (
+                    "독립된 감사인의 감사보고서 감사의견 우리의 의견으로는 별첨된 회사의 "
+                    "재무제표는 중요성의 관점에서 공정하게 표시하고 있습니다. "
+                    "핵심감사사항 핵심감사사항은 우리의 전문가적 판단에 따라 당기 "
+                    "재무제표감사에서 가장 유의적인 사항들입니다. "
+                    f"우리는 {landmark} 단락에 기술된 사항에 추가하여, 아래에 기술된 사항을 "
+                    "이 감사보고서에서 커뮤니케이션할 핵심감사사항으로 결정하였습니다. "
+                    "매출채권의 회수가능성 평가 가. 핵심감사사항으로 결정한 이유 회수가능성 "
+                    "평가에는 경영진의 유의적인 판단이 수반됩니다. 나. 감사에서 다루어진 방법 "
+                    "- 표본추출을 통한 외부조회 확인 "
+                    "재무제표에 대한 경영진과 지배기구의 책임 경영진은 재무제표를 작성할 때, "
+                    "회사의 계속기업으로서의 존속능력을 평가할 책임이 있습니다."
+                )
+
+                r = parse_audit_text(text, {"rcept_no": "R_XREF", "report_name": "감사보고서 (2025.12)"})
+
+                self.assertIn("매출채권의 회수가능성 평가", r.kam_raw)
+                self.assertFalse(r.kam_raw.rstrip().endswith("우리는"))
+                self.assertNotIn("경영진과 지배기구의 책임", r.kam_raw)
+
+    def test_cross_reference_head_forms_are_not_boundaries(self) -> None:
+        """꼬리(「… 단락에」)가 없어도 머리(「우리는/상기/위의/해당」)로 참조인 형태."""
+
+        for head in ("우리는", "상기", "위의", "해당"):
+            with self.subTest(head=head):
+                text = (
+                    "핵심감사사항 핵심감사사항은 당기 재무제표감사에서 가장 유의적인 "
+                    f"사항들입니다. {head} 강조사항 관련 내용을 함께 고려하였습니다. "
+                    "매출채권의 회수가능성 평가 나. 감사에서 다루어진 방법 - 외부조회 확인 "
+                    "재무제표에 대한 경영진과 지배기구의 책임 경영진은 ..."
+                )
+
+                kam = extract_kam(text)
+
+                self.assertIn("매출채권의 회수가능성 평가", kam)
+                self.assertNotIn("경영진과 지배기구의 책임", kam)
+
+    def test_real_emphasis_and_other_matter_headings_still_end_the_section(self) -> None:
+        """상호참조만 건너뛴다 - 진짜 표제는 (앞이 마침표가 아니어도) 경계다."""
+
+        vinatech = parse_fixture("20260319001215-vinatech-audit.txt")
+        self.assertEqual(vinatech.emphasis_status, "present")
+        self.assertIn("제3자지정 영구전환사채", vinatech.emphasis_raw)
+        self.assertNotIn("핵심감사사항", vinatech.emphasis_raw)
+
+        sambo = parse_fixture("20260407003361-sambo-audit.txt")
+        self.assertNotIn("기타사항", sambo.kam_raw)
+        self.assertEqual(sambo.other_matter_status, "present")
 
     def test_opinion_axis_unchanged_for_truncated_report(self) -> None:
         """구역 경계 규칙을 바꿔도 의견 축(Task 2)은 그대로여야 한다."""

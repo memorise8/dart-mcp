@@ -388,7 +388,44 @@ def _is_heading_position(text: str, idx: int) -> bool:
     return not prev or not _MID_SENTENCE_PREV_RE.match(prev)
 
 
-def _find_landmark(text: str, landmark: str, start: int = 0, *, heading_only: bool = False) -> int:
+# 상호참조 문장의 꼬리·머리. 랜드마크 자체는 표제와 똑같이 생겼는데(뒤에 공백이
+# 오는 낱말 그대로) 문장 한가운데의 참조인 형태를 잡는다:
+#
+#   "우리는 **강조사항** 단락에 기술된 사항에 추가하여, 아래에 기술된 사항을 …
+#    커뮤니케이션할 핵심감사사항으로 결정하였습니다."
+#
+# 한국공인회계사회 「감사보고서 작성사례」 5.1·6.2의 핵심감사사항 서문 표준 문안이고
+# (자료에는 계속기업·한정의견근거 자리에 들어간 형태로 실려 있다), 그 자리에는 강조사항·
+# 기타사항도 똑같이 들어간다. 앞 글자가 한글이라 `_is_heading_position`으로도 걸리지만,
+# 강조사항·기타사항은 표제가 마침표 없이 끝난 항목 뒤에 오는 일이 잦아 표제 규칙을 걸 수
+# 없다(Fix round 1 참조). 그래서 이 두 랜드마크는 **상호참조 형태만** 골라 건너뛴다.
+_CROSS_REFERENCE_TAIL_RE = re.compile(r"\s*(?:단락|문단|에\s*기술된|에서\s*기술|에\s*기재된)")
+_CROSS_REFERENCE_HEAD_TERMS: tuple[str, ...] = ("우리는", "상기", "위의", "해당")
+
+# 상호참조 검사를 적용할 랜드마크(무조건 경계로 쓰는 짧은 표제 둘). 긴 표제에는 걸지
+# 않는다 - 「이 감사보고서의 재무제표감사에 대한 감사인의 책임 **단락**에 기술되어
+# 있습니다」가 감사의견근거 문단의 표준 문안이라, 거기까지 상호참조로 보면 의견근거
+# 구역이 그 문장을 넘어 늘어나 의견 문단 경계가 달라진다(실측 확인, Fix round 2 참조).
+_CROSS_REFERENCE_CHECKED_LANDMARKS: frozenset[str] = frozenset({"강조사항", "기타사항"})
+
+
+def _is_cross_reference(text: str, idx: int, landmark: str) -> bool:
+    """`idx`의 랜드마크가 표제가 아니라 **다른 단락을 가리키는 참조**인가."""
+
+    if _CROSS_REFERENCE_TAIL_RE.match(text, idx + len(landmark)):
+        return True
+    head = text[max(0, idx - 12) : idx].rstrip()
+    return head.endswith(_CROSS_REFERENCE_HEAD_TERMS)
+
+
+def _find_landmark(
+    text: str,
+    landmark: str,
+    start: int = 0,
+    *,
+    heading_only: bool = False,
+    skip_cross_reference: bool = False,
+) -> int:
     """`landmark`가 단어 경계(뒤에 공백 또는 문자열 끝)로 나타나는 첫 위치.
 
     "감사의견"이 "감사의견근거"/"감사의견을"의 접두어로만 나타나는 경우는
@@ -396,7 +433,9 @@ def _find_landmark(text: str, landmark: str, start: int = 0, *, heading_only: bo
     실제 헤더 뒤에는 거의 항상 공백이 온다).
 
     ``heading_only=True``면 표제 자리(``_is_heading_position``)에 있는 등장만
-    인정하고 문장 한가운데의 상호참조는 건너뛴다."""
+    인정하고 문장 한가운데의 상호참조는 건너뛴다. ``skip_cross_reference=True``면
+    표제 자리 여부와 무관하게 **상호참조 형태**(``_is_cross_reference``)만
+    건너뛴다."""
 
     pos = start
     while True:
@@ -404,7 +443,11 @@ def _find_landmark(text: str, landmark: str, start: int = 0, *, heading_only: bo
         if idx == -1:
             return -1
         after = text[idx + len(landmark) : idx + len(landmark) + 1]
-        if after in _HEADER_BOUNDARY_OK and (not heading_only or _is_heading_position(text, idx)):
+        if (
+            after in _HEADER_BOUNDARY_OK
+            and (not heading_only or _is_heading_position(text, idx))
+            and (not skip_cross_reference or not _is_cross_reference(text, idx, landmark))
+        ):
             return idx
         pos = idx + len(landmark)
 
@@ -414,20 +457,31 @@ def _next_landmark_pos(
 ) -> int:
     """`after` 위치 이후 가장 먼저 나오는 섹션 랜드마크 위치(없으면 ``len(text)``).
 
-    ``_HEADING_ONLY_LANDMARKS``에 든 짧은 랜드마크는 **표제 자리**에서만 경계로
-    인정한다 - 문장 안에 나오는 같은 문자열("…한정의견근거 단락에 기술된 사항에
-    추가하여…")에서 끊으면 구역 본문이 통째로 날아간다(실측: 20260323001749
-    다이나믹디자인·20260406004560 용마산건설의 핵심감사사항이 「우리는」에서
-    잘렸다). 나머지 긴 표제는 문장 안에 그대로 나타나는 일이 없으므로 무조건
-    경계다 - 표제 규칙을 거기까지 걸면 마침표 없이 끝난 항목 뒤의 표제를 놓쳐
-    구역이 하염없이 늘어난다."""
+    랜드마크마다 인정 조건이 다르다:
+
+    - ``_HEADING_ONLY_LANDMARKS``(의견근거 4종·핵심감사사항·계속기업 표제): **표제
+      자리**에서만 경계다 - 문장 안에 나오는 같은 문자열("…한정의견근거 단락에
+      기술된 사항에 추가하여…")에서 끊으면 구역 본문이 통째로 날아간다(실측:
+      20260323001749 다이나믹디자인·20260406004560 용마산건설의 핵심감사사항이
+      「우리는」에서 잘렸다).
+    - ``_CROSS_REFERENCE_CHECKED_LANDMARKS``(강조사항·기타사항): 무조건 경계이되
+      **상호참조 형태만** 건너뛴다. 이 둘은 마침표 없이 끝난 항목 바로 뒤에 표제로
+      오는 일이 잦아 표제 규칙을 걸 수 없고(그러면 구역이 다음 구역을 삼킨다),
+      그렇다고 「우리는 강조사항 단락에 기술된 사항에 추가하여」 같은 표준 문안에서
+      끊어서도 안 된다.
+    - 나머지 긴 표제(…경영진과 지배기구의 책임, …감사인의 책임): 문장 안에 그
+      형태로 나타나는 일이 없어 무조건 경계다."""
 
     end = len(text)
     for landmark in landmarks:
         if landmark == exclude:
             continue
         idx = _find_landmark(
-            text, landmark, after, heading_only=landmark in _HEADING_ONLY_LANDMARKS
+            text,
+            landmark,
+            after,
+            heading_only=landmark in _HEADING_ONLY_LANDMARKS,
+            skip_cross_reference=landmark in _CROSS_REFERENCE_CHECKED_LANDMARKS,
         )
         if idx != -1 and idx < end:
             end = idx
@@ -1111,7 +1165,10 @@ def _labelled_section(text: str, header: str, *, max_len: int = 6000) -> tuple[s
     prose_hit = ""
     pos = 0
     while True:
-        idx = _find_landmark(text, header, pos)
+        # 상호참조(「우리는 강조사항 단락에 기술된 …」)는 구역의 시작도 아니다.
+        idx = _find_landmark(
+            text, header, pos, skip_cross_reference=header in _CROSS_REFERENCE_CHECKED_LANDMARKS
+        )
         if idx == -1:
             break
         start = idx + len(header)
