@@ -33,6 +33,27 @@ class GateReportTests(unittest.TestCase):
             md = (t / "gate.md").read_text(encoding="utf-8")
             self.assertIn("STD_EARLY_ADOPTION", md); self.assertIn("판단불가", md)
 
+    def test_수익인식_판단불가_상한은_ps_v2_실측_35_5퍼센트_위에_있다(self) -> None:
+        """ps-v2 전량 재추출 실측 보류율 35.5%(회사 수준 27,922행 중 9,919행)는 통과하고,
+        45%는 미달이어야 한다 — 상한 0.40 을 분포로 고정한다(상수만 단언하면 동어반복이다).
+        대조군 표본은 이 시험의 관심사가 아니라서 통과 판정 대신 비율만 본다."""
+        from dart_search_mcp.tools.policy_stance_gate import GATES
+
+        self.assertEqual(GATES["undetermined_max"]["REVENUE_METHOD"], 0.40)
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            for undet, total, expect_within in ((355, 1000, True), (450, 1000, False)):
+                rows = [{"rcept_no": f"U{i}", "topic": "REVENUE_METHOD", "subject": None,
+                         "value": "UNDETERMINED", "method": "none"} for i in range(undet)]
+                rows += [{"rcept_no": f"P{i}", "topic": "REVENUE_METHOD", "subject": None,
+                          "value": "POINT_IN_TIME", "method": "rule"} for i in range(total - undet)]
+                rep = build_gate_report(stances_path=_write(t / f"s{undet}.jsonl", rows),
+                                        positives_path=None, hardneg_path=None,
+                                        report_path=t / f"g{undet}.md")
+                ratio = rep["topics"]["REVENUE_METHOD"]["undetermined_ratio_scoped"]
+                self.assertEqual(ratio <= GATES["undetermined_max"]["REVENUE_METHOD"], expect_within,
+                                 f"보류율 {ratio}")
+
     def test_양성이_빠지면_재현율이_떨어진다(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             t = Path(tmp)

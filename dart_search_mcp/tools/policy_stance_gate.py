@@ -11,10 +11,17 @@ from dart_search_mcp.policy_rules import TOPICS, UNDETERMINED
 _DEFAULT_UNDET_MAX = 0.10
 _SUBJECT_TABLE_MIN_ROWS = 100
 
+# REVENUE_METHOD 의 상한만 0.30 -> 0.40 이다(2026-09-08, ps-v2 전량 재추출 수치로 재보정).
+# ps-v2 가 절 번호+표제가 본문에 붙은 수익인식 블록(「2.2.8 수익인식회사는 …」)을 새로 인식하면서
+# **분모가 두 배**가 됐다: 회사 수준 행 13,981 -> 27,922. 같은 재추출에서 확정 행은
+# 10,360 -> 18,003(+73.8%) 으로 늘었으므로 정확도가 떨어진 것이 아니라 **덜 보던 블록을 새로
+# 보게 된 것**이고, 새로 들어온 블록이 옛 표본보다 판정하기 어려워 보류율이 25.9% -> 35.5% 로
+# 올랐다. 상한은 그 실측치에 여유를 얹어 0.05 단위로 올림한 값이다(0.355 -> 0.40).
+# PPE(82.3%)·IP(98.0%)·STD(8.1%) 의 상한은 건드리지 않는다 — 그쪽 분모는 이번에 바뀌지 않았다.
 GATES: dict[str, Any] = {
     "positive_recall_min": 0.95,
     "hardneg_fp_max": 0,
-    "undetermined_max": {"STD_EARLY_ADOPTION": 0.10, "PPE_MEASUREMENT": 0.10, "REVENUE_METHOD": 0.30, "IP_MEASUREMENT": 0.10},
+    "undetermined_max": {"STD_EARLY_ADOPTION": 0.10, "PPE_MEASUREMENT": 0.10, "REVENUE_METHOD": 0.40, "IP_MEASUREMENT": 0.10},
     "min_positives": 10,
     "min_hardnegs": 50,
 }
