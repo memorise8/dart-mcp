@@ -68,12 +68,17 @@ def build_gate_report(
     stances = {_key(r): r for r in stances_rows}
 
     # 주제 전체 분포와, subject 가 있는 행만 모은 주제×대상 분포(C1) 를 함께 쌓는다.
+    # Fix round 1(리뷰 I3): 회사 수준 행(subject None)만 모은 분포도 따로 쌓는다 — 아래 판단불가
+    # 비율은 이 분포로 잰다.
     dist: dict[str, Counter[str]] = defaultdict(Counter)
+    dist_company: dict[str, Counter[str]] = defaultdict(Counter)
     dist_by_subject: dict[str, dict[str, Counter[str]]] = defaultdict(lambda: defaultdict(Counter))
     for r in stances_rows:
         dist[r["topic"]][r["value"]] += 1
         subj = r.get("subject")
-        if subj is not None:
+        if subj is None:
+            dist_company[r["topic"]][r["value"]] += 1
+        else:
             dist_by_subject[r["topic"]][subj][r["value"]] += 1
 
     pos_by_topic: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -93,7 +98,17 @@ def build_gate_report(
         spec = TOPICS.get(code)
         counts = dist.get(code, Counter())
         total = sum(counts.values())
-        undet = counts.get(UNDETERMINED, 0) / total if total else 0.0
+        # I3: 판단불가 비율은 **회사 수준 행**(subject None)으로 잰다. T5 가 유형자산에 자산군별
+        # 행을 더하면서 단위가 섞였다 — 자산군 행은 정의상 UNDETERMINED 가 아니라, 전체 행으로
+        # 재면 판단불가 비율이 실제보다 낮게 나온다(실측 1,486 보고서 표본: PPE 81.5% → 75.2%).
+        # 대상(subject)별 행만 있는 주제(STD_EARLY_ADOPTION — subject 가 기준서 번호)는 회사 수준
+        # 행이 아예 없으므로 주제 전체로 되돌아간다(기존 동작 그대로).
+        company_counts = dist_company.get(code, Counter())
+        company_total = sum(company_counts.values())
+        ratio_counts, ratio_total = (
+            (company_counts, company_total) if company_total else (counts, total)
+        )
+        undet = ratio_counts.get(UNDETERMINED, 0) / ratio_total if ratio_total else 0.0
 
         pos = pos_by_topic.get(code, [])
         neg = neg_by_topic.get(code, [])
@@ -138,6 +153,8 @@ def build_gate_report(
         topics[code] = {
             "distribution": dict(counts),
             "rows": total,
+            "company_rows": company_total,
+            "undetermined_scope_unit": "company-rows" if company_total else "all-rows",
             "positive_recall": recall,
             "positive_hit": hit,
             "positives": len(pos),
@@ -192,7 +209,8 @@ def _render_markdown(
             f"- 양성 재현: {hit}/{pos}" + (f" ({recall:.0%})" if recall is not None else " (대조군 없음)"),
             f"- 하드 네거티브 오탐: {fp}/{neg}",
             f"- 대조군 매칭: 양성 {t['positives_matched']}/{pos} · 하드 {t['hardnegs_matched']}/{neg} (미매칭은 통제 불충분으로 처리)",
-            f"- 판단불가 비율: {undet:.1%} (상한 {undet_max:.0%})",
+            f"- 행 수: 회사 수준(subject 없음) {t['company_rows']} / 전체 {t['rows']}",
+            f"- 판단불가 비율: {undet:.1%} (상한 {undet_max:.0%}, 분모 {t['undetermined_scope_unit']})",
         ]
         if t["undetermined_scope"] != "topic":
             lines.append(

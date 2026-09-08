@@ -23,8 +23,8 @@ import re
 from dart_search_mcp.policy_blocks import PolicyBlock
 from dart_search_mcp.policy_sentences import KIND_CONDITIONAL, split_sentences
 
-COST_MODEL = "COST_MODEL"
-REVALUATION_MODEL = "REVALUATION_MODEL"
+_COST_MODEL = "COST_MODEL"
+_REVALUATION_MODEL = "REVALUATION_MODEL"
 
 # ---- R1 조건절 배제 -------------------------------------------------------------
 # 「…하는 경우(에는)」「다만 … 의 경우(에는)」 절은 회사가 실제로 고른 측정모형이 아니라
@@ -32,19 +32,28 @@ REVALUATION_MODEL = "REVALUATION_MODEL"
 # 환입·재평가잉여금 상계 등). 실측(디와이디 20260430001895)에서 이 조항 하나가 원가모형
 # 회사를 REVALUATION_MODEL 로 뒤집었다.
 #
-# 절의 시작은 앞 구두점(마침표·쉼표·가운뎃점) 바로 뒤다 — 앞 절까지 삼키면 같은 문장에 있는
-# 진짜 단정("…재평가모형을 적용하고 있으며, 손상징후가 있는 경우 …")까지 지운다. 그래서
-# 두 번째 대안의 문자군에서 구두점을 뺐다. 「다만」 절만 쉼표를 넘어간다 — 「다만, …의 경우」가
-# 이 정형구의 표준 표면형이기 때문이다.
-CONDITIONAL_CLAUSE_RE = re.compile(
+# 절이 어디서 시작하는지가 이 규칙의 전부다. Fix round 1(리뷰 minor): 첫 버전은 "앞으로 60자
+# 안에서 시작"이라는 walk-back 이라, 구두점이 없는 문장에서는 앞 절까지 삼켰다 — 리뷰 재현
+# 「연결회사는 유형자산에 대하여 원가모형을 적용하고 있으며 자산의 장부금액이 회수가능액을
+# 초과하는 경우 손상차손을 인식합니다」가 통째로 지워져 COST_MODEL 을 잃었다. 이제 절의 시작을
+# **명시적 경계**로 못 박는다: 문자열 처음 · 구두점(`.,;·ㆍ`) 뒤 · 연결어미 「…며」 뒤.
+# 「며」를 넣은 이유는 위 재현처럼 구두점 없이 절이 이어지는 형태가 코퍼스의 표준이기 때문이고,
+# 「고」·「나」 같은 어미를 넣지 않은 이유는 낱말 안("보고기간", "하나")에서도 걸려 조건절의
+# 핵심부만 남기고 트리거를 살려 보내기 때문이다(디와이디 「…적용하고 있는 자산의 경우에는」).
+# 「다만」 절만 구두점을 넘어간다 — 「다만, …의 경우」가 이 정형구의 표준 표면형이다.
+# 정규식은 언제나 **가장 왼쪽** 매치를 고르므로, 경계를 대안으로 나열하기만 하면 맨 앞 경계가
+# 늘 이겨 walk-back 과 다를 바 없다. 그래서 절 본문이 또 다른 경계(「며」)를 넘지 못하게 막는다
+# (tempered dot) — 그러면 「…는 경우」 바로 앞의 **마지막** 경계에서 절이 시작한다.
+_CLAUSE_START = r"(?:^|(?<=[.,;·ㆍ])|(?<=며))"
+_COND_CLAUSE_RE = re.compile(
     r"다만[^.]{0,120}?(?:의|는)\s*경우(?:에는)?"
-    r"|[^.,;·ㆍ]{0,60}?는\s*경우(?:에는)?"
+    rf"|{_CLAUSE_START}(?:(?!며)[^.,;·ㆍ]){{0,120}}?는\s*경우(?:에는)?"
 )
 
 
 def strip_conditional_clauses(text: str) -> str:
     """조건절을 길이 보존 치환으로 지운다(Q-I2 — 오프셋이 원문과 정확히 같아야 근거가 축자다)."""
-    return CONDITIONAL_CLAUSE_RE.sub(lambda m: " " * len(m.group(0)), text)
+    return _COND_CLAUSE_RE.sub(lambda m: " " * len(m.group(0)), text)
 
 
 # ---- 유형자산 표제 판별 ----------------------------------------------------------
@@ -191,21 +200,21 @@ T3_POSITIVE = (
 _ASSET_CLASS = r"토지|건물|구축물|기계장치|차량운반구|비품"
 _JOIN = r"\s*(?:와|과|및|,|·|ㆍ)\s*"
 # 「토지와 건물은 …」「토지에 대하여 …」 — 자산군 열거 + 주격/처격 조사.
-ASSET_SUBJECT_RE = re.compile(
+_ASSET_SUBJECT_RE = re.compile(
     rf"((?:{_ASSET_CLASS})(?:{_JOIN}(?:{_ASSET_CLASS}))*)\s*(?:은|는|에\s*대하여|에\s*대해)"
 )
 # 「토지를 제외한 유형자산」「토지와 건물을 제외한 유형자산」 — subject 는 이 문구 그대로다.
-EXCLUDED_PPE_RE = re.compile(
+_EXCLUDED_PPE_RE = re.compile(
     rf"((?:{_ASSET_CLASS})(?:{_JOIN}(?:{_ASSET_CLASS}))*(?:를|을)\s*제외한\s*유형자산)"
 )
 # 자산군 뒤에 이어져야 하는 서술 — 이것이 없으면 자산군 언급일 뿐이다(「토지는 감가상각을
 # 하지 않으며」는 측정모형 진술이 아니다).
-REVALUATION_PREDICATE_RE = re.compile(
+_REVAL_PREDICATE_RE = re.compile(
     r"공정가치로\s*(?:측정|평가)"
     r"|재평가\s*(?:모형|모델)(?:을|를|에)?\s*(?:적용|채택|선택|도입|따라)"
     r"|재평가하여|재평가를?\s*(?:실시|수행)"
 )
-COST_PREDICATE_RE = re.compile(r"원가\s*(?:모형|모델)|(?:역사적|취득)\s*원가(?:에서|로|으로)")
+_COST_PREDICATE_RE = re.compile(r"원가\s*(?:모형|모델)|(?:역사적|취득)\s*원가(?:에서|로|으로)")
 _ASSET_CLASS_RE = re.compile(_ASSET_CLASS)
 _WS_RE = re.compile(r"\s+")
 EVIDENCE_MAX = 400
@@ -226,14 +235,20 @@ def _backed_by_t2(sentence: str, value: str) -> bool:
     return any(pat.search(sentence) for pat, v in T2_POSITIVE if v == value)
 
 
-def _clip(sentence: str, pos: int) -> str:
-    """근거 문자열 — 매치가 든 문장. 상한을 넘으면 매치 자리(pos, 문장 안 오프셋)를 중심으로
-    창을 잡아 트리거 구절이 창 밖으로 밀려나지 않게 한다(`policy_rules._clip` 과 같은 규칙)."""
-    text = sentence.strip()
-    if len(text) <= EVIDENCE_MAX:
-        return text
-    lo = max(0, min(pos - 150, len(sentence) - EVIDENCE_MAX))
-    return sentence[lo : lo + EVIDENCE_MAX].strip()
+def clip_span(text: str, start: int, end: int, pos: int) -> str:
+    """[start, end) 를 근거 문자열로. 상한을 넘으면 매치 자리(pos)를 중심으로 창을 잡아 트리거
+    구절이 창 밖으로 밀려나지 않게 한다.
+
+    Fix round 1(리뷰 minor): 같은 규칙이 `policy_rules._clip` 과 여기에 따로 있었다 — 상한
+    (EVIDENCE_MAX)과 창 계산이 갈리면 근거 길이 불변식이 조용히 어긋난다. 정본은 이 함수 하나다."""
+    span = text[start:end].strip()
+    if len(span) <= EVIDENCE_MAX:
+        return span
+    lo = max(start, pos - 150)
+    hi = min(end, lo + EVIDENCE_MAX)
+    if hi - lo < EVIDENCE_MAX:
+        lo = max(start, hi - EVIDENCE_MAX)
+    return text[lo:hi].strip()
 
 
 def asset_class_rows(block: PolicyBlock) -> list[tuple[str, str, str]]:
@@ -256,14 +271,14 @@ def asset_class_rows(block: PolicyBlock) -> list[tuple[str, str, str]]:
         if sent.kind == KIND_CONDITIONAL:
             continue
         body = sent.text
-        for m in EXCLUDED_PPE_RE.finditer(body):
-            hit = COST_PREDICATE_RE.search(body, m.end())
-            if hit is not None and _backed_by_t2(body, COST_MODEL):
-                add(_norm(m.group(1)), COST_MODEL, _clip(body, hit.end() - 1))
-        for m in ASSET_SUBJECT_RE.finditer(body):
-            hit = REVALUATION_PREDICATE_RE.search(body, m.end())
-            if hit is None or not _backed_by_t2(body, REVALUATION_MODEL):
+        for m in _EXCLUDED_PPE_RE.finditer(body):
+            hit = _COST_PREDICATE_RE.search(body, m.end())
+            if hit is not None and _backed_by_t2(body, _COST_MODEL):
+                add(_norm(m.group(1)), _COST_MODEL, clip_span(body, 0, len(body), hit.end() - 1))
+        for m in _ASSET_SUBJECT_RE.finditer(body):
+            hit = _REVAL_PREDICATE_RE.search(body, m.end())
+            if hit is None or not _backed_by_t2(body, _REVALUATION_MODEL):
                 continue
             for name in _ASSET_CLASS_RE.findall(m.group(1)):
-                add(name, REVALUATION_MODEL, _clip(body, hit.end() - 1))
+                add(name, _REVALUATION_MODEL, clip_span(body, 0, len(body), hit.end() - 1))
     return rows

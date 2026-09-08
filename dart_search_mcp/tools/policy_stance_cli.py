@@ -60,6 +60,34 @@ def _more_informative(j: Judgement, prev: dict[str, Any]) -> bool:
     )
 
 
+def promote_cross_block_combos(
+    by_key: dict[tuple[str, str, str | None], dict[str, Any]],
+    seen_values: dict[tuple[str, str], set[str]],
+) -> int:
+    """한 보고서 안에서 값이 갈리면 회사 수준 행(subject None)을 조합값으로 올린다. 올린 행 수.
+
+    Fix round 1(리뷰 I1): 블록 단위 조합 승격(`policy_rules.judge_all`)만으로는 **블록이 여럿인**
+    보고서를 못 다룬다 — 「(4) 유형자산 …그 외의 모든 유형자산은 취득원가에서 …」(원가)와
+    「(5) 유형자산 …토지에 대하여 재평가모형을 …」(재평가)이 다른 블록에 있으면 dedup 이 먼저
+    나온 블록을 남겨 COST_MODEL 로 확정됐다(실측 6건). 더 나쁜 것은 같은 파일 안에서 회사 수준
+    행이 자기 자산군 행과 모순되는 경우다(20260403000370: {None: COST, 토지: REVALUATION}).
+    한 (rcept_no, topic) 에서 확정값이 둘 이상이면 — 회사 수준 행끼리든, 회사 수준 행과 자산군
+    행 사이든 — 회사 수준 행을 `spec.combo_value` 로 바꾼다. 근거·보류 사유·문장 메타는 그대로
+    두어(먼저 나온 블록의 것) "어느 문장에서 시작된 판단인가"를 잃지 않는다. 자산군 행은 손대지
+    않는다 — 자산군별 값이야말로 이 승격의 근거다."""
+    promoted = 0
+    for (rcept_no, code), values in seen_values.items():
+        spec = TOPICS.get(code)
+        if spec is None or not spec.combo_value or len(values) < 2:
+            continue
+        rec = by_key.get((rcept_no, code, None))
+        if rec is None or rec["value"] in (spec.combo_value, UNDETERMINED):
+            continue
+        rec["value"] = spec.combo_value
+        promoted += 1
+    return promoted
+
+
 def _record(fact: dict[str, Any], j: Judgement, block: PolicyBlock) -> dict[str, Any]:
     """UNDETERMINED 도 행으로 남긴다 — 분포 고지에 '판단불가 N' 을 보이기 위해. 근거 자리엔 블록 첫 120자.
 
@@ -120,6 +148,8 @@ def run_extract_policy_stances(
     # 규칙 판정은 먼저 순차로 전부 끝낸다. UNDETERMINED 이고 LLM 대상(llm_subjects)인 블록만
     # (fact, spec, block, key) 로 모아 두었다가 아래에서 한 번에(순차 또는 병렬) 판정한다.
     pending: list[tuple[dict[str, Any], Any, PolicyBlock, tuple[str, str, str | None]]] = []
+    # I1: (rcept_no, topic) 별로 이 보고서에서 나온 확정값 전부(회사 수준 행 + 자산군 행).
+    seen_values: dict[tuple[str, str], set[str]] = defaultdict(set)
     reports = 0
     skipped_no_xml = 0
     started = time.time()
@@ -139,6 +169,10 @@ def run_extract_policy_stances(
                 capped[spec.code].append(1 if block.capped else 0)
                 for j in judge_all(spec, block):
                     key = (fact["rcept_no"], spec.code, j.subject)
+                    if spec.combo_value and j.value != UNDETERMINED:
+                        # I1: 블록·자산군을 가로질러 어떤 확정값들이 나왔는지 모은다(dedup 이
+                        # 한 행만 남기므로 여기서 기록해 두지 않으면 나중에 알 수 없다).
+                        seen_values[(fact["rcept_no"], spec.code)].add(j.value)
                     if j.value == UNDETERMINED and use_llm and (llm_subjects is None or j.subject in llm_subjects):
                         pending.append((fact, spec, block, key))
                     prev = by_key.get(key)
@@ -163,6 +197,9 @@ def run_extract_policy_stances(
             if cur is None or len(block.text) > len(cur[2].text):
                 best[key] = item
         pending = list(best.values())
+    # I1: 보고서 단위 조합값 승격은 dedup 이 끝난 뒤에 한 번 한다(블록 루프 안에서는 아직 어느
+    # 행이 최종인지 모른다). LLM 판정 뒤에 한 번 더 부른다 — 그때 값이 바뀔 수 있기 때문이다.
+    combo_promoted = promote_cross_block_combos(by_key, seen_values)
     # LLM 단계 진입 전, 규칙만으로 낸 결과를 먼저 원자적으로 써 둔다 — LLM 단계(게이트웨이 호출)가
     # 프로세스를 통째로 죽이는 사고(OOM·강제종료 등)를 내더라도 이 파일은 남는다. 최종 결과가 덮어쓴다.
     _write_atomic(output_path, by_key.values())
@@ -205,6 +242,9 @@ def run_extract_policy_stances(
             prev = by_key.get(key)
             if prev is None or _RANK[j.method] > _RANK[prev["method"]]:
                 by_key[key] = _record(fact, j, block)
+                if spec.combo_value and j.value != UNDETERMINED:
+                    seen_values[(fact["rcept_no"], spec.code)].add(j.value)
+        combo_promoted += promote_cross_block_combos(by_key, seen_values)
     llm_calls = len(pending)
     for rec in by_key.values():
         by_topic[rec["topic"]][rec["value"]] += 1
@@ -214,6 +254,7 @@ def run_extract_policy_stances(
         "reports": reports,
         "skipped_no_xml": skipped_no_xml,
         "rows": len(by_key),
+        "cross_block_combo_promoted": combo_promoted,
         "by_topic": {t: dict(c) for t, c in by_topic.items()},
         "capped_ratio": {t: (sum(v) / len(v) if v else 0.0) for t, v in capped.items()},
         "llm_pending_raw": llm_pending_raw,

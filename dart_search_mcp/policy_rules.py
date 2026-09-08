@@ -15,9 +15,11 @@ from dataclasses import dataclass, replace
 
 from dart_search_mcp.policy_blocks import PolicyBlock
 from dart_search_mcp.policy_rules_measurement import (
+    EVIDENCE_MAX as _EVIDENCE_MAX,
     T2_POSITIVE,
     T3_POSITIVE,
     asset_class_rows,
+    clip_span,
     ppe_applies,
     strip_conditional_clauses,
 )
@@ -47,7 +49,6 @@ HELD_CONDITIONAL_ONLY = "CONDITIONAL_ONLY"
 # RULE_MODEL_DISAGREE 는 policy_llm 이 규칙값과 모델값을 대조하게 될 때 쓴다.
 HELD_SUBJECT_UNCLEAR = "SUBJECT_UNCLEAR"
 HELD_RULE_MODEL_DISAGREE = "RULE_MODEL_DISAGREE"
-_EVIDENCE_MAX = 400
 _SENT_SPLIT_RE = re.compile(r"(?<=다\.)\s+|(?<=니다\.)\s+|(?<=음\.)\s+")
 # V6 R4: 표 조각(숫자 나열) 뒤에 항목이 이어지는 경우, "문장"의 시작이 그 표 조각까지 거슬러
 # 올라간다(문장 경계가 없어서). 근거를 항목 기호부터 시작하도록 별도로 잘라낸다.
@@ -375,14 +376,7 @@ def _clip(raw: str, hit: _Hit) -> str:
     marker = _last_item_marker_start(raw, start, hit.pos)
     if marker is not None:
         start = marker
-    sent = raw[start : hit.sentence.end].strip()
-    if len(sent) <= _EVIDENCE_MAX:
-        return sent
-    lo = max(start, hit.pos - 150)
-    hi = min(hit.sentence.end, lo + _EVIDENCE_MAX)
-    if hi - lo < _EVIDENCE_MAX:
-        lo = max(start, hi - _EVIDENCE_MAX)
-    return raw[lo:hi].strip()
+    return clip_span(raw, start, hit.sentence.end, hit.pos)
 
 
 def _heading_path(block: PolicyBlock) -> str:
@@ -647,7 +641,6 @@ _T4_POS = (
 # 발생하는 일부의 수익은 진행기준을 적용하여 수익을 인식하고 있습니다」)에서 OVER_TIME 단독은
 # 오답으로 지목됐다 — 병행(BOTH)이 맞다.
 _PARTIAL_REVENUE_RE = re.compile(r"일부(?:의)?\s*(?:수익|매출)")
-_WORD_TAIL_RE = re.compile(r"\S*\s")
 
 
 def _first_pos_of_value(spec: TopicSpec, value: str, text: str) -> int | None:
@@ -660,8 +653,14 @@ def _both_evidence(block: PolicyBlock, over: int, point: int) -> str | None:
 
     회계사 확인(P5, HC보광산업 20260323001053)의 지적: BOTH 인데 근거에는 진행기준 문장만
     있어, 읽는 사람이 "왜 병행인가"를 확인할 수 없었다. 두 트리거가 든 문장의 바깥 경계까지
-    넓히고, 400자를 넘으면 두 트리거를 다 담는 400자 창으로 좁힌다(잘림 표시는 붙이지 않는다 —
-    근거는 원문 축자여야 하기 때문이다). 두 트리거가 400자보다 멀면 넓히지 않는다(None)."""
+    넓힌다.
+
+    Fix round 1(리뷰 I2): 400자를 넘을 때 원시 400자 창을 그대로 쓰면 근거가 낱말 한가운데서
+    끝난다(실측 엑시나 20260401000853: "…진행률에 따라 용"). 계획이 요구한 것은 「400자 상한
+    **안에서 앞뒤 문장 경계까지만**」이다 — 창의 시작은 앞 문장 첫머리로, 끝은 창 안의 마지막
+    문장 끝으로 당긴다. 그렇게 잘라도 두 트리거를 다 담지 못하면 넓히지 않는다(None →
+    호출자가 결정 패턴이 든 문장 하나를 그대로 쓴다). 잘림 표시는 붙이지 않는다 — 근거는
+    원문 축자여야 하기 때문이다."""
     lo, hi = min(over, point), max(over, point)
     sentences = split_sentences(block.text)
     start = next((s.start for s in sentences if s.start <= lo < s.end), None)
@@ -676,13 +675,17 @@ def _both_evidence(block: PolicyBlock, over: int, point: int) -> str | None:
         return span.strip()
     if hi - lo >= _EVIDENCE_MAX:
         return None
+    # 창 시작: 400자 안에 들어오는 가장 이른 **문장 첫머리**(트리거 lo 를 넘지 않는 선에서).
     win_lo = max(start, min(lo, hi + 1 - _EVIDENCE_MAX))
-    # 창 시작이 낱말 한가운데면 다음 공백까지 밀어 낱말이 잘린 채 시작하지 않게 한다
-    # (트리거 자리 lo 를 넘지 않는 한에서 — 넘으면 잘린 채로 두는 편이 낫다).
-    word = _WORD_TAIL_RE.match(block.text, win_lo)
-    if word is not None and word.end() <= lo:
-        win_lo = word.end()
-    return block.text[win_lo : win_lo + _EVIDENCE_MAX].strip()
+    snapped = [s.start for s in sentences if win_lo <= s.start <= lo]
+    if snapped:
+        win_lo = min(snapped)
+    # 창 끝: 창(win_lo + 400) 안에서 뒤 트리거(hi)를 지나 끝나는 마지막 **문장 끝**.
+    limit = win_lo + _EVIDENCE_MAX
+    ends = [s.end for s in sentences if hi < s.end <= limit]
+    if not ends:
+        return None
+    return block.text[win_lo : max(ends)].strip()
 
 
 def _revenue_finish(

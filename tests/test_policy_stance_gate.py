@@ -203,6 +203,38 @@ class GateReportTests(unittest.TestCase):
             self.assertIn("상한 도달률", md)
             self.assertIn("12.0%", md)
 
+    def test_판단불가_비율은_회사_수준_행으로만_잰다(self) -> None:
+        """Fix round 1(T5 리뷰 I3): 유형자산 자산군별 행(subject 있음)은 정의상 UNDETERMINED 가
+        아니라, 전체 행으로 비율을 재면 단위가 섞여 판단불가가 실제보다 낮게 나온다. 회사 수준
+        행(subject None) 1건이 판단불가고 자산군 행 2건이 붙으면 비율은 1.0 이지 0.33 이 아니다."""
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            stances = _write(t / "s.jsonl", [
+                {"rcept_no": "A", "topic": "PPE_MEASUREMENT", "subject": None, "value": "UNDETERMINED", "method": "none"},
+                {"rcept_no": "A", "topic": "PPE_MEASUREMENT", "subject": "토지", "value": "REVALUATION_MODEL", "method": "rule"},
+                {"rcept_no": "A", "topic": "PPE_MEASUREMENT", "subject": "토지를 제외한 유형자산", "value": "COST_MODEL", "method": "rule"},
+            ])
+            rep = build_gate_report(stances_path=stances, positives_path=None, hardneg_path=None, report_path=t / "gate.md")
+            topic = rep["topics"]["PPE_MEASUREMENT"]
+            self.assertEqual(topic["undetermined_ratio"], 1.0)
+            self.assertEqual((topic["company_rows"], topic["rows"]), (1, 3))
+            self.assertEqual(topic["undetermined_scope_unit"], "company-rows")
+            md = (t / "gate.md").read_text(encoding="utf-8")
+            self.assertIn("회사 수준(subject 없음) 1 / 전체 3", md)
+
+    def test_대상별_행만_있는_주제는_주제_전체로_잰다(self) -> None:
+        """STD_EARLY_ADOPTION 은 subject 가 기준서 번호라 회사 수준 행이 없다 — 기존 동작 유지."""
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            stances = _write(t / "s.jsonl", [
+                {"rcept_no": "A", "topic": "STD_EARLY_ADOPTION", "subject": "1109", "value": "EARLY_ADOPTED", "method": "rule"},
+                {"rcept_no": "B", "topic": "STD_EARLY_ADOPTION", "subject": "1118", "value": "UNDETERMINED", "method": "none"},
+            ])
+            rep = build_gate_report(stances_path=stances, positives_path=None, hardneg_path=None, report_path=t / "gate.md")
+            topic = rep["topics"]["STD_EARLY_ADOPTION"]
+            self.assertEqual((topic["undetermined_ratio"], topic["company_rows"]), (0.5, 0))
+            self.assertEqual(topic["undetermined_scope_unit"], "all-rows")
+
     def test_회계사_표본_문구와_종합_통과_문구(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             t = Path(tmp)
