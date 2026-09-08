@@ -17,7 +17,11 @@ import하며, 그 모듈이 전이적으로 import하는 ``config.py``의 import
 ``AuditReportRecord``(따라서 그로부터 산출되는 DartTopicCase)에는
 ``ParsedAuditReport``의 ``going_concern``/``going_concern_snippet``/
 ``opinion_snippet``/``kam_present``/``stock_code``/``report_name``/
-``rcept_dt``/``settlement_month``/``parse_flags`` 필드가 없다 — 이 값들은
+``rcept_dt``/``settlement_month``/``parse_flags`` 필드가 없다(af-v2가 더한
+``opinion_status``/``opinion_source``/``icfr_opinion``/
+``icfr_opinion_snippet``/``audit_report_count``/``parser_version``도
+마찬가지다 — 특히 ``icfr_opinion``은 재무제표 의견과 **다른 축**이므로
+``audit_opinion`` 자리에 섞어 넣지 않는다) — 이 값들은
 ``audit_facts.jsonl``엔 존재하지만 이 어댑터를 거쳐 DartTopicCase로는
 **전파되지 않는다**(의도된 투영이며 버그가 아니다). 이 필드들의
 **원천(source of truth)은 여전히 ``audit_facts.jsonl``**이다. temis 등

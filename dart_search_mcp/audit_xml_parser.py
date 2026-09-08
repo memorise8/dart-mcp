@@ -32,12 +32,46 @@ dart_search_mcp.audit_xml_parser``), 패키지 ``__init__.py``가 top-level에�
 
 부정어 표현도 실측 기준 ``표시하고 있지 않습니다`` 외에 ``표시하고 있지
 아니합니다`` 변형이 실제 부적정의견 보고서에서 발견되어 함께 처리한다.
+
+## 감사의견 축 분리 (af-v2)
+
+한 공시(= ``audit_facts.jsonl`` 한 줄)에는 감사보고서가 **여럿** 실릴 수 있다.
+특히 사업보고서/감사보고서 원문에는 재무제표 감사보고서와 **내부회계관리제도
+감사(검토)보고서**가 나란히 들어 있고, 두 보고서의 의견은 서로 다를 수 있다
+(실측: 동성제약 20260407002635 - 재무제표 적정, 내부회계 부적정). af-v1은 문서
+전체를 한 덩어리로 보고 의견을 찾았기 때문에 내부회계 의견 문단이 재무제표
+의견으로 새어 들어갔다.
+
+af-v2는 평문을 **구역(section)**으로 먼저 나눈다:
+
+- 재무제표 감사보고서 구역: ``독립된 감사인의 감사보고서`` 랜드마크부터 다음
+  감사보고서 랜드마크 또는 내부회계관리제도 랜드마크 직전까지
+  (``carve_fs_sections``). ``audit_opinion``/``opinion_snippet``은 **이 구역
+  안에서만** 뽑는다.
+- 내부회계관리제도 구역: ``내부회계관리제도 (감사|검토)(의견|보고서)`` 계열
+  랜드마크부터 다음 랜드마크 직전까지(``carve_icfr_sections``). 여기서 뽑은
+  의견은 ``icfr_opinion``/``icfr_opinion_snippet``이라는 **별도 열**에 담는다.
+
+원문에는 표지·목차·정정신고 대비표가 같은 랜드마크를 여러 번 반복하므로
+(정정 사업보고서는 「독립된 감사인의 감사보고서 강조사항」 같은 항목 줄만 4~5개)
+구역이 여러 개 잡히는 것이 정상이다. 그래서 "첫 랜드마크"가 아니라 **판정 문구
+(``_CLASSIFY_MARKERS``)를 실제로 담은 첫 구역**을 의견으로 채택하고, 그런 구역
+개수를 ``audit_report_count``에 적는다.
+
+``opinion_status``/``opinion_source``는 그 값이 어떻게 나왔는지를 밝힌다 -
+헤더 기반으로 분류에 성공하면 ``confirmed``/``header``, 문장 정규식 폴백은
+값을 만들되 **항상** ``unconfirmed``/``sentence_fallback``이다(폴백은 확정값을
+만들지 않는다). 값 자체(``audit_opinion``)는 v1과 같은 규칙으로 계산한다.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+
+# 파서 산출 스키마/규칙 버전. 의견 축을 분리한 이 버전부터 "af-v2"다
+# (af-v1 = 문서 전체를 한 덩어리로 보고 의견을 뽑던 최초 버전).
+PARSER_VERSION = "af-v2"
 
 # ---------------------------------------------------------------------------
 # 결과 타입
@@ -81,6 +115,21 @@ class ParsedAuditReport:
 
     source_url: str
     doc_path: str
+
+    # --- af-v2: 감사의견 축 분리 (기본값이 있으므로 v1 호출부는 그대로 동작한다) ---
+
+    # audit_opinion이 어떻게 나왔는지: 헤더 기반 분류가 성공했으면 "confirmed",
+    # 폴백이거나 분류가 unknown이면 "unconfirmed".
+    opinion_status: str = "unconfirmed"
+    # 그 값을 만든 경로: "header" | "sentence_fallback" | ""(의견 문단 자체가 없음).
+    opinion_source: str = ""
+    # 내부회계관리제도 감사·검토 의견: "적정" | "부적정" | "unknown"
+    # (내부회계관리제도 구역 자체가 없으면 "").
+    icfr_opinion: str = ""
+    icfr_opinion_snippet: str = ""
+    # 판정 문구를 담은 재무제표 감사보고서 구역 개수(별도·연결, 원본·재감사 등).
+    audit_report_count: int = 1
+    parser_version: str = PARSER_VERSION
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +256,125 @@ def _section_text(text: str, header: str, *, max_len: int = 6000) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 구역(section) 나누기 - 재무제표 감사보고서 vs 내부회계관리제도 (af-v2)
+# ---------------------------------------------------------------------------
+
+# 재무제표 감사보고서가 시작하는 랜드마크. 실측 300건 표본에서 292건이
+# "독립된 감사인의 감사보고서"였고 "독립된감사인의 감사보고서"(공백 없음)가
+# 3건 있어 공백을 선택적으로 허용한다. "독립된 감사인의 내부회계관리제도
+# 감사보고서"는 사이에 다른 단어가 있어 이 패턴에 걸리지 않는다 - 두 축을
+# 가르는 핵심이다.
+_FS_REPORT_LANDMARK_RE = re.compile(r"독립된\s*감사인의\s*(?:연결)?감사보고서")
+
+# 내부회계관리제도 감사(검토)보고서/의견이 시작하는 랜드마크. 실측 표본에서
+# 관찰된 표기: "내부회계관리제도 감사보고서", "내부회계관리제도 검토보고서",
+# "내부회계관리제도검토보고서", "내부회계관리제도 감사 또는 검토의견",
+# "내부회계관리제도에 대한 (감사|검토|부적정)의견", "내부회계관리제도에 대한
+# 의견", "내부회계관리제도 (감사|검토|부적정)의견".
+#
+# "내부회계관리제도 운영실태보고서"(회사가 쓰는 보고서)는 일부러 제외한다 -
+# 감사인의 의견 구역이 아니다. "내부회계관리제도 설계 및 운영 개념체계",
+# "내부회계관리제도를 감사하였으며", "내부회계관리제도감사에 대한 감사인의
+# 책임"처럼 재무제표 의견 문단·책임 문단에 흔히 나오는 표현도 걸리지 않는다
+# (제도 뒤에 곧바로 의견/보고서 표기가 와야 한다).
+_ICFR_LANDMARK_RE = re.compile(
+    r"(?:독립된\s*감사인의\s*)?내부회계관리제도\s*(?:에\s*대한\s*)?"
+    r"(?:감사\s*(?:또는|및)\s*검토\s*)?"
+    r"(?:감사|검토|적정|부적정|한정)?\s*(?:의견|감사보고서|검토보고서)"
+)
+
+
+def _fs_landmark_positions(text: str) -> list[int]:
+    """재무제표 감사보고서 랜드마크 위치들(오름차순).
+
+    ``_find_landmark``와 같은 단어 경계 규칙을 쓴다 - 뒤에 공백이나 문자열 끝이
+    와야 한다. "...감사보고서의 강조사항에서 언급한 바와 같이"처럼 조사가 붙은
+    본문 내 상호참조를 구역 시작으로 오인하지 않기 위해서다."""
+
+    return [
+        m.start()
+        for m in _FS_REPORT_LANDMARK_RE.finditer(text)
+        if text[m.end() : m.end() + 1] in _HEADER_BOUNDARY_OK
+    ]
+
+
+def _icfr_landmark_positions(text: str) -> list[int]:
+    """내부회계관리제도 구역 랜드마크 위치들(오름차순).
+
+    이쪽은 단어 경계를 요구하지 않는다 - "내부회계관리제도 감사보고서는",
+    "내부회계관리제도 감사의견근거"처럼 조사/접미어가 붙은 표기도 재무제표
+    구역의 **끝**으로 인정해야 내부회계 문단이 재무제표 의견으로 새지 않는다."""
+
+    return [m.start() for m in _ICFR_LANDMARK_RE.finditer(text)]
+
+
+def _first_bound_after(bounds: list[int], pos: int, default: int) -> int:
+    for bound in bounds:
+        if bound > pos:
+            return bound
+    return default
+
+
+def _section_spans(text: str, *, starts: list[int], others: list[int]) -> list[tuple[int, int]]:
+    """`starts`의 각 랜드마크에서 시작해 다음 랜드마크(양쪽 종류 모두) 직전까지."""
+
+    bounds = sorted(set(starts) | set(others))
+    return [(start, _first_bound_after(bounds, start, len(text))) for start in starts]
+
+
+def carve_fs_sections(text: str) -> list[str]:
+    """재무제표 감사보고서 구역들을 원문 순서대로 잘라낸다.
+
+    각 구역은 재무제표 감사보고서 랜드마크에서 시작해 그다음 감사보고서
+    랜드마크 또는 내부회계관리제도 랜드마크 직전에서 끝난다. 랜드마크가 하나도
+    없으면 빈 리스트다 - 그 경우 호출자(``extract_fs_opinion``)가 구역 대신
+    ``_fs_text_excluding_icfr``(문서 전체에서 내부회계 구역만 도려낸 텍스트)로
+    되돌아간다."""
+
+    fs_starts = _fs_landmark_positions(text)
+    if not fs_starts:
+        return []
+    spans = _section_spans(text, starts=fs_starts, others=_icfr_landmark_positions(text))
+    return [text[a:b] for a, b in spans]
+
+
+def carve_icfr_sections(text: str) -> list[str]:
+    """내부회계관리제도 구역들을 원문 순서대로 잘라낸다(없으면 빈 리스트)."""
+
+    icfr_starts = _icfr_landmark_positions(text)
+    if not icfr_starts:
+        return []
+    spans = _section_spans(text, starts=icfr_starts, others=_fs_landmark_positions(text))
+    return [text[a:b] for a, b in spans]
+
+
+def _fs_text_excluding_icfr(text: str) -> str:
+    """문서 전체에서 **판정 가능한** 내부회계관리제도 구역만 도려낸 텍스트.
+
+    랜드마크 기반 구역 나누기가 실패하는 실측 형태가 있다 - 표제가 「외부감사인의
+    감사보고서」인 보고서(랜드마크 자체가 없다), 본문 머리말이 「독립된 감사인의
+    감사보고서 - 계속」뿐이라 정작 의견 문단이 첫 랜드마크보다 **앞**에 있는
+    보고서 등. 이때도 af-v1처럼 문서 전체를 보되, 내부회계 의견이 실제로 실린
+    구역만은 도려내 의견이 새지 않게 한다. 목차의 「내부회계관리제도 검토의견
+    ....... 88」 같은 줄은 판정 문구가 없으므로 도려내지 않는다(도려내면 본문이
+    통째로 사라진다)."""
+
+    icfr_starts = _icfr_landmark_positions(text)
+    if not icfr_starts:
+        return text
+
+    kept: list[str] = []
+    cursor = 0
+    for start, end in _section_spans(text, starts=icfr_starts, others=_fs_landmark_positions(text)):
+        if classify_icfr_opinion(text[start:end]) == "unknown":
+            continue
+        kept.append(text[cursor:start])
+        cursor = end
+    kept.append(text[cursor:])
+    return " ".join(part for part in kept if part)
+
+
+# ---------------------------------------------------------------------------
 # 감사의견 분류
 # ---------------------------------------------------------------------------
 
@@ -249,31 +417,130 @@ def classify_opinion(opinion_para: str) -> str:
     return "unknown"
 
 
-def _extract_opinion_paragraph(full_text: str) -> str:
-    """의견 문단을 헤더 기반으로 우선 추출하고, 판정 문구가 없으면 전체
-    텍스트에서 의견 문장을 직접 정규식으로 찾아 폴백한다."""
+def _header_opinion_paragraph(section: str) -> str:
+    """구역 하나에서 헤더 기반 의견 문단만 뽑는다(폴백 없음).
 
-    para = ""
+    af-v1 ``_extract_opinion_paragraph``의 헤더 절반을 그대로 옮긴 것이고,
+    달라진 것은 탐색 범위가 문서 전체가 아니라 **한 구역**이라는 점뿐이다."""
+
     header_pos = -1
     matched_header = ""
     for header in _OPINION_HEADERS:
-        idx = _find_landmark(full_text, header)
+        idx = _find_landmark(section, header)
         if idx != -1 and (header_pos == -1 or idx < header_pos):
             header_pos = idx
             matched_header = header
 
-    if header_pos != -1:
-        start = header_pos
-        end = _next_landmark_pos(full_text, header_pos + len(matched_header), matched_header)
-        end = min(end, start + 1200)
-        para = full_text[start:end].strip()
+    if header_pos == -1:
+        return ""
 
-    if not any(marker in para for marker in _CLASSIFY_MARKERS):
-        m = _OPINION_SENTENCE_FALLBACK_RE.search(full_text)
-        if m:
-            para = m.group(0)
+    start = header_pos
+    end = _next_landmark_pos(section, header_pos + len(matched_header), matched_header)
+    end = min(end, start + 1200)
+    return section[start:end].strip()
 
-    return para
+
+def extract_fs_opinion(full_text: str) -> tuple[str, str, str, str, int]:
+    """재무제표 감사보고서 구역들에서 감사의견을 뽑는다.
+
+    ``(audit_opinion, opinion_para, opinion_status, opinion_source,
+    audit_report_count)``를 돌려준다.
+
+    1. 각 구역에서 헤더 기반 의견 문단을 뽑고, 판정 문구(``_CLASSIFY_MARKERS``)를
+       담은 구역만 "실제 감사보고서"로 인정한다 - 표지·목차·정정 대비표가 같은
+       랜드마크를 반복하기 때문이다. 그런 구역의 **첫 번째**가 의견이 되고,
+       개수가 ``audit_report_count``다.
+    2. 그런 구역이 하나도 없으면 ``_fs_text_excluding_icfr``(문서 전체에서 내부회계
+       의견 구역만 도려낸 텍스트)에서 af-v1과 같은 순서로 - 헤더 우선, 실패하면
+       의견 문장 정규식 - 다시 찾는다. 랜드마크가 문서마다 일정하지 않아
+       (「외부감사인의 감사보고서」, 「... - 계속」 머리말 등) 구역 나누기가
+       빗나갈 수 있는데, 그때 v1이 찾던 의견까지 잃지는 않게 하는 안전망이다.
+
+    폴백(의견 문장 정규식) 경로는 값은 만들되 확정하지 않는다 - 항상
+    ``unconfirmed``다.
+    """
+
+    header_paras = [_header_opinion_paragraph(section) for section in carve_fs_sections(full_text)]
+    confirmed = [para for para in header_paras if any(m in para for m in _CLASSIFY_MARKERS)]
+
+    if confirmed:
+        para = confirmed[0]
+        opinion = classify_opinion(para)
+        status = "confirmed" if opinion != "unknown" else "unconfirmed"
+        return opinion, para, status, "header", len(confirmed)
+
+    fs_text = _fs_text_excluding_icfr(full_text)
+    para = _header_opinion_paragraph(fs_text)
+    if any(marker in para for marker in _CLASSIFY_MARKERS):
+        opinion = classify_opinion(para)
+        status = "confirmed" if opinion != "unknown" else "unconfirmed"
+        return opinion, para, status, "header", 1
+
+    match = _OPINION_SENTENCE_FALLBACK_RE.search(fs_text)
+    if match:
+        return classify_opinion(match.group(0)), match.group(0), "unconfirmed", "sentence_fallback", 1
+
+    return classify_opinion(para), para, "unconfirmed", "header" if para else "", 1
+
+
+# ---------------------------------------------------------------------------
+# 내부회계관리제도 의견 분류 (af-v2, 재무제표 의견과 별개 축)
+# ---------------------------------------------------------------------------
+
+# 감사의견: "...내부회계관리제도는 ... 효과적으로 설계 및 운영되고 있(지 않)습니다".
+# 실측에서 "설계 및 운영" 자리에 "설계·운영"/"설계ㆍ운영" 표기가 함께 쓰인다.
+_ICFR_INEFFECTIVE_RE = re.compile(r"효과적으로\s*설계\s*(?:및|ㆍ|·|,)?\s*운영되고\s*있지\s*(?:않|아니)")
+_ICFR_EFFECTIVE_RE = re.compile(r"효과적으로\s*설계\s*(?:및|ㆍ|·|,)?\s*운영되고\s*있(?:습니다|음)")
+
+# 부적정의견 문단은 근거로 중요한 취약점을 든다. 감사인의 책임 보일러플레이트
+# ("중요한 취약점이 존재하는지에 대한 감사증거를 입수하기 위한 절차")와 섞이지
+# 않도록 "식별/존재한다고 판단/영향"이 뒤따르는 표현으로 좁힌다.
+_ICFR_WEAKNESS_RE = re.compile(r"중요한\s*취약점(?:이|의|을)?\s*(?:식별|존재한다고|영향)")
+
+# 검토의견(비상장·소규모): "...개념체계에 따라 작성되지 않았다고 판단하게 하는
+# 점이 발견되지 아니하였습니다" = 적정.
+_ICFR_REVIEW_CLEAN_RE = re.compile(r"작성되지\s*(?:않았|아니하였)다고[^.]{0,160}발견되지\s*(?:않았|아니하였)")
+
+
+def classify_icfr_opinion(section: str) -> str:
+    """내부회계관리제도 구역 텍스트를 적정/부적정(+unknown)으로 분류한다.
+
+    부적정 판정을 먼저 본다 - 정정 대비표처럼 정정 전(적정)·정정 후(부적정)
+    문구가 한 구역에 같이 실리는 경우가 실재하고, 그럴 때 최종 의견은
+    부적정이기 때문이다."""
+
+    if not section:
+        return "unknown"
+
+    if (
+        _ICFR_INEFFECTIVE_RE.search(section)
+        or "부적정의견" in section
+        or _ICFR_WEAKNESS_RE.search(section)
+    ):
+        return "부적정"
+
+    if _ICFR_EFFECTIVE_RE.search(section) or _ICFR_REVIEW_CLEAN_RE.search(section):
+        return "적정"
+
+    return "unknown"
+
+
+def extract_icfr_opinion(full_text: str) -> tuple[str, str]:
+    """``(icfr_opinion, icfr_opinion_snippet)``.
+
+    내부회계관리제도 구역이 아예 없으면 ``("", "")``다 - "구역이 없다"와
+    "구역은 있는데 판정을 못 했다(unknown)"를 구분한다."""
+
+    sections = carve_icfr_sections(full_text)
+    if not sections:
+        return "", ""
+
+    for section in sections:
+        opinion = classify_icfr_opinion(section)
+        if opinion != "unknown":
+            return opinion, section[:400].strip()
+
+    return "unknown", sections[0][:400].strip()
 
 
 # ---------------------------------------------------------------------------
@@ -401,9 +668,20 @@ def parse_audit_xml(xml_bytes: bytes, meta: dict, *, doc_path: str = "") -> Pars
     순수·결정론 함수다: 네트워크/파일시스템 접근이 전혀 없고
     ``datetime.now()``/``random`` 등을 쓰지 않는다. 필드별 파싱 실패는 예외를
     던지지 않고 해당 필드만 빈 값/None으로 남긴 채 최대한 채운
-    ``ParsedAuditReport``를 반환한다."""
+    ``ParsedAuditReport``를 반환한다.
 
-    full_text = _strip_tags_to_text(xml_bytes)
+    태그 제거만 하고 실제 파싱은 ``parse_audit_text``에 위임한다."""
+
+    return parse_audit_text(_strip_tags_to_text(xml_bytes), meta, doc_path=doc_path)
+
+
+def parse_audit_text(text: str, meta: dict, *, doc_path: str = "") -> ParsedAuditReport:
+    """평문(태그 제거·공백 정규화된 감사보고서 본문) + manifest meta -> 감사 사실.
+
+    ``parse_audit_xml``의 본체다. 원문 XML 없이 평문 발췌만으로 파싱 규칙을
+    시험할 수 있도록 분리했다(테스트 픽스처가 이 진입점으로 들어온다)."""
+
+    full_text = text
 
     flags: set[str] = set()
 
@@ -425,12 +703,23 @@ def parse_audit_xml(xml_bytes: bytes, meta: dict, *, doc_path: str = "") -> Pars
         if signature and re.sub(r"\s+", "", auditor) != signature:
             flags.add("auditor_mismatch")
 
-    # --- audit_opinion ---
-    opinion_para = _extract_opinion_paragraph(full_text)
-    audit_opinion = classify_opinion(opinion_para)
+    # --- audit_opinion (재무제표 감사보고서 구역 한정) ---
+    (
+        audit_opinion,
+        opinion_para,
+        opinion_status,
+        opinion_source,
+        audit_report_count,
+    ) = extract_fs_opinion(full_text)
     opinion_snippet = opinion_para[:400] if opinion_para else ""
     if audit_opinion != "unknown":
         flags.add("opinion")
+
+    # --- icfr_opinion (내부회계관리제도 구역, 재무제표 의견과 별개 축) ---
+    # `parse_flags`에는 새 플래그를 넣지 않는다 - 기존 열의 값을 바꾸지 않고
+    # 열만 덧붙이는 것이 이 변경의 계약이다. 내부회계 의견의 유무는
+    # `icfr_opinion` 자체가("" / "unknown" / 값) 이미 구분한다.
+    icfr_opinion, icfr_opinion_snippet = extract_icfr_opinion(full_text)
 
     # --- going_concern ---
     going_concern, going_concern_snippet = detect_going_concern(full_text)
@@ -472,4 +761,10 @@ def parse_audit_xml(xml_bytes: bytes, meta: dict, *, doc_path: str = "") -> Pars
         parse_flags=frozenset(flags),
         source_url=source_url,
         doc_path=doc_path,
+        opinion_status=opinion_status,
+        opinion_source=opinion_source,
+        icfr_opinion=icfr_opinion,
+        icfr_opinion_snippet=icfr_opinion_snippet,
+        audit_report_count=audit_report_count,
+        parser_version=PARSER_VERSION,
     )

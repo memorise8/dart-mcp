@@ -77,7 +77,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from dart_search_mcp.audit_xml_parser import ParsedAuditReport, parse_audit_xml
+from dart_search_mcp.audit_xml_parser import PARSER_VERSION, ParsedAuditReport, parse_audit_xml
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +188,13 @@ def serialize_parsed_report(parsed: ParsedAuditReport) -> dict[str, Any]:
         "parse_flags": sorted(parsed.parse_flags),
         "source_url": parsed.source_url,
         "doc_path": parsed.doc_path,
+        # af-v2에서 덧붙인 열(감사의견 축 분리). 기존 열의 이름·값은 그대로다.
+        "opinion_status": parsed.opinion_status,
+        "opinion_source": parsed.opinion_source,
+        "icfr_opinion": parsed.icfr_opinion,
+        "icfr_opinion_snippet": parsed.icfr_opinion_snippet,
+        "audit_report_count": parsed.audit_report_count,
+        "parser_version": parsed.parser_version,
     }
 
 
@@ -231,6 +238,12 @@ def deserialize_parsed_report(row: dict[str, Any]) -> ParsedAuditReport:
         parse_flags=frozenset(row.get("parse_flags") or ()),
         source_url=str(row.get("source_url", "") or ""),
         doc_path=str(row.get("doc_path", "") or ""),
+        opinion_status=str(row.get("opinion_status", "") or "unconfirmed"),
+        opinion_source=str(row.get("opinion_source", "") or ""),
+        icfr_opinion=str(row.get("icfr_opinion", "") or ""),
+        icfr_opinion_snippet=str(row.get("icfr_opinion_snippet", "") or ""),
+        audit_report_count=int(row.get("audit_report_count") or 1),
+        parser_version=str(row.get("parser_version", "") or PARSER_VERSION),
     )
 
 
