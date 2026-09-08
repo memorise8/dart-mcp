@@ -2,14 +2,25 @@
 
 판정 순서(어휘 §3.4): 부정·부재 → 조건문 제거 → 긍정 단정 → 미적용/기타 → 허용만 → UNDETERMINED.
 긍정값은 단정형 패턴으로만 나온다 — LLM 판정도 같은 패턴으로 검증한다(policy_llm.py).
+
+T5(2026-09-08): 측정모형(T2 유형자산·T3 투자부동산)의 긍정 패턴과 자산군 어휘는
+`policy_rules_measurement.py` 로 옮겼다(이 파일이 900줄을 넘었다). 여기 남은 것은 판정 순서와
+그 순서를 타는 주제 표(TOPICS)다.
 """
 from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from dart_search_mcp.policy_blocks import PolicyBlock
+from dart_search_mcp.policy_rules_measurement import (
+    T2_POSITIVE,
+    T3_POSITIVE,
+    asset_class_rows,
+    ppe_applies,
+    strip_conditional_clauses,
+)
 from dart_search_mcp.policy_sentences import (
     KIND_COMPANY,
     KIND_CONDITIONAL,
@@ -93,6 +104,10 @@ class TopicSpec:
     # T4: 문장 단위로 근거를 고르는 주제는 자기 판정 함수를 단다(T1). 없으면 아래 `judge` 의
     # 기존 블록 단위 경로를 그대로 쓴다(T2·T3·T4 측정모형/수익인식).
     sentence_judge: Callable[["TopicSpec", PolicyBlock], "Judgement"] | None = None
+    # T5: `strip_fn` 이 지운 구절이 그 블록의 유일한 근거였을 때 남길 보류 사유. T2·T3 의
+    # 조건절 배제(R1)는 "조건절뿐이라 판단 못 함"(CONDITIONAL_ONLY)이 정확한 사유지만, T4 의
+    # `strip_fn`(부수수익 보일러플레이트 제거)은 조건절과 무관하므로 빈 값으로 둔다.
+    stripped_held_reason: str = ""
 
 
 def evidence_sentence(text: str, pos: int) -> str:
@@ -151,12 +166,13 @@ def _first_in_order(patterns: tuple[tuple[re.Pattern[str], str], ...], text: str
     return None
 
 
-def judge(spec: TopicSpec, block: PolicyBlock) -> Judgement:
+def _judge_block(spec: TopicSpec, block: PolicyBlock) -> Judgement:
     if spec.sentence_judge is not None:
         return spec.sentence_judge(spec, block)
     subject = spec.subject_of(block)
     text = block.text
     hit = _first_in_order(spec.negative, text)
+    pre_strip_fn: str | None = None
     if hit is None:
         stripped = text
         for pat in spec.strip:
@@ -170,6 +186,7 @@ def judge(spec: TopicSpec, block: PolicyBlock) -> Judgement:
             # 했다. 회귀 테스트도 이번 라운드 범위 밖).
             stripped = pat.sub(lambda m: " " * len(m.group(0)), stripped)
         if spec.strip_fn is not None:
+            pre_strip_fn = stripped
             stripped = spec.strip_fn(stripped)
         for group in (spec.positive, spec.fallback):
             hit = _first_in_order(group, stripped)
@@ -177,7 +194,19 @@ def judge(spec: TopicSpec, block: PolicyBlock) -> Judgement:
                 text = stripped
                 break
     if hit is None:
-        return Judgement(spec.code, subject, UNDETERMINED, "", "none")
+        # T5: strip_fn 이 지운 구절이 이 블록의 유일한 근거였는가 — 그렇다면 "근거가 아예
+        # 없다"가 아니라 "조건절뿐이라 판단할 수 없다"가 정확한 보류 사유다(R1).
+        held = ""
+        if (
+            spec.stripped_held_reason
+            and pre_strip_fn is not None
+            and _first_in_order(spec.positive, pre_strip_fn) is not None
+        ):
+            held = spec.stripped_held_reason
+        return Judgement(
+            spec.code, subject, UNDETERMINED, "", "none",
+            held_reason=held, evidence_heading_path=_heading_path(block) if held else "",
+        )
     value, pos = hit
     # 복수 긍정값 승격: 긍정 패턴이 둘 이상 단정되면 조합값으로(수익인식 BOTH, 유형자산 MIXED)
     if spec.combo_value:
@@ -188,7 +217,47 @@ def judge(spec: TopicSpec, block: PolicyBlock) -> Judgement:
     # 길이 보존 치환 덕에 그 pos 는 block.text 에서도 같은 글자를 가리킨다. 그래서 evidence 는
     # 항상 원문 축자(verbatim)다(Q-I2) — 그렇지 않으면 감사(policy_stance_audit)의
     # evidence_in_block 이 실데이터에서 상시 위반으로 잡힌다.
-    return Judgement(spec.code, subject, value, evidence_sentence(block.text, pos), "rule")
+    evidence = evidence_sentence(block.text, pos)
+    if spec.code == "REVENUE_METHOD":
+        value, evidence = _revenue_finish(spec, block, text, value, pos, evidence)
+    return Judgement(spec.code, subject, value, evidence, "rule")
+
+
+def judge_all(spec: TopicSpec, block: PolicyBlock) -> list[Judgement]:
+    """블록 하나가 낼 수 있는 모든 행. 첫 행은 언제나 회사 수준 행(subject 는 spec.subject_of).
+
+    유형자산만 자산군별 행을 덧붙인다 — 「토지와 건물은 …공정가치로 측정」/「토지와 건물을
+    제외한 유형자산을 역사적 원가에서 …」처럼 한 블록이 자산군마다 다른 모형을 말하는 것이
+    유형자산의 표준 서술이고(회계사 확인 P4·P5: 온타이드·라닉스), 회사 수준 값 하나로는
+    "토지는 재평가, 나머지는 원가"를 표현할 수 없기 때문이다.
+
+    값이 다른 자산군 행이 둘 이상이면 회사 수준 행을 MIXED 로 맞춘다 — 1단계 화면은 아직
+    subject 없는 행 하나만 읽으므로(v1 어휘는 MIXED 저장을 금지하지만 이번 단계는 유지),
+    그 행이 "자산군마다 다르다"는 사실을 담고 있어야 한다."""
+    base = _judge_block(spec, block)
+    if spec.code != "PPE_MEASUREMENT":
+        return [base]
+    rows = asset_class_rows(block)
+    if not rows:
+        return [base]
+    if len({value for _subject, value, _ev in rows}) >= 2 and base.value != "MIXED":
+        base = replace(
+            base, value="MIXED", method="rule", held_reason="",
+            evidence=base.evidence or rows[0][2],
+            evidence_heading_path=base.evidence_heading_path or _heading_path(block),
+        )
+    return [base] + [
+        Judgement(
+            spec.code, subject, value, evidence, "rule",
+            evidence_heading_path=_heading_path(block),
+        )
+        for subject, value, evidence in rows
+    ]
+
+
+def judge(spec: TopicSpec, block: PolicyBlock) -> Judgement:
+    """블록의 대표 행 하나 — `judge_all` 의 첫 행(회사 수준 행)이다."""
+    return judge_all(spec, block)[0]
 
 
 def positive_pattern_matches(spec: TopicSpec, value: str, evidence: str) -> bool:
@@ -413,93 +482,6 @@ def _judge_std_early(spec: TopicSpec, block: PolicyBlock) -> Judgement:
     return _held(spec, block, HELD_EVIDENCE_INSUFFICIENT)
 
 
-# ---- T2 유형자산 측정모형 ------------------------------------------------------
-_T2_POS = (
-    (_p(r"재평가\s*(?:모형|모델)(?:을|를)?\s*(?:적용|채택|사용)"), "REVALUATION_MODEL"),
-    (_p(r"유형자산.{0,60}원가\s*(?:모형|모델)(?:을|를)?\s*(?:적용|채택|사용)"), "COST_MODEL"),
-    # V6 R1: 열거형·동사 변형 — 기존 두 패턴 뒤에 추가한다(목록 순서 = 우선순위이므로 기존
-    # 순서를 바꾸지 않는다). "재평가모형을, 기타 유형자산은 원가모형을 적용" 처럼 REVAL 이
-    # 쉼표로 끊기는 열거형은 "적용/채택/사용" 동사가 REVAL 트리거 바로 뒤에 없어 기존 패턴이
-    # 못 잡았다. 재리뷰 Minor #1(I4 하드닝): 가드 없는 쉼표는 "재평가모형을, 적용하지 않고
-    # 원가모형을 적용하고 있습니다" 처럼 바로 뒤에 오는 부정에도 매치돼 COST_MODEL 단독 회사를
-    # MIXED 로 잘못 승격시켰다 — 쉼표 뒤가 곧바로 부정("적용하지 않"류)이면 배제한다.
-    (_p(r"재평가\s*(?:모형|모델)(?:을|를)?\s*,(?!\s*(?:적용|채택|사용)하지\s*(?:않|아니))"), "REVALUATION_MODEL"),
-    # COST 동사에 "평가/측정"(으로/로 조사)을 허용 — "원가모형으로 평가하고 있습니다".
-    (_p(r"유형자산.{0,60}원가\s*(?:모형|모델)(?:을|를|으로|로)?\s*(?:적용|채택|사용|평가|측정)"), "COST_MODEL"),
-    # "취득원가로 평가"도 COST 트리거다(유형자산 앵커 유지). 재리뷰 Important #2(I2): `.{0,60}`
-    # 간격은 실제 문장 마침표를 넘어 이어붙는다(`_first_in_order` 의 docstring 경고 그대로) —
-    # "유형자산…법인세법의 규정을 적용하였습니다. 매도가능증권…은 취득원가로 평가하였으나"
-    # 처럼 60자 앞의 블록 표제 토큰 "유형자산"이 전혀 다른 자산(매도가능증권)의 문장에 앵커를
-    # 채워버렸다(실측 20260424000208, 발화 10건 중 1건 오탐). `[^.]` 로 좁혀 문장 경계를
-    # 넘지 않게 한다.
-    (_p(r"유형자산[^.]{0,60}취득원가(?:로|으로)\s*평가"), "COST_MODEL"),
-    # 정책 변경 문장은 변경 후 모형(REVAL)이 최종값이다 — "원가모형에서 재평가모형으로 …
-    # 변경하였습니다".
-    (_p(r"재평가\s*(?:모형|모델)(?:으로|로)\s*(?:회계정책을\s*)?(?:변경|전환)(?:하였|했|하기로)"), "REVALUATION_MODEL"),
-    # 재리뷰 Minor #2: 위 REVAL 방향 정책변경 패턴만 있고 반대 방향(COST)이 없어 "재평가모형에서
-    # 원가모형으로 회계정책을 변경하였습니다"가 UNDETERMINED 로 남았다 — 대칭 패턴을 추가한다
-    # (IP_MEASUREMENT 의 _T3_POS 가 공정가치·원가 양방향을 두는 것과 같은 구조).
-    # 재리뷰 N3 로 붙였던 "유형자산" 앵커는 재리뷰 X5 로 되돌린다 — 이 패턴은 애초에
-    # `applies=_by_topic("유형자산")` 로 PPE 블록에서만 돌아가고(REVAL 방향 쌍둥이도 앵커가
-    # 없다), 앵커를 넣어도 N3 가 겨냥한 재현(투자부동산 문장이 블록 표제의 "유형자산" 토큰
-    # 60자 이내에 있는 경우)은 그대로 발화해 안 닫혔는데, Minor #2 원 목표 문장("재평가모형에서
-    # 원가모형으로 회계정책을 변경하였습니다." 단독)은 오히려 다시 UNDETERMINED 로 되돌렸다
-    # (X5, 순손실).
-    (_p(r"원가\s*(?:모형|모델)(?:으로|로)\s*(?:회계정책을\s*)?(?:변경|전환)(?:하였|했|하기로)"), "COST_MODEL"),
-    # 재리뷰 Important #1(I1): 가드 없는 "재평가모형에 따라"는 R2 가 막 strip 한 손상정책 오탐
-    # 클래스를 다른 표면형으로 다시 들여왔다 — "재평가모형을 도입하여 재평가모형에 따라
-    # 재평가금액을 장부금액으로 하는 경우 …"(손상차손 회계처리 규정, 조건절)가 회사의 측정모형
-    # 선택 진술로 오판됐다(실측 20260331004511·20260610000623). 문장 안에 회사가 실제로
-    # 재평가를 실시·수행했거나 그 방식으로 측정·평가한다는 서술이 있을 때만 인정한다.
-    # 재리뷰 Critical #N1: 위 첫 버전(허용 동사 "재평가를 실시/수행"·"측정"·"평가하고" 세
-    # 표면형뿐)이 실데이터에서 가장 흔한 피동·연결형("평가되었으며", "재평가하여 … 계상하고")을
-    # 전부 놓쳐 진짜 REVALUATION_MODEL 진술 3건을 UNDETERMINED 로 잃었다(실측
-    # 20260407000993·20251110000027·20260407003334, 3,000 보고서 표본에서 PPE
-    # REVALUATION_MODEL→UNDETERMINED 7건 중 3건이 이 오소실이었다). 피동·연결형을 허용
-    # 동사에 추가한다 — 손상 보일러플레이트("…하는 경우 …손상차손…")는 여전히 어느 대안과도
-    # 안 맞아 배제된다.
-    # 재리뷰 X4(Minor): 위에서 새로 넓힌 "계상"·"평가되어" 두 표면형이 I1 이 닫으려던 손상
-    # 조건절 클래스를 다시 열었다 — "재평가모형에 따라 재평가금액을 장부금액으로 계상하는
-    # 경우 손상차손은 …"/"재평가모형에 따라 평가되어 있는 자산의 손상차손은 …" 둘 다 손상
-    # 회계처리 규정이지 회사의 측정모형 선택 진술이 아니다(합성 재현, 실데이터 0건). "재평가
-    # 모형에 따라" 뒤 60자 이내에 "손상"이 있으면 배제한다.
-    (_p(
-        r"재평가\s*(?:모형|모델)에\s*따라(?![^.]{0,60}손상)[^.]{0,60}?(?:재평가를?\s*(?:실시|수행)|재평가하여"
-        r"|평가(?:하고|하였|되었|되고|되어)|측정(?:하고|하였|되고|되어)|계상)"
-    ), "REVALUATION_MODEL"),
-    # V8: "재평가모형을 선택/도입"도 채택 진술이다(실측 batch-01.md: "재평가모형을 선택하고
-    # 있으며"). 마지막 동사 어미는 컨트롤러가 준 `(?:하|했|하였|하여)`에서 홑 "하"를 뺐다 —
-    # "하"는 "선택하지 않았습니다"(부정)·"선택하는 경우"(조건)처럼 "하"로 시작하는 모든
-    # 활용형과 매치돼(했다"만 다른 음절), "했|하였|하여"가 이미 커버하는 완료형 외에
-    # 부정·조건형까지 함께 열어버린다(스크립트로 확인) — 완료형 세 가지만 남긴다. 구현 중
-    # 발견: I1/X4 손상 조건절 대조 문장("재평가모형을 도입하여 재평가모형에 따라 …하는
-    # 경우 …손상차손은 …")이 이 "도입" 표면형으로 다시 발화하는 회귀를 스크립트로 잡았다 —
-    # X4 와 같은 손상 문맥 배제 룩어헤드를 이 패턴에도 붙였다.
-    # 재리뷰 Important(V11): 그 블랭킷 `(?![^.]{0,60}손상)` 룩어헤드가 실데이터에서 42건의
-    # 진짜 재평가 선언("재평가모형을 회계정책으로 선택하여 토지 및 건물을 공정가치로
-    # 측정하고 있으며, 건물의 경우 공정가치에서 재평가시점 이후의 감가상각누계액과
-    # 손상차손누계액을 차감하여 표시하고 있습니다"류, 통상적인 장부금액 표시 서술일 뿐 손상
-    # 조건절이 아님)를 UNDETERMINED 로 억눌렀다 — "경우"류 조건 표지가 "손상" 바로 앞(20자
-    # 이내)에 있을 때만 배제하도록 좁힌다.
-    (_p(
-        r"재평가\s*(?:모형|모델)(?:을|를)?\s*(?:선택|도입)"
-        r"(?![^.]{0,60}(?:하는\s*경우|경우에는|경우)[^.]{0,20}손상)(?:했|하였|하여)"
-    ), "REVALUATION_MODEL"),
-    # V8: "토지는 …공정가치로 평가/측정"도 재평가모형 채택 진술이다(실측 batch-03.md: "토지는
-    # 일정한 주기로 공정가치로 평가하고 있으며").
-    # 재리뷰 Important(V10): 같은 커밋의 형제 패턴(선택/도입, 바로 위)은 손상 문맥 배제
-    # 룩어헤드를 받았는데 이 패턴은 못 받았다 — "토지를 공정가치로 평가하는 경우 …
-    # 손상차손은 …"(I1/X4 가 이미 닫은 손상 조건절과 같은 모양, 트리거만 "재평가모형에
-    # 따라"에서 "토지를 공정가치로 평가"로 바뀐 것) 이 그대로 발화해 MIXED 로 오판될 수
-    # 있다. 같은 룩어헤드를 붙였다.
-    # 재리뷰 Important(V11): 위 선택/도입 패턴과 같은 이유로 좁힌다 — 실데이터 42건의 진짜
-    # 재평가 선언(통상적인 손상차손누계액 차감 표시 서술)이 블랭킷 룩어헤드에 억눌렸다.
-    (_p(
-        r"토지[^.]{0,40}공정가치로\s*(?:측정|평가)"
-        r"(?![^.]{0,60}(?:하는\s*경우|경우에는|경우)[^.]{0,20}손상)"
-    ), "REVALUATION_MODEL"),
-)
-
 # ---- T4 수익인식 방법 ---------------------------------------------------------
 # 평서체("~한다.")로 끝나는 문장은 기준서 인용·정의문으로 본다 — 회사 진술문은 합쇼체("~합니다.")다.
 _T4_STRIP = (
@@ -544,8 +526,16 @@ _T4_STRIP = (
 # 지워져 BOTH 가 OVER_TIME 으로 강등됐다. N2(b)(group2 가 "시점" 토큰까지 가져가 다른 POINT
 # 대안을 무력화하는 문제)를 닫기 전까지는 "기간에 걸쳐…" 형태만 남기고 `진행률|진행기준|
 # 투입법` 은 뺀다.
+# T5(회계사 확인 P5, HC보광산업 20260323001053): 이 blanket strip 은 X3 가 좁힌 뒤에도 교과서적
+# 병행 진술을 지웠다 — 「용역수익은 …기간에 걸쳐 수익을 인식하고 있으며, 상품매출은 …통제가
+# 고객에게 이전되는 시점에 수익을 인식하고 있습니다」는 두 수익 흐름을 **각각 다른 주어로**
+# 나눠 말하는 문장이라 뒤 구절이 앞 구절의 부연이 아니다. 두 구절 사이에 새 수익 주어
+# (「…매출은」「…수익은」「…판매는」)가 끼면 지우지 않는다 — 부수수익 정형구(배당·이자·로열티)는
+# 아래 `_INCOME_BOILERPLATE_POINT_RE` 가 주어를 직접 지목해 따로 막으므로 구멍이 나지 않는다.
+_NEW_REVENUE_SUBJECT = r"(?:매출|수익|판매)(?:은|는)\s"
 _POINT_AFTER_OVER_TIME_RE = re.compile(
-    r"(기간에\s*걸쳐\s*(?:수익|수행의무|인식|이행)[^.]{0,80}?)"
+    r"(기간에\s*걸쳐\s*(?:수익|수행의무|인식|이행)"
+    rf"(?:(?!{_NEW_REVENUE_SUBJECT})[^.]){{0,80}}?)"
     r"(시점에\s*수익(?:을|으로)\s*인식)"
 )
 # Fix round 2(리뷰 I3(a) 실측, 표본 A OVER_TIME→BOTH 9건 중 4건): 부수수익(K-IFRS 1115 수익이
@@ -652,17 +642,66 @@ _T4_POS = (
     ), "POINT_IN_TIME"),
 )
 
-# ---- T3 투자부동산 측정모형 -----------------------------------------------------
-_T3_POS = (
-    # 정책 변경 문장은 변경 후 모형이 최종값이다(R3) — 목록 순서 = 우선순위이므로 맨 앞에 둔다.
-    # 재리뷰 Important #2: 부정형("…변경한 사항은 없습니다")·조건형("…변경하는 경우")도 그대로
-    # 매치돼 같은 블록의 정확한 현재 진술을 무조건 덮어썼다(목록 맨 앞 = 최우선이라 가드가
-    # 없으면 항상 이긴다). 단정 어미(하였|했|하기로)를 요구해 실제 완료·확정 진술만 잡는다.
-    (_p(r"공정가치\s*(?:모형|모델)\s*(?:으로|로)\s*(?:변경|전환)\s*(?:하였|했|하기로)"), "FAIR_VALUE_MODEL"),
-    (_p(r"원가\s*(?:모형|모델)\s*(?:으로|로)\s*(?:변경|전환)\s*(?:하였|했|하기로)"), "COST_MODEL"),
-    (_p(r"투자부동산.{0,80}공정가치\s*(?:모형|모델)(?:을|를|으로)?\s*(?:적용|채택|측정)"), "FAIR_VALUE_MODEL"),
-    (_p(r"투자부동산.{0,80}원가\s*(?:모형|모델)(?:을|를|으로)?\s*(?:적용|채택|측정)"), "COST_MODEL"),
-)
+# T5: 「일부(의) 수익·매출은 진행기준을 …」 — 진행기준을 쓰는 수익이 **일부**라고 명시하면
+# 나머지 수익은 시점기준이라는 뜻이다. 회계사 확인(P4, 엠앤씨솔루션 20260318000447: 「당사에서
+# 발생하는 일부의 수익은 진행기준을 적용하여 수익을 인식하고 있습니다」)에서 OVER_TIME 단독은
+# 오답으로 지목됐다 — 병행(BOTH)이 맞다.
+_PARTIAL_REVENUE_RE = re.compile(r"일부(?:의)?\s*(?:수익|매출)")
+_WORD_TAIL_RE = re.compile(r"\S*\s")
+
+
+def _first_pos_of_value(spec: TopicSpec, value: str, text: str) -> int | None:
+    hit = _first_in_order(tuple((p, v) for p, v in spec.positive if v == value), text)
+    return hit[1] if hit is not None else None
+
+
+def _both_evidence(block: PolicyBlock, over: int, point: int) -> str | None:
+    """BOTH 행의 근거 — 두 인식 방식 문장을 **모두** 담는 구간.
+
+    회계사 확인(P5, HC보광산업 20260323001053)의 지적: BOTH 인데 근거에는 진행기준 문장만
+    있어, 읽는 사람이 "왜 병행인가"를 확인할 수 없었다. 두 트리거가 든 문장의 바깥 경계까지
+    넓히고, 400자를 넘으면 두 트리거를 다 담는 400자 창으로 좁힌다(잘림 표시는 붙이지 않는다 —
+    근거는 원문 축자여야 하기 때문이다). 두 트리거가 400자보다 멀면 넓히지 않는다(None)."""
+    lo, hi = min(over, point), max(over, point)
+    sentences = split_sentences(block.text)
+    start = next((s.start for s in sentences if s.start <= lo < s.end), None)
+    end = next((s.end for s in sentences if s.start <= hi < s.end), None)
+    if start is None or end is None:
+        return None
+    marker = _last_item_marker_start(block.text, start, lo)
+    if marker is not None:
+        start = marker
+    span = block.text[start:end]
+    if len(span.strip()) <= _EVIDENCE_MAX:
+        return span.strip()
+    if hi - lo >= _EVIDENCE_MAX:
+        return None
+    win_lo = max(start, min(lo, hi + 1 - _EVIDENCE_MAX))
+    # 창 시작이 낱말 한가운데면 다음 공백까지 밀어 낱말이 잘린 채 시작하지 않게 한다
+    # (트리거 자리 lo 를 넘지 않는 한에서 — 넘으면 잘린 채로 두는 편이 낫다).
+    word = _WORD_TAIL_RE.match(block.text, win_lo)
+    if word is not None and word.end() <= lo:
+        win_lo = word.end()
+    return block.text[win_lo : win_lo + _EVIDENCE_MAX].strip()
+
+
+def _revenue_finish(
+    spec: TopicSpec, block: PolicyBlock, text: str, value: str, pos: int, evidence: str
+) -> tuple[str, str]:
+    """T4 마무리 — 「일부 수익」 승격과 BOTH 근거 확장. (값, 근거)."""
+    if value == "OVER_TIME":
+        sentences = split_sentences(text)
+        sent = next((s for s in sentences if s.start <= pos < s.end), None)
+        if sent is not None and _PARTIAL_REVENUE_RE.search(sent.text) is not None:
+            value = "BOTH"
+    if value != "BOTH":
+        return value, evidence
+    over = _first_pos_of_value(spec, "OVER_TIME", text)
+    point = _first_pos_of_value(spec, "POINT_IN_TIME", text)
+    if over is None or point is None:
+        return value, evidence
+    widened = _both_evidence(block, over, point)
+    return value, widened if widened is not None else evidence
 
 
 def _by_std(b: PolicyBlock) -> bool:
@@ -700,7 +739,9 @@ TOPICS: dict[str, TopicSpec] = {
         code="PPE_MEASUREMENT",
         values=("COST_MODEL", "REVALUATION_MODEL", "MIXED", UNDETERMINED),
         positive_values=frozenset({"REVALUATION_MODEL", "COST_MODEL"}),
-        applies=_by_topic("유형자산"),
+        # T5(R1): 「유형자산」 주제 표제 블록만, 그중에서도 손상 표제 블록은 뺀다
+        # (`policy_rules_measurement.ppe_applies`).
+        applies=ppe_applies,
         subject_of=lambda b: None,
         negative=(), strip=(
             _p(r"[^.]*(?:원가|재평가)\s*(?:모형|모델)\s*(?:또는|이나|중)[^.]*\."),
@@ -714,7 +755,7 @@ TOPICS: dict[str, TopicSpec] = {
             # 리뷰 Critical #1(C1): R1 이 COST 긍정 동사 집합에 "채택|사용|평가|측정"을 추가했는데
             # 이 strip 의 동사 집합은 "적용|평가" 뿐이라 "원가모형으로 측정하는 경우"가 strip 을
             # 통과해 COST 트리거로 살아남았다(재평가 회사의 IAS 16.77(e) 의무 공시표 — 실측
-            # 20260409002974·20260213000544). strip 동사 집합을 positive(아래 _T2_POS 의 COST 확장
+            # 20260409002974·20260213000544). strip 동사 집합을 positive(policy_rules_measurement.T2_POSITIVE 의 COST 확장
             # 패턴, `유형자산.{0,60}원가…(적용|채택|사용|평가|측정)`)와 정확히 동기화한다 — 이
             # 불변식은 `PpeCostVerbSyncInvariantTests`(C1/I4)로 고정한다.
             _p(
@@ -738,8 +779,10 @@ TOPICS: dict[str, TopicSpec] = {
             # 표면형("…자산으로서")일 때만 지우도록 좁힌다.
             _p(r"재평가\s*(?:모형|모델)(?:을|를)?\s*적용하는\s*자산(?=으로서)"),
         ),
-        positive=_T2_POS, fallback=(),
+        positive=T2_POSITIVE, fallback=(),
         combo_value="MIXED",
+        strip_fn=strip_conditional_clauses,
+        stripped_held_reason=HELD_CONDITIONAL_ONLY,
     ),
     "REVENUE_METHOD": TopicSpec(
         code="REVENUE_METHOD",
@@ -772,6 +815,8 @@ TOPICS: dict[str, TopicSpec] = {
             # "과거에 …모형(을|를) 적용" 구절만 지우는 phrase-bounded strip 으로 좁힌다.
             _p(r"과거에[^.]{0,120}?(?:원가|공정가치)\s*(?:모형|모델)(?:을|를)?\s*적용"),
         ),
-        positive=_T3_POS, fallback=(),
+        positive=T3_POSITIVE, fallback=(),
+        strip_fn=strip_conditional_clauses,
+        stripped_held_reason=HELD_CONDITIONAL_ONLY,
     ),
 }

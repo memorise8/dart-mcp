@@ -15,7 +15,7 @@ from typing import Any
 from dart_search_mcp.audit_xml_parser import _strip_tags_to_text
 from dart_search_mcp.policy_blocks import PolicyBlock, split_policy_blocks
 from dart_search_mcp.policy_llm import DEFAULT_BASE_URL, DEFAULT_MODEL, judge_with_llm
-from dart_search_mcp.policy_rules import TOPICS, UNDETERMINED, Judgement, judge
+from dart_search_mcp.policy_rules import TOPICS, UNDETERMINED, Judgement, judge_all
 from dart_search_mcp.tools.extract_facts import select_xml_path
 from dart_search_mcp.tools.kam_tagger import CallFn, call_llm
 
@@ -44,6 +44,20 @@ def _write_atomic(output_path: Path, records: Any) -> None:
         for rec in sorted(records, key=lambda r: (r["rcept_no"], r["topic"], r["subject"] or "")):
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     tmp.replace(output_path)
+
+
+def _more_informative(j: Judgement, prev: dict[str, Any]) -> bool:
+    """같은 `_RANK` 안에서의 동점 처리 — 값은 그대로 두고 **보류 사유가 있는 쪽**을 남긴다.
+
+    T5 실측: 한 보고서에 유형자산 블록이 여러 개일 때(재무상태표 줄·주석 표·정책 절), 판단
+    보류 행은 모두 method="none"(rank 0) 이라 **먼저 나온 블록**이 이겼다 — 그 결과 R1 이
+    붙인 CONDITIONAL_ONLY 가 앞쪽 표 블록의 빈 보류 사유에 덮여 출력에서 0건이 됐다
+    (1,486 보고서 표본: 블록 단위 5건 → 행 단위 0건). 값 우선순위는 건드리지 않는다."""
+    return (
+        _RANK[j.method] == _RANK[prev["method"]]
+        and bool(j.held_reason)
+        and not prev.get("held_reason")
+    )
 
 
 def _record(fact: dict[str, Any], j: Judgement, block: PolicyBlock) -> dict[str, Any]:
@@ -120,14 +134,16 @@ def run_extract_policy_stances(
             for spec in specs:
                 if not spec.applies(block):
                     continue
-                j = judge(spec, block)
+                # T5: 블록 하나가 여러 행을 낼 수 있다(유형자산 자산군별 행). 상한 도달률은
+                # 여전히 블록당 한 번만 센다 — 행 수가 아니라 블록 수의 비율이기 때문이다.
                 capped[spec.code].append(1 if block.capped else 0)
-                key = (fact["rcept_no"], spec.code, j.subject)
-                if j.value == UNDETERMINED and use_llm and (llm_subjects is None or j.subject in llm_subjects):
-                    pending.append((fact, spec, block, key))
-                prev = by_key.get(key)
-                if prev is None or _RANK[j.method] > _RANK[prev["method"]]:
-                    by_key[key] = _record(fact, j, block)
+                for j in judge_all(spec, block):
+                    key = (fact["rcept_no"], spec.code, j.subject)
+                    if j.value == UNDETERMINED and use_llm and (llm_subjects is None or j.subject in llm_subjects):
+                        pending.append((fact, spec, block, key))
+                    prev = by_key.get(key)
+                    if prev is None or _RANK[j.method] > _RANK[prev["method"]] or _more_informative(j, prev):
+                        by_key[key] = _record(fact, j, block)
     # V6 R5: 블록 루프가 끝나 by_key 가 전부 확정된 뒤 pending 을 필터링한다. 같은 키에 블록이
     # 여러 개일 때, 다른 블록이 이미 규칙으로 판정해 by_key[key]["value"] != UNDETERMINED 이면
     # (rank 비교상 그 값이 최종값이므로) 이 UNDETERMINED 블록을 LLM 에 보내도 결과에 반영되지
