@@ -195,6 +195,13 @@ def serialize_parsed_report(parsed: ParsedAuditReport) -> dict[str, Any]:
         "icfr_opinion_snippet": parsed.icfr_opinion_snippet,
         "audit_report_count": parsed.audit_report_count,
         "parser_version": parsed.parser_version,
+        # af-v2에서 덧붙인 열(계속기업 기재 위치·시점, 강조/기타사항 상태).
+        # 기존 `going_concern`(bool)은 `gc_material_uncertainty == "disclosed"`의
+        # 축약으로 그대로 남는다.
+        "gc_material_uncertainty": parsed.gc_material_uncertainty,
+        "gc_location": parsed.gc_location,
+        "emphasis_status": parsed.emphasis_status,
+        "other_matter_status": parsed.other_matter_status,
     }
 
 
@@ -246,6 +253,13 @@ def deserialize_parsed_report(row: dict[str, Any]) -> ParsedAuditReport:
         # af-v1 시절 행에는 이 키가 없다. PARSER_VERSION으로 채우면 v1 산출물이
         # v2인 척하게 되므로 빈 문자열("알 수 없음/레거시")로 남긴다.
         parser_version=str(row.get("parser_version", "") or ""),
+        # 아래 네 열도 같은 이유로 레거시 행에서는 빈 문자열이다 - "unknown"은
+        # "본문을 못 얻어 판정하지 못했다"는 뜻이라, 열 자체가 없던 시절의 행에
+        # 붙이면 사실이 아닌 판정을 만들어 낸다.
+        gc_material_uncertainty=str(row.get("gc_material_uncertainty", "") or ""),
+        gc_location=str(row.get("gc_location", "") or ""),
+        emphasis_status=str(row.get("emphasis_status", "") or ""),
+        other_matter_status=str(row.get("other_matter_status", "") or ""),
     )
 
 

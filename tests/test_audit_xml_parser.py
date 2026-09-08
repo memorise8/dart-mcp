@@ -15,6 +15,7 @@ import unittest
 
 from dart_search_mcp.audit_xml_parser import (
     ParsedAuditReport,
+    _normalize_text,
     classify_opinion,
     derive_fiscal_year,
     detect_going_concern,
@@ -206,6 +207,58 @@ class ClassifyOpinionTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# _normalize_text - 어미 안에 낀 공백 닫기 (af-v2, Task 3)
+# ---------------------------------------------------------------------------
+
+
+class NormalizeTextTests(unittest.TestCase):
+    """원문 XML은 줄 폭에 맞춰 낱말 한가운데에서 줄을 바꾼다.
+
+    태그 제거 후 공백 정규화를 하면 그 줄바꿈이 공백 하나로 남아 「표시하고 있습니
+    다」처럼 어미가 갈라진 채로 남고, 판정 정규식(`classify_opinion`)이 못 맞춘다.
+    실측: `audit_opinion=unknown` 721건 중 323건의 원문에 「…니 다.」가 있었고,
+    이 규칙만으로 105건이 `적정`(confirmed)으로 확정됐다.
+
+    다만 「…니」로 끝나는 낱말 뒤에 「다음/다만/다른」이 오는 정상 문장을 붙여
+    버리면 안 되므로, 뒤따르는 「다」가 문장을 끝낼 때(마침표·쉼표·닫는 괄호·문서
+    끝)만 공백을 닫는다."""
+
+    def test_split_verb_ending_is_joined(self) -> None:
+        self.assertEqual(
+            _normalize_text("중요성의 관점에서 공정하게 표시하고 있습니\n다."),
+            "중요성의 관점에서 공정하게 표시하고 있습니다.",
+        )
+
+    def test_other_split_endings_are_joined(self) -> None:
+        for broken, joined in (
+            ("표시하고 있지 않습니 다.", "표시하고 있지 않습니다."),
+            ("영향을 받지 아니합니 다.", "영향을 받지 아니합니다."),
+            ("다음과 같습니 다.", "다음과 같습니다."),
+            ("금액은 5,114천원입니 다.", "금액은 5,114천원입니다."),
+            ("손익으로 인식됩니 다.", "손익으로 인식됩니다."),
+            ("내부통제를 이해합니 다.", "내부통제를 이해합니다."),
+        ):
+            with self.subTest(broken=broken):
+                self.assertEqual(_normalize_text(broken), joined)
+
+    def test_word_boundary_before_da_is_not_touched(self) -> None:
+        # 「…니」로 끝나는 낱말 + 「다」로 시작하는 낱말은 붙이면 안 된다.
+        for text in (
+            "그러니 다음과 같이 처리하였습니다.",
+            "이는 회사가 아니 다른 기업의 자산입니다.",
+            "감소하고 있습니다. 다만, 회수가능액은 다릅니다.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(_normalize_text(text), text)
+
+    def test_digits_and_latin_spacing_is_untouched(self) -> None:
+        self.assertEqual(_normalize_text("19,136 백만원 IFRS 15 적용"), "19,136 백만원 IFRS 15 적용")
+
+    def test_whitespace_collapse_still_applies(self) -> None:
+        self.assertEqual(_normalize_text("  가\t나\n\n다  "), "가 나 다")
+
+
+# ---------------------------------------------------------------------------
 # detect_going_concern - 오탐 방지가 핵심
 # ---------------------------------------------------------------------------
 
@@ -276,6 +329,46 @@ class ExtractKamEmphasisTests(unittest.TestCase):
 
     def test_extract_emphasis_no_header_is_empty(self) -> None:
         self.assertEqual(extract_emphasis("감사의견 우리의 의견으로는 ..."), "")
+
+
+class SectionLandmarkHeadingRuleTests(unittest.TestCase):
+    """구역 **끝** 랜드마크는 표제 자리에서만 인정한다(af-v2, Task 3).
+
+    표제는 앞 문장이 끝난 자리(마침표)나 번호매김 뒤에 온다. 앞 글자가 한글/영문/
+    쉼표면 문장 한가운데의 상호참조(「…한정의견근거 단락에 기술된…」)이므로
+    경계로 쓰지 않는다 - 쓰면 그 구역이 문장 중간에서 잘린다."""
+
+    def test_mid_sentence_landmark_does_not_end_section(self) -> None:
+        text = (
+            "핵심감사사항 핵심감사사항은 우리의 전문가적 판단에 따라 당기 재무제표감사에서 "
+            "가장 유의적인 사항들입니다. 우리는 한정의견근거 단락에 기술된 사항에 추가하여, "
+            "아래에 기술된 사항을 이 감사보고서에서 커뮤니케이션할 핵심감사사항으로 "
+            "결정하였습니다. 몰드사업부 손상평가 가. 핵심감사사항으로 결정한 이유 회수가능액 "
+            "추정에는 유의적인 판단이 수반됩니다. "
+            "재무제표에 대한 경영진과 지배기구의 책임 경영진은 ..."
+        )
+
+        kam = extract_kam(text)
+
+        self.assertIn("몰드사업부", kam)
+        self.assertNotIn("경영진과 지배기구", kam)
+
+    def test_landmark_after_sentence_end_still_ends_section(self) -> None:
+        text = "강조사항 주석 23의 재작성 관련 설명입니다. 기타사항 전기 재무제표는 타감사인이 감사하였습니다."
+
+        emphasis = extract_emphasis(text)
+
+        self.assertIn("주석 23", emphasis)
+        self.assertNotIn("타감사인", emphasis)
+
+    def test_landmark_after_numbering_is_a_heading(self) -> None:
+        # 「(2) 기타사항」처럼 번호매김 뒤에 오는 표제도 경계다.
+        text = "강조사항 (1) 주석 23의 재작성 관련 설명 (2) 기타사항 전기 감사인의 의견"
+
+        emphasis = extract_emphasis(text)
+
+        self.assertIn("주석 23", emphasis)
+        self.assertNotIn("전기 감사인의 의견", emphasis)
 
 
 # ---------------------------------------------------------------------------

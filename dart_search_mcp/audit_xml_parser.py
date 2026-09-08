@@ -80,6 +80,33 @@ af-v2는 평문을 **구역(section)**으로 먼저 나눈다:
   늘리지 않기 위해서다.
 - ``audit_report_count``는 **1단에서만 의미가 있다**(판정 문구를 담은 구역
   개수). 2단·폴백 경로는 구역을 세지 못하므로 언제나 1이다.
+
+## 계속기업 기재 위치·시점, 강조/기타사항 상태 (af-v2)
+
+회계사 검수 결과 ``going_concern``(bool) 한 칸으로는 부족했다. 실제 감사보고서는
+계속기업 불확실성을 셋 중 하나로 적는다 - ``계속기업 관련 중요한 불확실성``이라는
+**별도 구역**(작성사례 5.1), 의견근거 단락 **안**(5.3~5.8), 그 밖의 본문. 게다가
+**전기 감사보고서를 가리키는 문장**(10.6.1의 전기 타감사인 문안)은 당기 기재가
+아닌데도 「있음」으로 셀 수 있었다. 그래서 ``locate_going_concern``이
+``gc_material_uncertainty``(disclosed/not_disclosed/unknown)와
+``gc_location``(separate_section/within_basis_for_opinion/other/""/unknown)을
+함께 내고, ``going_concern``은 그 축약(``== "disclosed"``)으로 남는다.
+
+``emphasis_status``/``other_matter_status``도 같은 이유로 덧붙였다 -
+``emphasis_raw``가 비어 있는 것만으로는 「구역이 없다」와 「본문을 못 얻었다」를
+구분할 수 없고, 정정신고 대비표의 자리표시자(「강조사항 (주1)」)를 강조사항으로
+집계하던 결함(동성제약 20260407002635)도 상태 판정과 함께 고쳤다
+(``_labelled_section``).
+
+## 랜드마크는 표제 자리에서만 (af-v2)
+
+구역의 **끝**을 정할 때는 랜드마크가 표제 자리(``_is_heading_position``)에 있을
+때만 인정한다. 핵심감사사항 서문의 표준 문안 「우리는 한정의견근거 단락에 기술된
+사항에 추가하여…」(작성사례 6.2) 안의 「한정의견근거」에서 끊으면 핵심감사사항
+구역이 「우리는」에서 잘리기 때문이다(실측: 다이나믹디자인 20260323001749,
+용마산건설 20260406004560, 동성제약 20260506000528). 구역의 **시작**에는 이
+규칙을 걸지 않는다 - 표제가 앞 문장의 마침표 없이 이어지는 실측 형태가 있어
+시작까지 좁히면 구역 자체를 잃는다.
 """
 
 from __future__ import annotations
@@ -149,6 +176,22 @@ class ParsedAuditReport:
     audit_report_count: int = 1
     parser_version: str = PARSER_VERSION
 
+    # --- af-v2: 계속기업 기재 위치·시점, 강조/기타사항 상태 ---
+
+    # 계속기업 관련 중요한 불확실성이 **당기 기재**로 있는가:
+    # "disclosed" | "not_disclosed" | "unknown"(본문 자체를 못 얻음).
+    # 기존 열 `going_concern`(bool)은 `gc_material_uncertainty == "disclosed"`다.
+    gc_material_uncertainty: str = "unknown"
+    # 그 기재가 어디에 있었나: "separate_section"(별도 구역 표제) |
+    # "within_basis_for_opinion"(의견근거 단락 안) | "other"(그 밖의 본문) |
+    # ""(기재 없음) | "unknown"(본문 없음).
+    gc_location: str = "unknown"
+    # 강조사항/기타사항 구역: "present" | "absent" | "unknown"(본문 없음).
+    # `emphasis_raw`가 비어 있는 것만으로는 "구역이 없다"와 "본문을 못 얻었다"를
+    # 구분할 수 없어 상태 열을 따로 둔다.
+    emphasis_status: str = "unknown"
+    other_matter_status: str = "unknown"
+
 
 # ---------------------------------------------------------------------------
 # 텍스트 정규화
@@ -158,15 +201,40 @@ _TAG_RE = re.compile(r"<[^>]+>")
 _ENTITY_RE = re.compile(r"&[a-zA-Z#0-9]+;")
 
 
+# 어미 한가운데에 낀 공백을 닫는 규칙(af-v2). 원문 XML은 줄 폭에 맞춰 낱말
+# 중간에서 줄을 바꾸고, 공백 정규화는 그 줄바꿈을 공백 하나로 남긴다. 그래서
+# 「…공정하게 표시하고 있습니 다.」처럼 어미가 갈라진 평문이 나오고, 판정
+# 문구(`_CLASSIFY_MARKERS`)를 문자열로 찾는 분류기가 그 문장을 놓친다.
+#
+# 실측(읽기 전용 `audit_facts.jsonl`): `audit_opinion=unknown` 721건 중 323건의
+# 원문에 「…니 다.」가 있었고, 604건의 등장 중 604건이 「습/합/됩…」+「니」 뒤였다.
+# 이 규칙 하나로 721건 중 105건이 「적정」(confirmed)으로 확정된다.
+#
+# 「…니」로 끝나는 낱말 뒤에 「다음/다만/다른」이 오는 정상 문장을 붙여 버리지
+# 않도록, 뒤따르는 「다」가 문장을 끝낼 때(마침표·쉼표·닫는 괄호·문서 끝)만
+# 공백을 지운다. 숫자·영문 사이 공백은 건드리지 않는다.
+_SPLIT_ENDING_RE = re.compile(r"(?<=[가-힣]니)\s+(?=다(?:[.,)\]]|$))")
+
+
+def _join_split_endings(value: str) -> str:
+    """「…있습니 다.」처럼 어미 안에 낀 공백을 닫는다(그 외 공백은 그대로)."""
+
+    return _SPLIT_ENDING_RE.sub("", value)
+
+
 def _normalize_text(value: str) -> str:
-    """개행/탭/중복 공백을 단일 공백으로 정리하고 앞뒤 공백을 제거한다.
+    """개행/탭/중복 공백을 단일 공백으로 정리하고, 갈라진 어미를 닫는다.
 
-    `dart_search_mcp.tools.reports._normalize_text`와 동일한 로직의 인라인
-    복제본이다. 이 모듈은 순수·결정론 파서이므로 `tools.reports`(및 그것이
-    전이 import하는 `config.py`의 import-time `load_dotenv()` 파일접근)에
-    의존하지 않는다."""
+    앞부분(공백 정리)은 `dart_search_mcp.tools.reports._normalize_text`와 같은
+    로직의 인라인 복제본이다. 이 모듈은 순수·결정론 파서이므로 `tools.reports`
+    (및 그것이 전이 import하는 `config.py`의 import-time `load_dotenv()`
+    파일접근)에 의존하지 않는다. 뒷부분(`_join_split_endings`)은 이 파서에만
+    있는 규칙이다 - 감사의견 판정이 문자열 일치에 기대기 때문이다.
 
-    return re.sub(r"\s+", " ", value).strip()
+    멱등이다: 이미 정규화된 평문을 다시 넣어도 결과가 같다(`parse_audit_text`가
+    평문 픽스처에도 같은 규칙을 적용할 수 있는 근거)."""
+
+    return _join_split_endings(re.sub(r"\s+", " ", value).strip())
 
 
 def _strip_tags_to_text(xml_bytes: bytes) -> str:
@@ -209,6 +277,15 @@ _SECTION_LANDMARKS: tuple[str, ...] = (
     "재무제표에 대한 경영진과 지배기구의 책임",
     "재무제표에 대한 경영진의 책임과 지배기구의 책임",
     "재무제표감사에 대한 감사인의 책임",
+    # 연결감사보고서는 같은 표제에 "연결"이 붙는다. 구역 끝 랜드마크를 표제
+    # 자리에서만 인정하게 되면서(`_next_landmark_pos`) 접두어가 붙은 표기를
+    # 따로 실어야 한다 - "연결재무제표에 대한..."의 "재무제표에 대한..."은 앞
+    # 글자가 한글("결")이라 문장 중간으로 판정되기 때문이다. 실측 400건 표본에서
+    # "연결재무제표감사에 대한 감사인의 책임" 78회, "연결재무제표에 대한 경영진..."
+    # 43회 등장한다.
+    "연결재무제표에 대한 경영진과 지배기구의 책임",
+    "연결재무제표에 대한 경영진의 책임과 지배기구의 책임",
+    "연결재무제표감사에 대한 감사인의 책임",
 )
 
 # 감사의견 분류에 쓰이는 판정 문구가 opinion_para 안에 하나라도 있어야
@@ -228,12 +305,49 @@ _CLASSIFY_MARKERS: tuple[str, ...] = (
 _HEADER_BOUNDARY_OK = (" ", "")
 
 
-def _find_landmark(text: str, landmark: str, start: int = 0) -> int:
+# 랜드마크 **앞**에 오면 그 자리가 표제가 아니라 문장 한가운데임을 뜻하는 문자.
+# 한글/영문/숫자/쉼표 뒤에 붙은 랜드마크는 표제가 아니라 상호참조다 -
+# "우리는 한정의견근거 단락에 기술된 사항에 추가하여"(핵심감사사항 서문 표준
+# 문안, 한국공인회계사회 「감사보고서 작성사례」 6.2)가 대표적이다. 표제는 앞
+# 문장이 끝난 자리(".") 또는 번호매김(")", "]", "·" 등) 뒤에 온다.
+_MID_SENTENCE_PREV_RE = re.compile(r"[0-9A-Za-z가-힣,、]")
+
+
+def _prev_nonspace_index(text: str, idx: int) -> int:
+    """`idx` 바로 앞의 공백 아닌 문자의 위치(없으면 -1)."""
+
+    i = idx - 1
+    while i >= 0 and text[i].isspace():
+        i -= 1
+    return i
+
+
+def _prev_nonspace(text: str, idx: int) -> str:
+    """`idx` 바로 앞의 공백 아닌 문자(없으면 "")."""
+
+    i = _prev_nonspace_index(text, idx)
+    return text[i] if i >= 0 else ""
+
+
+def _is_heading_position(text: str, idx: int) -> bool:
+    """`idx`가 **표제 자리**인가 - 문서 첫머리이거나 앞 문장이 끝난 자리인가.
+
+    정규화된 평문에는 줄바꿈이 남아 있지 않으므로("줄 시작"을 볼 수 없다) 앞
+    문자로 판정한다. 앞 문자가 한글·영문·숫자·쉼표면 문장 한가운데다."""
+
+    prev = _prev_nonspace(text, idx)
+    return not prev or not _MID_SENTENCE_PREV_RE.match(prev)
+
+
+def _find_landmark(text: str, landmark: str, start: int = 0, *, heading_only: bool = False) -> int:
     """`landmark`가 단어 경계(뒤에 공백 또는 문자열 끝)로 나타나는 첫 위치.
 
     "감사의견"이 "감사의견근거"/"감사의견을"의 접두어로만 나타나는 경우는
     제외한다(정규화된 평문에서 태그 자리는 항상 공백 하나로 치환되므로,
-    실제 헤더 뒤에는 거의 항상 공백이 온다)."""
+    실제 헤더 뒤에는 거의 항상 공백이 온다).
+
+    ``heading_only=True``면 표제 자리(``_is_heading_position``)에 있는 등장만
+    인정하고 문장 한가운데의 상호참조는 건너뛴다."""
 
     pos = start
     while True:
@@ -241,19 +355,27 @@ def _find_landmark(text: str, landmark: str, start: int = 0) -> int:
         if idx == -1:
             return -1
         after = text[idx + len(landmark) : idx + len(landmark) + 1]
-        if after in _HEADER_BOUNDARY_OK:
+        if after in _HEADER_BOUNDARY_OK and (not heading_only or _is_heading_position(text, idx)):
             return idx
         pos = idx + len(landmark)
 
 
-def _next_landmark_pos(text: str, after: int, exclude: str) -> int:
-    """`after` 위치 이후 가장 먼저 나오는 섹션 랜드마크 위치(없으면 len(text))."""
+def _next_landmark_pos(
+    text: str, after: int, exclude: str, *, landmarks: tuple[str, ...] = _SECTION_LANDMARKS
+) -> int:
+    """`after` 위치 이후 가장 먼저 나오는 섹션 랜드마크 **표제** 위치.
+
+    없으면 ``len(text)``. 구역의 **끝**을 정하는 자리이므로 표제 자리만
+    인정한다 - 문장 안에 나오는 같은 문자열("…한정의견근거 단락에 기술된 사항에
+    추가하여…")에서 끊으면 구역 본문이 통째로 날아간다(실측: 20260323001749
+    다이나믹디자인·20260406004560 용마산건설의 핵심감사사항이 「우리는」에서
+    잘렸다)."""
 
     end = len(text)
-    for landmark in _SECTION_LANDMARKS:
+    for landmark in landmarks:
         if landmark == exclude:
             continue
-        idx = _find_landmark(text, landmark, after)
+        idx = _find_landmark(text, landmark, after, heading_only=True)
         if idx != -1 and idx < end:
             end = idx
     return end
@@ -649,10 +771,10 @@ def extract_icfr_opinion(full_text: str) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# 계속기업(going concern) - 오탐 방지
+# 계속기업(going concern) - 오탐 방지 + 기재 위치·시점 (af-v2)
 # ---------------------------------------------------------------------------
 
-# 강조/불확실성 섹션 랜드마크(명시적 헤더)로만 true 판정한다. "계속기업전제",
+# 계속기업 불확실성을 **별도 구역**으로 세울 때 쓰는 표제. "계속기업전제",
 # "계속기업으로서의 존속능력을 평가/초래할 수 있는" 같은 경영진/감사인 책임
 # 표준 보일러플레이트 문구는 실측 결과 거의 모든 보고서(계속기업 문제가 전혀
 # 없는 보고서 포함)에 등장하므로 오탐의 주범이다 - 절대 트리거로 쓰지 않는다.
@@ -661,34 +783,247 @@ _GOING_CONCERN_HEADERS: tuple[str, ...] = (
     "계속기업 관련 중대한 불확실성",
 )
 
-# 브리프가 예시로 든 "...존속능력에 유의적인 의문을 제기(할 수 있는 중요한
-# 불확실성이 존재)" 변형. "제기"(실제로 의문이 제기됨을 서술)로 한정하고,
-# 보일러플레이트가 쓰는 "초래할 수 있는"(가정법) 표현과는 구분한다.
+# 계속기업 불확실성을 **서술하는** 문장. 표제 없이 의견근거 단락 안에만 있는
+# 실측 형태(팡스카이 20260323001719, 삼보산업 20260407003361)를 잡기 위한
+# 것이다. 판정의 갈림길은 "제기/초래합니다"(실제로 의문이 제기됨을 서술) 대
+# "초래할 수 있는"(감사인의 책임 보일러플레이트의 가정법)이다 - 후자는 계속기업
+# 문제가 전혀 없는 보고서에도 항상 있으므로 절대 트리거가 되면 안 된다.
+#
+# 문안 근거: 한국공인회계사회 「감사보고서 작성사례」(2018.10) 5.1
+# ("...존속능력에 유의적 의문을 제기할 만한 중요한 불확실성이 존재함을
+# 나타냅니다"), 5.7("...계속기업으로의 존속능력에 대하여 유의적인 의문을
+# 초래합니다"), 5.8("...계속기업전제에 유의적 의문을 제기하는 상황에도
+# 불구하고").
+#
+# 실측 1,200건 표본의 「의문을 (제기|초래)」 뒤 문구 분포가 이 경계를 그대로
+# 보여준다: 초래+"할 (수 있는) 사건이나 상황"이 1,141회(전부 감사인의 책임
+# 보일러플레이트)인 반면, 초래+"합니다/하며/하게 되었으며"는 14회이고 전부
+# 실제 기재다. 제기 쪽은 "할 만한/할 수 있는/하는/하고 있습니다" 어느 형태든
+# 실제 기재였다. 그래서 **초래 뒤에 "할"이 오는 형태만** 제외한다.
 _GOING_CONCERN_RAISE_RE = re.compile(
-    r"계속기업으로서의\s*존속능력에?\s*(?:대하여\s*)?유의적(?:인|\s)*\s*의문을?\s*제기"
+    r"계속기업(?:으로서의|으로의|으로서|으로)?\s*"
+    r"(?:가정에?\s*(?:대하여\s*)?)?"
+    r"(?:존속능력에?\s*(?:대하여\s*)?)?"
+    r"유의적(?:인|\s)*\s*의문을?\s*(?:제기|초래(?!할))"
 )
 
+# "계속기업가정(의|에 대한) (중요한) 불확실성" - 소제목·본문에서 함께 쓰이는
+# 표기(팡스카이의 「(1) 계속기업가정에 대한 불확실성」, 삼보산업의 「주석 36은
+# 연결실체의 계속기업가정의 불확실성에 대하여 기술하고 있습니다」). "계속기업
+# 전제"(보일러플레이트)와 달리 "가정"과 "불확실성"이 붙어 나오는 형태만 잡는다.
+_GOING_CONCERN_UNCERTAINTY_RE = re.compile(
+    r"계속기업\s*가정(?:의|에\s*대한)?\s*(?:중요한|중대한)?\s*불확실성"
+)
 
-def detect_going_concern(full_text: str) -> tuple[bool, str]:
-    """계속기업 관련 중요/중대한 불확실성 섹션이 실제로 있는지 판정한다.
+# 의견근거 단락의 표제. 실측 표기가 "의견거절근거"(붙임)와 "의견거절의 근거"
+# (띄어씀) 둘 다이고, 뒤에 곧바로 번호매김이 붙는 형태("의견거절의 근거(1)")도
+# 있어 정규식으로 찾는다.
+_BASIS_HEADER_RE = re.compile(r"(?:감사의견|한정의견|부적정의견|의견거절)(?:의)?\s*근거")
 
-    True인 경우에만 근거 문장 일부를 함께 반환한다(없으면 두번째 값은 "")."""
+# 의견근거 단락이 끝나는 자리를 찾을 때는 계속기업 표제도 경계로 본다 -
+# 「감사의견근거 ... 믿습니다. 계속기업 관련 중요한 불확실성 ...」처럼 계속기업
+# 구역이 의견근거 **다음**에 오는 형태(작성사례 5.1)를 의견근거 안으로
+# 빨아들이면 위치 판정이 뒤집힌다.
+_GOING_CONCERN_BOUNDARY_LANDMARKS: tuple[str, ...] = _SECTION_LANDMARKS + _GOING_CONCERN_HEADERS
 
+# 핵심감사사항 서문은 계속기업 구역을 **상호참조**한다("우리는 계속기업 관련
+# 중요한 불확실성 단락에 기술된 사항에 추가하여, ... 핵심감사사항으로
+# 결정하였습니다" - 작성사례 5.1·6.2). 그 문장을 근거로 삼으면 계속기업 근거
+# 문단이 핵심감사사항 서문이 된다(실측: 삼보산업 20260407003361).
+_KAM_PREAMBLE_MARKERS: tuple[str, ...] = (
+    "핵심감사사항으로 결정하였습니다",
+    "커뮤니케이션할 핵심감사사항",
+)
+
+# 전기(前期) 기재임을 드러내는 표지. "타감사인"/"전임 감사인"은 작성사례
+# 10.6.1의 전기 타감사인 문안에 나온다.
+_PRIOR_PERIOD_TERM_RE = re.compile(r"전기|직전\s*사업연도|전임\s*감사인|타\s*감사인")
+
+# "20X0년 12월 31일로 종료되는 보고기간" - 문장이 가리키는 보고기간 종료 연도.
+_PERIOD_END_YEAR_RE = re.compile(r"(\d{4})년\s*\d{1,2}월\s*\d{1,2}일로?\s*종료")
+
+
+def _is_section_break_position(text: str, idx: int) -> bool:
+    """`idx`가 **새 구역이 시작하는** 자리인가(앞 문장이 끝난 자리인가).
+
+    ``_is_heading_position``보다 좁다 - 번호매김 뒤("의견거절근거 (1) 계속기업
+    관련 중요한 불확실성")는 표제 자리이긴 해도 **같은 구역 안의 소제목**이므로
+    새 구역으로 보지 않는다. 이 구분이 실측 두 형태를 가른다:
+
+    - 코이즈 20260323001579: 「...믿습니다. 계속기업 관련 중요한 불확실성」 →
+      의견근거 다음의 별도 구역(`separate_section`).
+    - STX마린서비스 20251219000526: 「의견거절근거 (1) 계속기업 관련 중요한
+      불확실성」 → 의견근거 **안**의 소제목(`within_basis_for_opinion`).
+    """
+
+    prev_idx = _prev_nonspace_index(text, idx)
+    if prev_idx == -1:
+        return True
+    if text[prev_idx] not in ".。":
+        return False
+    # "1." 같은 번호매김의 마침표는 문장 끝이 아니다.
+    before_dot = _prev_nonspace_index(text, prev_idx)
+    return before_dot == -1 or not text[before_dot].isdigit()
+
+
+def _basis_for_opinion_spans(text: str) -> list[tuple[int, int]]:
+    """의견근거 단락들의 [시작, 끝) 범위(표제 자리에 있는 것만)."""
+
+    spans: list[tuple[int, int]] = []
+    for m in _BASIS_HEADER_RE.finditer(text):
+        if not _is_heading_position(text, m.start()):
+            continue
+        end = len(text)
+        for landmark in _GOING_CONCERN_BOUNDARY_LANDMARKS:
+            pos = m.end()
+            while True:
+                idx = _find_landmark(text, landmark, pos, heading_only=True)
+                if idx == -1:
+                    break
+                if _is_section_break_position(text, idx):
+                    end = min(end, idx)
+                    break
+                pos = idx + len(landmark)
+        spans.append((m.start(), end))
+    return spans
+
+
+# 문장 창의 최대 폭. 별첨 재무제표의 표는 마침표 없이 수백 자가 이어지므로
+# "...다."만 믿고 뒤로 거슬러 올라가면 표 전체가 한 문장이 돼 버린다(그 안의
+# 「전기」 같은 낱말 하나가 시점 필터를 오작동시킨다). 감사보고서의 실제 문장은
+# 300자를 넘지 않는다.
+_SENTENCE_WINDOW = 300
+
+
+def _sentence_bounds(text: str, pos: int) -> tuple[int, int]:
+    """`pos`를 품은 문장의 [시작, 끝). 한국어 공시문은 모두 "...다."로 끝난다."""
+
+    floor = max(0, pos - _SENTENCE_WINDOW)
+    start = text.rfind("다.", floor, pos)
+    start = floor if start == -1 else start + 2
+    ceiling = min(len(text), pos + 2 * _SENTENCE_WINDOW)
+    end = text.find("다.", pos, ceiling)
+    end = ceiling if end == -1 else end + 2
+    return start, end
+
+
+def _refers_to_another_report(sentence: str) -> bool:
+    """이 문장이 **다른 감사보고서의 의견**을 옮겨 적고 있는가.
+
+    전기 기재를 가리키는 문장은 예외 없이 그 보고서를 함께 말한다("...자
+    감사보고서에는 ... 의견이 표명되었습니다" - 작성사례 10.6.1). 시점 필터를
+    이 형태로 한정하는 이유는 오작동을 막기 위해서다 - 계속기업 문단은 비교
+    표시 때문에 「전기」라는 낱말을 자연스럽게 품는데("전기말 결손금"), 낱말만
+    보고 걸러 내면 당기 기재가 통째로 사라진다."""
+
+    return "감사보고서" in sentence and ("표명" in sentence or "의견이" in sentence)
+
+
+def _is_prior_period_sentence(sentence: str, fiscal_year: int | None) -> bool:
+    """이 문장이 **전기** 기재를 가리키는가(=당기 기재로 세면 안 되는가).
+
+    다른 보고서의 의견을 옮겨 적은 문장(``_refers_to_another_report``) 중
+    둘 중 하나에 해당하면 전기 기재다:
+
+    1. 「전기」·「직전 사업연도」·「전임 감사인」·「타 감사인」 같은 표지가 있다.
+    2. 표지가 없어도, 보고서 대상 회계연도와 **다른 연도**의 보고기간을 가리킨다.
+       실측: STX마린서비스 20260413000920의 기타사항 「회사의 2024년 12월 31일로
+       종료되는 보고기간의 재무제표는 삼일회계법인에서 감사하였으며, 2025년 12월
+       19일자 감사보고서에서 ... 계속기업가정 불확실성으로 의견거절을
+       표명하였습니다」 - 표지 낱말이 하나도 없는 당기(2025) 아닌 기재다.
+    """
+
+    if not _refers_to_another_report(sentence):
+        return False
+    if _PRIOR_PERIOD_TERM_RE.search(sentence):
+        return True
+    if fiscal_year is None:
+        return False
+    years = {int(y) for y in _PERIOD_END_YEAR_RE.findall(sentence)}
+    return bool(years) and fiscal_year not in years
+
+
+def _going_concern_candidates(text: str) -> list[tuple[int, bool]]:
+    """계속기업 근거 후보 위치들 - ``(위치, 표제인가)``, 원문 순서."""
+
+    candidates: list[tuple[int, bool]] = []
     for header in _GOING_CONCERN_HEADERS:
-        idx = _find_landmark(full_text, header)
-        if idx != -1:
-            start = idx + len(header)
-            end = min(len(full_text), start + 400)
-            snippet = full_text[start:end].strip()
-            return True, snippet
+        pos = 0
+        while True:
+            idx = _find_landmark(text, header, pos)
+            if idx == -1:
+                break
+            candidates.append((idx, True))
+            pos = idx + len(header)
+    for pattern in (_GOING_CONCERN_RAISE_RE, _GOING_CONCERN_UNCERTAINTY_RE):
+        candidates.extend((m.start(), False) for m in pattern.finditer(text))
+    return sorted(set(candidates))
 
-    m = _GOING_CONCERN_RAISE_RE.search(full_text)
-    if m:
-        start = max(0, m.start() - 80)
-        end = min(len(full_text), m.end() + 250)
-        return True, full_text[start:end].strip()
 
-    return False, ""
+def locate_going_concern(
+    full_text: str, *, fiscal_year: int | None = None
+) -> tuple[str, str, str]:
+    """``(gc_material_uncertainty, gc_location, snippet)``.
+
+    - ``gc_material_uncertainty``: ``"disclosed"`` | ``"not_disclosed"`` |
+      ``"unknown"``(본문 자체를 못 얻음).
+    - ``gc_location``: ``"separate_section"``(별도 구역 표제) |
+      ``"within_basis_for_opinion"``(의견근거 단락 안) | ``"other"``(그 밖의
+      본문) | ``""``(기재 없음) | ``"unknown"``(본문 없음).
+    - ``snippet``: 선택된 근거 문단 앞 400자. 계속기업 문장이 **실제로 있는**
+      자리에서만 딴다.
+
+    후보를 원문 순서로 모은 뒤, 핵심감사사항 서문의 상호참조와 전기 기재를
+    걸러내고, 남은 것 중 **구조가 확인되는 것**(별도 구역/의견근거 안)을 먼저
+    고른다. 아무 후보도 남지 않으면 ``not_disclosed``다."""
+
+    if not full_text.strip():
+        return "unknown", "unknown", ""
+
+    basis_spans = _basis_for_opinion_spans(full_text)
+    best: tuple[int, int, bool, str, int] | None = None
+    # (rank, 위치, 표제인가, 위치이름, 문단 시작). rank 0 = 구조가 확인된 후보.
+
+    for pos, is_header in _going_concern_candidates(full_text):
+        sentence_start, sentence_end = _sentence_bounds(full_text, pos)
+        sentence = full_text[sentence_start:sentence_end]
+        if any(marker in sentence for marker in _KAM_PREAMBLE_MARKERS):
+            continue
+        if _is_prior_period_sentence(sentence, fiscal_year):
+            continue
+
+        if any(start <= pos < end for start, end in basis_spans):
+            location = "within_basis_for_opinion"
+        elif is_header and _is_section_break_position(full_text, pos):
+            location = "separate_section"
+        else:
+            location = "other"
+
+        candidate = (1 if location == "other" else 0, pos, is_header, location, sentence_start)
+        if best is None or candidate[:2] < best[:2]:
+            best = candidate
+
+    if best is None:
+        return "not_disclosed", "", ""
+
+    _rank, pos, is_header, location, sentence_start = best
+    if is_header:
+        # 표제 뒤 본문에서 딴다(af-v1과 같은 자리).
+        header = next(h for h in _GOING_CONCERN_HEADERS if full_text.startswith(h, pos))
+        snippet_start = pos + len(header)
+    else:
+        snippet_start = sentence_start
+    return "disclosed", location, full_text[snippet_start : snippet_start + 400].strip()
+
+
+def detect_going_concern(full_text: str, *, fiscal_year: int | None = None) -> tuple[bool, str]:
+    """계속기업 관련 중요/중대한 불확실성이 **당기 기재**로 있는지 판정한다.
+
+    ``locate_going_concern``의 bool 축약이다(기존 호출부 호환). True인 경우에만
+    근거 문단 일부를 함께 반환한다(없으면 두번째 값은 "")."""
+
+    status, _location, snippet = locate_going_concern(full_text, fiscal_year=fiscal_year)
+    return status == "disclosed", snippet
 
 
 # ---------------------------------------------------------------------------
@@ -702,10 +1037,52 @@ def extract_kam(text: str) -> str:
     return _section_text(text, "핵심감사사항")
 
 
-def extract_emphasis(text: str) -> str:
-    """강조사항 섹션 원문(랜드마크~다음 랜드마크). 없으면 ""."""
+def _labelled_section(text: str, header: str, *, max_len: int = 6000) -> tuple[str, str]:
+    """``(status, raw)`` - 표제 구역의 유무를 **상태**로 낸다.
 
-    return _section_text(text, "강조사항")
+    ``status``는 ``"present"``(구역을 찾음) | ``"absent"``(본문은 있는데 구역이
+    없음) | ``"unknown"``(본문 자체를 못 얻음)이다.
+
+    같은 표제가 여러 번 나오는 실측 형태가 있다 - 정정신고서의 대비표가
+    「강조사항 (주1)」처럼 **자리표시자만** 먼저 싣고, 실제 강조사항 문단은 한참
+    뒤 감사보고서 본문에 온다(동성제약 20260407002635: af-v1은 대비표의
+    「(주1)」을 강조사항으로 뽑아 회계사가 「없음」으로 읽었다). 그래서 등장을
+    모두 훑고 **표제 자리**(``_is_heading_position``)에 있는 첫 구역을 고른다.
+    표제 자리인 등장이 하나도 없으면(대비표의 「정정후」 칸처럼 앞 칸에 붙어
+    나오는 경우) 문장이 들어 있는 첫 구역으로 물러선다.
+
+    구역의 끝은 ``_SECTION_LANDMARKS``와 계속기업 표제, 그리고 **같은 표제의 다음
+    등장**이다 - 대비표에서 「강조사항 정정전 정정후 ... 강조사항 <본문>」처럼
+    같은 표제가 잇달아 나오면 그 자리에서 끊어야 칸이 섞이지 않는다."""
+
+    if not text.strip():
+        return "unknown", ""
+
+    landmarks = _GOING_CONCERN_BOUNDARY_LANDMARKS + (header,)
+    heading_hit = ""
+    prose_hit = ""
+    pos = 0
+    while True:
+        idx = _find_landmark(text, header, pos)
+        if idx == -1:
+            break
+        start = idx + len(header)
+        end = min(_next_landmark_pos(text, start, "", landmarks=landmarks), start + max_len)
+        body = text[start:end].strip()
+        if body and _is_heading_position(text, idx):
+            heading_hit = heading_hit or body
+        elif "니다" in body:
+            prose_hit = prose_hit or body
+        pos = start
+
+    body = heading_hit or prose_hit
+    return ("present", body) if body else ("absent", "")
+
+
+def extract_emphasis(text: str) -> str:
+    """강조사항 섹션 원문(``_labelled_section``). 없으면 ""."""
+
+    return _labelled_section(text, "강조사항")[1]
 
 
 # ---------------------------------------------------------------------------
@@ -784,9 +1161,14 @@ def parse_audit_text(text: str, meta: dict, *, doc_path: str = "") -> ParsedAudi
     """평문(태그 제거·공백 정규화된 감사보고서 본문) + manifest meta -> 감사 사실.
 
     ``parse_audit_xml``의 본체다. 원문 XML 없이 평문 발췌만으로 파싱 규칙을
-    시험할 수 있도록 분리했다(테스트 픽스처가 이 진입점으로 들어온다)."""
+    시험할 수 있도록 분리했다(테스트 픽스처가 이 진입점으로 들어온다).
 
-    full_text = text
+    입력에 ``_normalize_text``를 한 번 더 적용한다 - 멱등이므로
+    ``_strip_tags_to_text``를 거쳐 온 평문에는 아무 영향이 없고, 이미 저장돼 있는
+    평문 픽스처(예전 정규화 규칙으로 만든 것)에도 새 규칙(갈라진 어미 닫기)이
+    똑같이 적용된다."""
+
+    full_text = _normalize_text(text)
 
     flags: set[str] = set()
 
@@ -826,22 +1208,30 @@ def parse_audit_text(text: str, meta: dict, *, doc_path: str = "") -> ParsedAudi
     # `icfr_opinion` 자체가("" / "unknown" / 값) 이미 구분한다.
     icfr_opinion, icfr_opinion_snippet = extract_icfr_opinion(full_text)
 
-    # --- going_concern ---
-    going_concern, going_concern_snippet = detect_going_concern(full_text)
+    # --- fiscal_year / settlement_month ---
+    # 계속기업 시점 필터가 "이 보고서가 어느 회계연도의 것인지"를 알아야 하므로
+    # going_concern보다 먼저 구한다.
+    fiscal_year, settlement_month = derive_fiscal_year(meta, full_text)
+    if fiscal_year is not None:
+        flags.add("fiscal_year")
+
+    # --- going_concern (기재 위치·시점까지) ---
+    (
+        gc_material_uncertainty,
+        gc_location,
+        going_concern_snippet,
+    ) = locate_going_concern(full_text, fiscal_year=fiscal_year)
+    going_concern = gc_material_uncertainty == "disclosed"
     if going_concern:
         flags.add("going_concern")
 
-    # --- KAM / 강조사항 ---
+    # --- KAM / 강조사항 / 기타사항 ---
     kam_raw = extract_kam(full_text)
     kam_present = bool(kam_raw)
     if kam_present:
         flags.add("kam")
-    emphasis_raw = extract_emphasis(full_text)
-
-    # --- fiscal_year / settlement_month ---
-    fiscal_year, settlement_month = derive_fiscal_year(meta, full_text)
-    if fiscal_year is not None:
-        flags.add("fiscal_year")
+    emphasis_status, emphasis_raw = _labelled_section(full_text, "강조사항")
+    other_matter_status, _other_matter_raw = _labelled_section(full_text, "기타사항")
 
     return ParsedAuditReport(
         rcept_no=rcept_no,
@@ -872,4 +1262,8 @@ def parse_audit_text(text: str, meta: dict, *, doc_path: str = "") -> ParsedAudi
         icfr_opinion_snippet=icfr_opinion_snippet,
         audit_report_count=audit_report_count,
         parser_version=PARSER_VERSION,
+        gc_material_uncertainty=gc_material_uncertainty,
+        gc_location=gc_location,
+        emphasis_status=emphasis_status,
+        other_matter_status=other_matter_status,
     )

@@ -40,11 +40,11 @@
   재무제표 감사보고서만 담는다) 이 공시의 내부회계 의견은 `_00760`에만 있기
   때문이다. `[0:4379]`가 표지·목차·재무제표 감사보고서 본문,
   `[77233:79626]`이 내부회계관리제도 감사보고서다. 그리고 수집기가 실제로
-  파싱하는 `_00761`(연결)은 **현재 결과가 틀렸다는 사실 자체를** 스위트에
-  드러내려고 따로 잘라 뒀다(`...-consolidated-audit.txt`,
-  `test_hchomecenta_consolidated_known_bad_until_task3`) — 원인은 의견 축이
-  아니라 낱말 안에 들어간 줄바꿈(「표시하고 있습니 다」)이고, 그 정규화 수정은
-  Task 3 몫이다.
+  파싱하는 `_00761`(연결)도 따로 잘라 뒀다(`...-consolidated-audit.txt`). Task 2
+  시점에는 이 XML의 의견이 `unknown`이었고 그 사실 자체를 스위트에 드러내는
+  known-bad 테스트를 뒀는데, 원인은 의견 축이 아니라 낱말 안에 들어간
+  줄바꿈(「표시하고 있습니 다」)이었다. Task 3이 그 정규화를 고쳤으므로 이제는
+  `적정`/`confirmed`를 단언한다(`test_hchomecenta_consolidated_opinion_survives_split_ending`).
 - 팡스카이(의견거절)·삼보산업(한정): 수집기가 고른 `_00761`(연결)의 표지부터
   「(첨부)」 직전까지. 두 건 다 내부회계관리제도 감사보고서가 없어
   `icfr_opinion`은 빈 문자열이며, 이 Task가 의견거절·한정 분류를 건드리지
@@ -89,23 +89,20 @@ class OpinionAxisPhase1(unittest.TestCase):
         self.assertEqual(r.parser_version, "af-v2")
         self.assertGreaterEqual(r.audit_report_count, 1)
 
-    def test_hchomecenta_consolidated_known_bad_until_task3(self) -> None:
-        """수집기가 실제로 파싱하는 `_00761`(연결)의 **현재 잘못된 결과**를 고정한다.
+    def test_hchomecenta_consolidated_opinion_survives_split_ending(self) -> None:
+        """수집기가 실제로 파싱하는 `_00761`(연결)의 의견이 확정되는지.
 
-        이 XML의 의견 문장은 `...중요성의 관점에서 공정하게 표시하고 있습니 다.`로,
-        낱말 「있습니다」 한가운데에 원문 줄바꿈이 들어가 있다. `_normalize_text`가
-        줄바꿈을 공백 하나로 바꾸면서 판정 문구 「표시하고 있습니다」가 깨지고,
-        그래서 재무제표 의견이 `unknown`으로 남는다 — **의견 축 문제가 아니라
-        텍스트 정규화 문제**라 af-v2(Task 2)로는 고쳐지지 않는다.
-
-        회계사가 지적한 「HC홈센타가 unknown」의 진짜 원인이 이것이므로, 고쳐지지
-        않았다는 사실을 스위트에 드러내 둔다. **Task 3이 정규화를 고치면 이
-        기대값은 `적정`/`confirmed`로 뒤집어야 한다** — 그때 이 테스트가 실패하는
-        것이 정상이고, 실패가 곧 수정 완료 신호다."""
+        이 XML의 의견 문장은 원문에서 `...공정하게 표시하고 있습니\n다.`로, 낱말
+        「있습니다」 한가운데에 줄바꿈이 들어가 있다. Task 2까지는 `_normalize_text`가
+        그 줄바꿈을 공백 하나로 바꾸면서 판정 문구 「표시하고 있습니다」가 깨져 재무제표
+        의견이 `unknown`으로 남았고(`test_hchomecenta_consolidated_known_bad_until_task3`),
+        회계사가 지적한 「HC홈센타가 unknown」의 진짜 원인이 그것이었다 — 의견 축이
+        아니라 텍스트 정규화 문제다. Task 3의 어미 공백 닫기(`_join_split_endings`)가
+        그 결함을 고쳤으므로 기대값을 `적정`/`confirmed`로 뒤집는다."""
 
         r = parse_fixture("20260323001089-hchomecenta-consolidated-audit.txt")
-        self.assertEqual(r.audit_opinion, "unknown")
-        self.assertEqual(r.opinion_status, "unconfirmed")
+        self.assertEqual(r.audit_opinion, "적정")
+        self.assertEqual(r.opinion_status, "confirmed")
         # 같은 공시의 별도 XML(_00760)은 af-v2에서 이미 제대로 나온다 - 대조군.
         self.assertEqual(parse_fixture("20260323001089-hchomecenta-audit.txt").audit_opinion, "적정")
 
