@@ -48,6 +48,38 @@ class RealExtractAuditTests(unittest.TestCase):
             self.assertTrue((t / "audit.json").exists())
 
 
+    def test_목록_서문에서_온_근거도_원문_확인을_통과한다(self) -> None:
+        """T4: 항목이 침묵하면 근거는 블록 **앞**의 목록 서문이다 — evidence_in_block 의 창이
+        앞쪽으로도 열려 있어야 그 근거가 "원문에 없다"로 잘못 잡히지 않는다."""
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            docs = t / "docs"
+            rcept = "20260001000009"
+            _write_doc(
+                docs, rcept,
+                "2.2 회계정책과 공시의 변경 2.2.1 회사가 채택한 제ㆍ개정 기준서 및 해석서 회사는 "
+                "2025년 1월 1일로 개시하는 회계기간부터 다음의 제ㆍ개정 기준서 및 해석서를 신규로 "
+                "적용하였습니다. (1) 기업회계기준서 제1021호 '환율변동효과' 개정 교환가능성 평가에 "
+                "관한 지침을 추가하였습니다.",
+            )
+            facts = t / "audit_facts.jsonl"
+            facts.write_text(
+                json.dumps({"rcept_no": rcept, "corp_code": "9", "fiscal_year": "2025"}) + "\n",
+                encoding="utf-8",
+            )
+            stances = t / "policy_stance.jsonl"
+            run_extract_policy_stances(
+                facts_path=facts, docs_dir=docs, output_path=stances,
+                topics=("STD_EARLY_ADOPTION",), use_llm=False,
+            )
+            rows = [json.loads(line) for line in stances.read_text(encoding="utf-8").splitlines() if line.strip()]
+            self.assertEqual([r["value"] for r in rows], ["ADOPTED"])
+            self.assertIn("신규로 적용하였습니다", rows[0]["evidence"])
+            rep = run_policy_stance_audit(stances_path=stances, docs_dir=docs, report_path=t / "audit.md")
+            self.assertEqual(rep["totals"]["evidence_in_block"]["violations"], 0)
+            self.assertEqual(rep["totals"]["pattern_in_evidence"]["violations"], 0)
+
+
 class SyntheticFlagTests(unittest.TestCase):
     """손으로 만든 jsonl + 손으로 만든 XML 로 다섯 플래그를 각각 정확히 1건씩만 잡는지 확인한다.
     각 행은 자신이 겨냥한 플래그 하나만 위반하고 나머지 네 플래그는 통과하도록 설계했다."""

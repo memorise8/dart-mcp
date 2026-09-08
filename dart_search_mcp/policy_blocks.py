@@ -3,11 +3,25 @@
 왜 문장 창이 아니라 블록인가 — R18 연구(2026-09-04)에서 판정 문장이 이웃 기준서 항목에
 붙는 사례(고려아연: 제1109호 개정 조기적용 문장이 "(4) 제1118호" 직전)가 나왔다.
 본문 안의 번호("제1001호를 대체", "및 제1007호")는 헤더가 아니다.
+
+Phase 1 T4(2026-09-08): 두 가지를 더 고친다.
+(1) 문장 한가운데의 인용("…는 현행 기업회계기준서 제1001호 '재무제표 표시'를 대체할 예정이며")이
+    따옴표 제목 규칙(`_TITLE_AFTER_RE`)만으로 항목 시작이 돼 앞 항목 블록을 84자에서 끊었다
+    (실측: 이마트 20260318001024·삼성전자 20260310002820 — 제1118호 항목이 회사 문장에
+    닿기 전에 잘려 판단 보류로 남았다). 따옴표 제목 규칙은 그 제목이 격조사로 문장에 묶여
+    있지 않을 때만 쓴다(`_is_inline_citation`).
+(2) 절 번호 표제("2.3 연결", "2.2.2 회사가 적용하지 않은 …")를 블록 종료 경계로 인정한다 —
+    항목 블록이 다음 절까지 흘러 들어가 다른 절의 서문·본문을 근거로 삼는 것을 막는다.
+그리고 항목이 속한 목록의 서문(lead)과 상위 절 번호(section)를 블록에 실어 준다 —
+`policy_rules` 가 "이 항목은 당기 신규 적용 목록에 있다/조기 적용하지 않은 목록에 있다"를
+판정할 수 있어야 하기 때문이다.
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+
+from dart_search_mcp.policy_sentences import find_lead, find_section
 
 BLOCK_CAP = 3000
 
@@ -45,6 +59,15 @@ _SENTENCE_END_RE = re.compile(r"(?:다|니다|음|함|(?<!\d)\.)\s*$")
 # 블록 자신의 양식을 못 찾을 때(예: 따옴표 제목 헤더처럼 항목 기호 없이 시작하는 기준서 블록)만 쓰는
 # 대체 탐색 오프셋 — 시작 직후 텍스트가 자기 자신을 경계로 오인하지 않도록 여유를 둔다.
 _GENERIC_FALLBACK_OFFSET = 60
+# 절 번호 표제("2.3 연결", "2.2.2 회사가 …"). 항목 기호와 달리 앞이 문장 끝일 것을 요구하지
+# 않는다 — 평문화된 원문에서는 "…제정 기준서 2.3 연결"처럼 앞 문장에 붙어 나오는 쪽이 오히려
+# 흔하다(실측: 에스텍 20260316001663). 대신 뒤에 한글 두 자 이상이 오고 그 첫 낱말이 단위
+# 명사가 아닐 것을 요구해 소수("1.5 배로", "2.3 배")를 표제로 오인하지 않는다.
+_SECTION_HDR_RE = re.compile(
+    r"(?<![\d.])\d{1,2}(?:\.\d{1,2}){1,3}\s*"
+    r"(?!(?:배|억|만|천|원|개|명|년|월|일|시간|퍼센트|포인트|미터|톤|리터|프로)(?![가-힣]))"
+    r"(?=[가-힣]{2})"
+)
 
 
 def _own_marker(text: str, pos: int) -> tuple[re.Pattern[str], int] | None:
@@ -91,12 +114,49 @@ def _earliest_boundary(
 
 @dataclass(frozen=True, slots=True)
 class PolicyBlock:
+    """기준서 항목·주제 표제 하나에 해당하는 본문 조각.
+
+    `lead`/`lead_polarity` 는 이 항목이 속한 목록의 서문이다(기준서 블록에만 붙는다) —
+    항목 자체가 아무 말도 하지 않을 때 "당기 신규 적용 목록에 있다"/"조기 적용하지 않은
+    목록에 있다"를 읽어내는 근거다. `section` 은 상위 절 번호("2.2.2")로 근거의 위치를
+    사람이 확인할 수 있게 하는 표시용 값이다. 셋 다 기본값이 있어 기존 생성자 호출
+    (테스트 픽스처 등)은 그대로 동작한다."""
+
     heading: str
     standard_no: str | None
     topic_heading: str | None
     start: int
     text: str
     capped: bool
+    lead: str = ""
+    lead_polarity: str = ""
+    section: str = ""
+
+
+def _at_sentence_start(text: str, pos: int) -> bool:
+    """pos 가 문장 첫머리인가 — 앞이 텍스트 시작이거나 문장 끝(어미+마침표)이다."""
+    pre = text[max(0, pos - 12) : pos]
+    if not pre.strip():
+        return True
+    return _SENTENCE_END_RE.search(pre) is not None
+
+
+# 헤더(+따옴표 제목) 바로 뒤에 붙는 격조사 — 그 기준서가 문장의 성분으로 묶여 있다는 신호다.
+_BOUND_PARTICLE_RE = re.compile(r"^(?:를|을|은|는|이|가|의|와|과|에|로|으로)(?![가-힣])")
+_QUOTE_CHARS = "'‘’“”\""
+_QUOTED_TITLE_RE = re.compile(rf"^\s*[{_QUOTE_CHARS}][^{_QUOTE_CHARS}]{{0,80}}[{_QUOTE_CHARS}]")
+
+
+def _is_inline_citation(post: str) -> bool:
+    """헤더 뒤(따옴표 제목이 있으면 그 뒤)가 격조사로 이어지면 문장 안의 인용이다.
+
+    T4: 항목 기호 없이 따옴표 제목만으로 항목 시작을 인정하던 규칙(`_TITLE_AFTER_RE`)이
+    "…'재무제표 표시와 공시'는 현행 기업회계기준서 제1001호 '재무제표 표시'를 대체할
+    예정이며 …" 의 인용까지 항목 시작으로 삼아, 앞 항목(제1118호) 블록을 84자에서 끊었다
+    (실측: 이마트 20260318001024·삼성전자 20260310002820). 인용은 제목 뒤가 "…를/…는"
+    처럼 격조사로 이어지고, 진짜 항목 표제는 그렇지 않다(제정/개정/시행일/줄바꿈이 온다)."""
+    m = _QUOTED_TITLE_RE.match(post)
+    return _BOUND_PARTICLE_RE.match(post[m.end() :] if m else post) is not None
 
 
 def _standard_starts(text: str) -> list[tuple[int, str, None]]:
@@ -106,7 +166,10 @@ def _standard_starts(text: str) -> list[tuple[int, str, None]]:
         post = text[m.end() : m.end() + 35]
         if _CONJ_TAIL_RE.search(pre.strip()[-6:]):
             continue
-        if _ITEM_MARK_RE.search(pre) or _TITLE_AFTER_RE.search(post):
+        title_start = _TITLE_AFTER_RE.search(post) and (
+            _at_sentence_start(text, m.start()) or not _is_inline_citation(post)
+        )
+        if _ITEM_MARK_RE.search(pre) or title_start:
             out.append((m.start(), m.group(1), None))
     return out
 
@@ -133,13 +196,21 @@ def split_policy_blocks(text: str) -> list[PolicyBlock]:
         own = _own_marker(text, pos)
         if own is not None:
             own_pat, own_end = own
+            search_from = own_end
             boundary = _earliest_boundary(text, (own_pat,), own_end, known_end)
         else:
-            boundary = _earliest_boundary(text, _MARKER_PATTERNS, pos + _GENERIC_FALLBACK_OFFSET, known_end)
+            search_from = pos + _GENERIC_FALLBACK_OFFSET
+            boundary = _earliest_boundary(text, _MARKER_PATTERNS, search_from, known_end)
+        section_hit = _SECTION_HDR_RE.search(text, search_from, known_end) if search_from < known_end else None
+        if section_hit is not None and (boundary is None or section_hit.start() < boundary):
+            boundary = section_hit.start()
         natural_end = boundary if boundary is not None else known_end
         end = min(natural_end, pos + BLOCK_CAP)
         capped = natural_end > pos + BLOCK_CAP
         body = text[pos:end]
+        # 서문·절 번호는 기준서 항목 블록에만 붙인다 — 주제 블록(유형자산·수익인식 등)의
+        # 판정은 목록 귀속과 무관하고, 괜히 붙이면 그쪽 판정 규칙이 쓰지도 않을 값을 들고 다닌다.
+        lead = find_lead(text, pos) if std is not None else None
         blocks.append(
             PolicyBlock(
                 heading=body[:60],
@@ -148,6 +219,9 @@ def split_policy_blocks(text: str) -> list[PolicyBlock]:
                 start=pos,
                 text=body,
                 capped=capped,
+                lead=lead[0] if lead else "",
+                lead_polarity=lead[1] if lead else "",
+                section=find_section(text, pos) if std is not None else "",
             )
         )
     return blocks

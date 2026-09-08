@@ -36,6 +36,29 @@ class RunExtractPolicyStancesTests(unittest.TestCase):
             self.assertEqual(summary["by_topic"]["STD_EARLY_ADOPTION"]["EARLY_ADOPTED"], 1)
             self.assertTrue((Path(tmp) / "policy_stance.jsonl.summary.json").exists())
 
+    def test_ps_v2_근거_메타_5열이_행에_실린다(self) -> None:
+        """T4: 기존 열은 그대로 두고 근거 메타 5열을 덧붙인다(parser_version 은 ps-v2)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "policy_stance.jsonl"
+            run_extract_policy_stances(
+                facts_path=FIX / "audit_facts.jsonl", docs_dir=FIX / "docs", output_path=out,
+                topics=("STD_EARLY_ADOPTION",), use_llm=False)
+            rows = _rows(out)
+            self.assertEqual(PARSER_VERSION, "ps-v2")
+            for r in rows:
+                for col in ("sentence_kind", "sentence_subject", "held_reason", "evidence_heading_path"):
+                    self.assertIn(col, r)
+                self.assertIsInstance(r["is_conditional"], bool)
+            by = {(r["rcept_no"], r["subject"]): r for r in rows}
+            not_adopted = by[("20260001000001", "1118")]
+            self.assertEqual(
+                (not_adopted["value"], not_adopted["sentence_kind"], not_adopted["sentence_subject"]),
+                ("NOT_ADOPTED", "company_statement", "회사"))
+            self.assertIn("아직 채택하지 않았으며", not_adopted["evidence"])
+            self.assertEqual(not_adopted["held_reason"], "")
+            held = by[("20260001000002", "1118")]
+            self.assertEqual((held["value"], held["held_reason"]), ("UNDETERMINED", "EVIDENCE_INSUFFICIENT"))
+
     def test_LLM은_UNDETERMINED_블록에만_호출된다(self) -> None:
         """V7 R2 가드가 들어온 뒤에도 성공 경로(규칙이 못 가른 블록만 LLM 에 가고, 근거
         키워드가 블록에 있어 llm 로 채택됨)를 그대로 확인한다 — 가드가 거부하는 경로는
@@ -44,10 +67,14 @@ class RunExtractPolicyStancesTests(unittest.TestCase):
         뿐이라 R2 가드의 NOT_ADOPTED 근거 키워드가 전혀 없어(그래서 가드 거부 테스트가 그
         fixture 를 그대로 쓴다), 이 테스트는 근거 키워드("검토", "영향", "적용")가 있는
         전용 fixture 를 따로 둔다."""
+        # T4(2026-09-08): 예전에는 둘째 문장이 "회사는 동 기준서의 적용 영향을 검토하고
+        # 있습니다"였는데, 그 문형이 이제 규칙(회사의 미적용 진술)으로 잡혀 LLM 까지 가지
+        # 않는다. LLM 경로를 시험하려면 규칙이 못 가르면서 R2 가드 키워드("적용")는 있는
+        # 블록이어야 한다.
         xml = (
             "<DOCUMENT><BODY><P>(4) 기업회계기준서 제1118호 '재무제표 표시와 공시' 제정 "
-            "손익계산서에 새로운 중간합계를 도입합니다. 회사는 동 기준서의 적용 영향을 "
-            "검토하고 있습니다.</P></BODY></DOCUMENT>"
+            "손익계산서에 새로운 중간합계를 도입합니다. 동 기준서의 적용 범위는 연결재무제표와 "
+            "별도재무제표를 모두 포함합니다.</P></BODY></DOCUMENT>"
         )
         calls: list[str] = []
         def fake(messages, **kw):

@@ -28,9 +28,12 @@ class EarlyAdoptionRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk("기업회계기준서 제1118호 '재무제표 표시와 공시' 제정. 회사는 제1118호를 아직 채택하지 않았으며 영향을 평가 중입니다.", "1118"))
         self.assertEqual(j.value, "NOT_ADOPTED")
 
-    def test_시행일_서술만_있어도_NOT_ADOPTED(self) -> None:
+    def test_시행일_서술만_있으면_PERMITTED_ONLY_T4(self) -> None:
+        """T4(2026-09-08, v1 설계 §2.1): 시행일·조기적용 허용 언급만으로는 회사의 미적용을
+        입증하지 못한다 — 이 문형은 NOT_ADOPTED 에서 PERMITTED_ONLY 로 옮겼다(회계사 확인:
+        같은 문형의 유니셈 20260313001168/1109 가 PERMITTED_ONLY 로 유지돼야 한다)."""
         j = judge(self.spec, _blk("기업회계기준서 제1118호 제정. 기준서는 2027년 1월 1일 이후 시작하는 회계연도부터 적용되며, 조기도입이 가능합니다.", "1118"))
-        self.assertEqual(j.value, "NOT_ADOPTED")
+        self.assertEqual(j.value, "PERMITTED_ONLY")
 
     def test_비교정보_재작성은_긍정_패턴이_아니다(self) -> None:
         self.assertFalse(positive_pattern_matches(self.spec, "EARLY_ADOPTED", "2026년 비교정보는 제1118호에 따라 재작성됩니다."))
@@ -61,10 +64,12 @@ class EarlyAdoptionRulesTests(unittest.TestCase):
         self.assertIn(j.evidence, text)
         self.assertEqual(j.evidence, "회사는 동 기준서의 조기적용이 허용됨을 확인하였습니다.")
 
-    def test_적용하되_조기적용_허용은_NOT_ADOPTED(self) -> None:
-        """R5: "…부터 적용하되 조기적용이 허용됩니다"는 미적용 서술이지 허용만이 아니다."""
+    def test_적용하되_조기적용_허용은_PERMITTED_ONLY_T4(self) -> None:
+        """R5 는 "…부터 적용하되 조기적용이 허용됩니다"를 미적용 서술로 봤으나, T4 에서
+        시행일 서술 계열 전체를 PERMITTED_ONLY 로 옮겼다 — 주어가 기준서인 시행일 문장은
+        회사가 적용했는지 안 했는지를 말하지 않는다(v1 설계 §2.1)."""
         j = judge(self.spec, _blk("새로운 기준서는 2027년 1월 1일 이후 최초로 시작되는 회계연도부터 적용하되 조기적용이 허용됩니다.", "1118"))
-        self.assertEqual(j.value, "NOT_ADOPTED")
+        self.assertEqual(j.value, "PERMITTED_ONLY")
 
     def test_영향_미치지_않을_것으로_예상은_NOT_ADOPTED(self) -> None:
         j = judge(self.spec, _blk("동 개정사항이 재무제표에 중요한 영향을 미치지 않을 것으로 예상됩니다. 조기적용이 허용됩니다.", "1118"))
@@ -82,8 +87,6 @@ class EarlyAdoptionRulesTests(unittest.TestCase):
             "최초 적용 시에 연결기업의 연결재무제표에 중요한 영향을 미칠 것으로 예상되는 항목은 다음과 같습니다.",
             "회사가 기업회계기준서 제1118호를 적용하여 재무제표를 작성하는 경우 현행 재무제표와 유의적인 "
             "차이를 발생시킬 것으로 예상되는 주요 회계정책은 다음과 같습니다.",
-            "2027년 1월 1일 이후에 시작되는 보고기간에 적용됩니다.",
-            "2027년 1월 1일 이후 시작하는 회계연도에 적용해야 하며, 조기적용이 허용됩니다.",
             "2026년 12월 31일로 종료되는 회계연도의 비교정보는 제1118호에 따라 재작성됩니다.",
             "표시와 공시에 미치는 영향은 광범위할 것으로 예상합니다.",
         ]
@@ -92,19 +95,32 @@ class EarlyAdoptionRulesTests(unittest.TestCase):
                 j = judge(self.spec, _blk(sent + " 조기적용이 허용됩니다.", "1118"))
                 self.assertEqual(j.value, "NOT_ADOPTED")
 
-    def test_의무_소급_적용_시기_서술_2문장은_NOT_ADOPTED_round3_addendum(self) -> None:
-        """Round 3 addendum(item 7, T1): 중간 실행에서 1118호 PERMITTED_ONLY 로 남은 4건이
-        전부 이 두 시기 서술(의무/소급 적용) 변형을 놓쳐서였다."""
+    def test_시행일_서술_4문장은_PERMITTED_ONLY_T4(self) -> None:
+        """T4: 순수 시행일 서술(의무·소급 적용 포함)은 전부 PERMITTED_ONLY 다.
+
+        Round 3 addendum(item 7)과 V7 R1 이 이 문형들을 NOT_ADOPTED 로 잡던 것을 되돌린
+        것이다 — 회사 문장이 하나도 없는데 "회사가 적용하지 않았다"고 단정할 근거가 없다.
+        회사가 주어인 문장 안에 같은 시행일 서술이 들어 있으면 여전히 NOT_ADOPTED 다
+        (아래 test_회사_문장_안의_시행일_서술은_NOT_ADOPTED_T4)."""
         sentences = [
             "기업회계기준서 제1118호는 2027년 1월 1일 이후 시작하는 회계연도부터 의무 적용되며, "
             "2026년 1월 1일 이후 개시하는 회계연도에 조기 적용이 가능합니다.",
             "기업회계기준서 제1118호는 2027년 1월 1일 이후 개시하는 연차 보고기간의 시작일부터 "
             "소급적용되며 조기적용이 허용됩니다.",
+            "2027년 1월 1일 이후에 시작되는 보고기간에 적용됩니다.",
+            "2027년 1월 1일 이후 시작하는 회계연도에 적용해야 하며, 조기적용이 허용됩니다.",
         ]
         for sent in sentences:
             with self.subTest(sent=sent):
                 j = judge(self.spec, _blk(sent, "1118"))
-                self.assertEqual(j.value, "NOT_ADOPTED")
+                self.assertEqual(j.value, "PERMITTED_ONLY")
+
+    def test_회사_문장_안의_시행일_서술은_NOT_ADOPTED_T4(self) -> None:
+        """시행일 서술이라도 주어가 회사면 회사의 미적용 진술이다 — 값도 근거도 회사 문장."""
+        j = judge(self.spec, _blk(
+            "기업회계기준서 제1118호 제정. 연결회사는 동 기준서를 2027년 1월 1일 이후 시작하는 "
+            "회계연도부터 적용될 예정입니다.", "1118"))
+        self.assertEqual((j.value, j.sentence_kind, j.sentence_subject), ("NOT_ADOPTED", "company_statement", "연결실체"))
 
     def test_조기적용이_허용됩니다_단독은_여전히_PERMITTED_ONLY_round3_addendum(self) -> None:
         """Round 3 addendum 회귀 확인: 새 시기 서술 가드가 "부터"·"의무"·"소급" 토큰이 아예
@@ -137,11 +153,14 @@ class EarlyAdoptionRulesTests(unittest.TestCase):
         j = judge(self.spec, _blk(text, "1017"))
         self.assertEqual(j.value, UNDETERMINED)
 
-    def test_부터_적용되는_기준서는_NOT_ADOPTED_재리뷰_Y2_20260319000459(self) -> None:
+    def test_부터_적용되는_기준서는_PERMITTED_ONLY_T4_20260319000459(self) -> None:
         """재리뷰 Minor Y2 재현(20260319000459/1117, dart_collected 실측): X2 의 어미
         화이트리스트가 비대칭이라 관형형 "되는"을 놓쳐 "…회계연도부터 적용되는 기업회계기준서
         제1117호 …"가 UNDETERMINED 로 남았다 — 의미상 "…부터 적용하며"(잡힘)와 같은
-        시기 서술인데 우연히 갈렸다. "되는"을 더한다."""
+        시기 서술인데 우연히 갈렸다. "되는"을 더한다.
+
+        T4: 그 시기 서술 계열이 통째로 PERMITTED_ONLY 로 옮겨졌다 — 어미 비대칭이 사라져야
+        한다는 Y2 의 취지는 그대로고(같은 문형은 같은 값), 값만 바뀐다."""
         text = (
             "기업회계기준서 제1117호 '보험계약' 개정 - 보험계약 측정에 사용한 투입변수의추정기법 "
             "공시2025년 12월 31일 이후 최초로 종료하는 회계연도부터 적용되는 기업회계기준서 "
@@ -150,11 +169,13 @@ class EarlyAdoptionRulesTests(unittest.TestCase):
             "있습니다."
         )
         j = judge(self.spec, _blk(text, "1117"))
-        self.assertEqual(j.value, "NOT_ADOPTED")
+        self.assertEqual(j.value, "PERMITTED_ONLY")
 
-    def test_부터_적용되고는_NOT_ADOPTED_재리뷰_Y2_20260406004147(self) -> None:
+    def test_부터_적용되고는_PERMITTED_ONLY_T4_20260406004147(self) -> None:
         """재리뷰 Minor Y2 재현(20260406004147/1117, dart_collected 실측): 연결형 "되고"도
-        같은 종류로 놓쳤다 — "…회계연도부터 적용되고, 2029년 …효력이 있습니다"."""
+        같은 종류로 놓쳤다 — "…회계연도부터 적용되고, 2029년 …효력이 있습니다".
+
+        T4: Y2 와 같은 이유로 값이 PERMITTED_ONLY 로 바뀌었다(시행일 서술 계열 이동)."""
         text = (
             "기업회계기준서 제1117호 '보험계약'(개정): 추정기법의 차이에 대한 추가공시이 개정사항에 "
             "따르면 보험계약을 측정하기 위해 사용한 투입변수의 추정기법이 보험 관련 법규에서 "
@@ -164,7 +185,7 @@ class EarlyAdoptionRulesTests(unittest.TestCase):
             "적용되고, 2029년 12월 31일이 속하는 회계연도까지효력이 있습니다"
         )
         j = judge(self.spec, _blk(text, "1117"))
-        self.assertEqual(j.value, "NOT_ADOPTED")
+        self.assertEqual(j.value, "PERMITTED_ONLY")
 
     def test_파_악_중_띄어쓰기_실측도_NOT_ADOPTED_V7_R1(self) -> None:
         """실측: 원문에 "파 악 중"처럼 글자 사이에 띄어쓰기가 있는 경우도 잡아야 한다."""

@@ -21,6 +21,11 @@ from dart_search_mcp.tools.extract_facts import select_xml_path
 # BLOCK_CAP(policy_blocks.py) + evidence_sentence 의 400자 상한(policy_rules.py) — 감사가 자기완결
 # 되도록 값만 여기 다시 적고 그 모듈들을 import 하지는 않는다.
 _WINDOW = 3000 + 400
+# T4(ps-v2): 항목이 침묵하면 그 항목이 실린 목록의 서문(policy_blocks 의 lead — 블록 **앞**
+# 2,000자 안)이 근거가 된다. 창을 앞쪽으로도 그만큼 열어야 그 근거가 "원문에 없다"로 잘못
+# 잡히지 않는다. policy_sentences.LEAD_WINDOW 와 같은 값을 의도적으로 다시 적는다(이 모듈은
+# 다른 policy_* 모듈에 기대지 않는 자기완결 설계 — 한쪽을 고치면 다른 쪽도 맞출 것).
+_LEAD_WINDOW = 2000
 _NONE_PREFIX = "판정 불가: "
 # evidence_sentence 가 400자 창을 strip() 해서 돌려주므로(양끝이 공백이면 398~399), 정확히
 # 400 을 기준으로 잡으면 R1 이 만들어낸 "표 한가운데를 잘라낸" 상한 도달 근거를 놓친다(S-M5).
@@ -86,7 +91,7 @@ def _evidence_in_block(evidence: str, method: str, text: str | None, block_offse
     norm_evidence = _normalize(check)
     if not norm_evidence:
         return True  # 빈 근거는 비교 대상이 없다 — 위반으로 잡지 않는다
-    window = text[block_offset : block_offset + _WINDOW]
+    window = text[max(0, block_offset - _LEAD_WINDOW) : block_offset + _WINDOW]
     return norm_evidence in _normalize(window)
 
 

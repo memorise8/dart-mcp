@@ -10,8 +10,31 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from dart_search_mcp.policy_blocks import PolicyBlock
+from dart_search_mcp.policy_sentences import (
+    KIND_COMPANY,
+    KIND_CONDITIONAL,
+    KIND_OTHER,
+    KIND_PREAMBLE,
+    KIND_STANDARD,
+    PREAMBLE_ADOPTED,
+    Sentence,
+    classify_sentence,
+    preamble_polarity,
+    split_sentences,
+)
 
 UNDETERMINED = "UNDETERMINED"
+# 판단 보류 사유(held_reason) — UNDETERMINED 행에만 채운다. 어느 단계에서 근거가 끊겼는지
+# 알아야 다음 라운드에 무엇을 고칠지 정할 수 있다(지금까지는 보류 사유가 전부 공란이었다).
+HELD_EVIDENCE_INSUFFICIENT = "EVIDENCE_INSUFFICIENT"
+HELD_CONFLICT = "CONFLICT"
+HELD_ATTRIBUTION_UNCLEAR = "ATTRIBUTION_UNCLEAR"
+HELD_CONDITIONAL_ONLY = "CONDITIONAL_ONLY"
+# 아래 둘은 열 어휘로는 정의돼 있으나 규칙 판정에서는 아직 나오지 않는다(소비자가 값 목록을
+# 코드에서 확인할 수 있도록 이름을 남긴다). SUBJECT_UNCLEAR 는 주어를 못 가려 보류하는 경우,
+# RULE_MODEL_DISAGREE 는 policy_llm 이 규칙값과 모델값을 대조하게 될 때 쓴다.
+HELD_SUBJECT_UNCLEAR = "SUBJECT_UNCLEAR"
+HELD_RULE_MODEL_DISAGREE = "RULE_MODEL_DISAGREE"
 _EVIDENCE_MAX = 400
 _SENT_SPLIT_RE = re.compile(r"(?<=다\.)\s+|(?<=니다\.)\s+|(?<=음\.)\s+")
 # V6 R4: 표 조각(숫자 나열) 뒤에 항목이 이어지는 경우, "문장"의 시작이 그 표 조각까지 거슬러
@@ -40,6 +63,13 @@ class Judgement:
     value: str
     evidence: str
     method: str  # "rule" | "llm_verified" | "llm" | "none" — llm* 은 policy_llm.py 가 붙인다
+    # T4(2026-09-08) 근거 메타 — 근거로 고른 문장이 "누구의 어떤 문장"인지 행에 남긴다.
+    # 전부 기본값이 있어 기존 생성자 호출(policy_llm 의 5인자 호출 등)은 그대로 동작한다.
+    sentence_kind: str = ""  # company_statement|standard_description|conditional|list_preamble|""
+    sentence_subject: str = ""  # 회사|연결실체|기준서|불명
+    held_reason: str = ""  # UNDETERMINED 일 때만
+    evidence_heading_path: str = ""  # "2.2.2 › (1) 기업회계기준서 제1109호 …"
+    is_conditional: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +89,9 @@ class TopicSpec:
     # 트리거)만 지워야 하는 경우는 표현할 수 없다. 그런 "부분만 지우는" 전처리가 필요한 주제만
     # 이 훅을 쓴다(기본 None — 대부분 주제는 영향 없음).
     strip_fn: Callable[[str], str] | None = None
+    # T4: 문장 단위로 근거를 고르는 주제는 자기 판정 함수를 단다(T1). 없으면 아래 `judge` 의
+    # 기존 블록 단위 경로를 그대로 쓴다(T2·T3·T4 측정모형/수익인식).
+    sentence_judge: Callable[["TopicSpec", PolicyBlock], "Judgement"] | None = None
 
 
 def evidence_sentence(text: str, pos: int) -> str:
@@ -118,6 +151,8 @@ def _first_in_order(patterns: tuple[tuple[re.Pattern[str], str], ...], text: str
 
 
 def judge(spec: TopicSpec, block: PolicyBlock) -> Judgement:
+    if spec.sentence_judge is not None:
+        return spec.sentence_judge(spec, block)
     subject = spec.subject_of(block)
     text = block.text
     hit = _first_in_order(spec.negative, text)
@@ -166,42 +201,204 @@ def _p(pattern: str) -> re.Pattern[str]:
 
 
 # ---- T1 기준서 조기적용 -------------------------------------------------------
+# 값 어휘: EARLY_ADOPTED(조기적용 단정) · ADOPTED(당기 신규 적용 목록에 있음, 조기 여부는
+# 미판정) · NOT_ADOPTED(회사가 아직 적용하지 않았음) · PERMITTED_ONLY(기준서 설명·시행일·
+# 조기적용 허용만 있어 회사 자신의 적용 여부를 읽을 수 없음) · UNDETERMINED.
 _T1_NEG = (
     (_p(r"조기\s*(?:적용|도입)\s*하지\s*(?:않|아니)"), "NOT_ADOPTED"),
     (_p(r"조기\s*(?:적용|도입)(?:하기로\s*한|한)\s*(?:기준서|사항|해석서)[^.]{0,40}없"), "NOT_ADOPTED"),
 )
 _T1_STRIP = (_p(r"조기\s*(?:적용|도입)\s*하기로\s*선택하는\s*경우[^.]*\."),)
-_T1_POS = ((_p(r"조기\s*(?:적용|도입)\s*(?:하였|했|하고\s*있|하기로\s*(?:결정|하였|했))"), "EARLY_ADOPTED"),)
-_T1_FALLBACK = (
-    (_p(
-        r"(?:채택|적용|도입)하지\s*(?:않|아니)|아직\s*채택|(?:검토|평가|파\s*악)\s*중|영향(?:은|이)?\s*(?:중요하지|없)"
-        r"|적용할\s*예정|시행될\s*예정|부터\s*(?:적용|시행)(?:됩니다|되며|될|합니다)"
-        r"|적용하되|영향을\s*미치지\s*않을\s*것으로\s*예상|영향이\s*없을\s*것으로\s*예상"
-        # V7 R1: 1118호 표본 판독(NOT_ADOPTED 80/80 정확, PERMITTED_ONLY 30건 중 0건 정확)에서
-        # 나온 시기·영향 서술 변형 — 기존 목록 뒤에 덧붙인다(목록 순서 = 우선순위, PERMITTED_ONLY
-        # 항목은 그대로 이 뒤에 남는다).
-        r"|최초\s*적용\s*시|적용하여\s*재무제표를\s*작성하는\s*경우"
-        r"|(?:회계연도|보고기간)(?:에|부터)\s*적용(?:해야|하여야|됩니다|합니다|되며|될)"
-        r"|재작성(?:됩니다|될|되며)|차이를\s*발생시킬\s*것으로\s*예상|영향(?:은|이)?\s*광범위할\s*것으로\s*예상"
-        # Round 3 addendum(item 7, T1): 중간 실행에서 1118호 PERMITTED_ONLY 로 남은 4건이 전부
-        # "…회계연도부터 의무 적용되며, …조기 적용이 가능합니다."/"…시작일부터 소급적용되며
-        # 조기적용이 허용됩니다." 처럼 시기 서술(의무/소급 적용)을 놓쳐서였다 — 기존 목록
-        # 뒤에 덧붙인다(순서 불변).
-        # 재리뷰 X2(Important): 첫 대안의 "합니다" 가 "기업회계기준서 제1008호에 따라 소급
-        # 적용합니다"(회계정책을 소급 **적용한다**는 진술이지 미적용 선언이 아니다)까지
-        # 잡아 2,000 보고서 표본에서 21건 중 14건을 오발화시켰다 — "합니다" 를 뺀다(지정
-        # 목표 두 문장은 둘 다 "되며"로 끝나 "합니다" 없이도 잡힌다). 둘째 대안
-        # `부터…적용` 은 어미를 전혀 요구하지 않아 과거·현재형("…부터 적용한 회계정책")까지
-        # 잡았다(실측 20260331002049/1017, 1건) — 형제 대안들처럼 미래·피동 어미를 요구한다.
-        # 재리뷰 Y2(Minor): 위 어미 화이트리스트가 비대칭이라 관형형 "되는"·연결형 "되고" 를
-        # 놓쳐, 의미상 같은 "…부터 적용되는 기준서 …"/"…부터 적용되고, …효력이 있습니다"
-        # 문형이 "…부터 적용하며"(잡힘)와 갈렸다 — 실측 20260319000459·20260406004147(둘 다
-        # 1117호). 과거·현재형("적용한|적용하고 있")은 여전히 배제한 채 "되는"·"되고" 를
-        # 더한다.
-        r"|(?:의무|소급)\s*적용(?:되며|됩니다|될|됨)|부터\s*(?:의무|소급)?\s*적용(?:되며|되는|되고|됩니다|될|됨|하며|할)"
-    ), "NOT_ADOPTED"),
-    (_p(r"조기\s*(?:적용|도입)이?\s*(?:허용|가능)"), "PERMITTED_ONLY"),
+_T1_EARLY = ((_p(r"조기\s*(?:적용|도입)\s*(?:하였|했|하고\s*있|하기로\s*(?:결정|하였|했))"), "EARLY_ADOPTED"),)
+# 당기 신규 적용 목록의 서문(2.2.1 류). 값 ADOPTED 의 근거 패턴이다 — 실제 판정은 블록에
+# 붙은 lead 로 하지만(아래 `_judge_std_early`), `positive_pattern_matches`(policy_llm 의 긍정값
+# 검증)와 policy_stance_audit 의 pattern_in_evidence 가 이 패턴으로 근거를 되짚는다.
+_T1_ADOPTION_PREAMBLE = _p(
+    r"(?:신규로|새로이|새로)\s*적용(?:하였|하고|한)|적용한\s*제\s*ㆍ?\s*개정|채택한\s*제\s*ㆍ?\s*개정"
+    r"|당기(?:부터)?\s*(?:새로|신규로)\s*적용"
 )
+_T1_POS = (*_T1_EARLY, (_T1_ADOPTION_PREAMBLE, "ADOPTED"))
+
+# (A) 회사·영향 진술 — 회사가 아직 적용하지 않았음을 뒷받침하는 문장들.
+# T4: 「영향을 (검토|평가|분석) 하고 있」 계열을 더한다. 기존 목록은 "…중"만 잡아서, 실측에서
+# 가장 흔한 "…영향을 평가하고 있으며"(삼성전자 20260310002820·에스텍 20260316001663)를
+# 통째로 놓쳐 판단 보류로 남겼다.
+_T1_COMPANY_STANCE = (
+    (_p(
+        r"(?:채택|적용|도입)하지\s*(?:않|아니)|아직\s*채택|(?:검토|평가|파\s*악)\s*중"
+        r"|영향을\s*(?:검토|평가|분석)\s*(?:중|하고\s*있)|적용에\s*따른\s*영향을\s*(?:검토|평가)"
+        r"|영향(?:은|이)?\s*(?:중요하지|없)|적용할\s*예정"
+        r"|영향을\s*미치지\s*않을\s*것으로\s*예상|영향이\s*없을\s*것으로\s*예상"
+        r"|최초\s*적용\s*시|적용하여\s*재무제표를\s*작성하는\s*경우"
+        r"|재작성(?:됩니다|될|되며)|차이를\s*발생시킬\s*것으로\s*예상|영향(?:은|이)?\s*광범위할\s*것으로\s*예상"
+    ), "NOT_ADOPTED"),
+)
+# (B) 시행일 서술 — "언제부터 적용된다"는 기준서 쪽 사실일 뿐이라 회사의 미적용을 입증하지
+# 못한다(v1 설계 §2.1). T4 에서 NOT_ADOPTED → PERMITTED_ONLY 로 옮겼다. 다만 이 서술이 회사가
+# 주어인 문장 안에 있으면("연결회사는 … 2027년부터 적용될 예정입니다") 회사 진술이므로
+# NOT_ADOPTED 로 승격한다(`_EFFECTIVE_DATE_IN_COMPANY_VALUE`).
+_T1_EFFECTIVE_DATE = (
+    (_p(
+        r"부터\s*(?:적용|시행)(?:됩니다|되며|될|합니다)"
+        r"|(?:회계연도|보고기간)(?:에|부터)\s*적용(?:해야|하여야|됩니다|합니다|되며|될)"
+        r"|(?:의무|소급)\s*적용(?:되며|됩니다|될|됨)"
+        r"|부터\s*(?:의무|소급)?\s*적용(?:되며|되는|되고|됩니다|될|됨|하며|할)"
+        r"|적용하되|시행될\s*예정"
+    ), "PERMITTED_ONLY"),
+)
+# (C) 조기적용 허용·가능 — 그 자체로는 언제나 PERMITTED_ONLY 다(회사 문장 안에 있어도
+# "허용된다"는 기준서 쪽 사실이라 승격하지 않는다).
+_T1_PERMISSION = ((_p(r"조기\s*(?:적용|도입)이?\s*(?:허용|가능)"), "PERMITTED_ONLY"),)
+_T1_FALLBACK = (*_T1_COMPANY_STANCE, *_T1_EFFECTIVE_DATE, *_T1_PERMISSION)
+_EFFECTIVE_DATE_IN_COMPANY_VALUE = "NOT_ADOPTED"
+
+# 근거 문장 선택 순위 — 회계사 확인(P1·P2)의 핵심: 같은 값을 내는 문장이 여럿이면 회사가
+# 주어인 문장을 먼저 고른다. 기준서 설명문은 조건절 바로 위(=가장 나중)다.
+_KIND_RANK = {KIND_COMPANY: 0, KIND_OTHER: 1, KIND_PREAMBLE: 1, KIND_STANDARD: 2, KIND_CONDITIONAL: 3}
+
+
+@dataclass(frozen=True, slots=True)
+class _Hit:
+    """패턴 하나가 문장 하나에서 맞은 자리."""
+
+    value: str
+    order: int  # 패턴 목록 순서(작을수록 우선)
+    pos: int
+    sentence: Sentence
+
+    @property
+    def sort_key(self) -> tuple[int, int, int]:
+        return (_KIND_RANK.get(self.sentence.kind, 1), self.order, self.pos)
+
+
+def _scan(
+    rules: tuple[tuple[re.Pattern[str], str], ...], stripped: str, sentences: list[Sentence]
+) -> list[_Hit]:
+    """문장별로 규칙을 맞춰 본다 — 매치 위치가 아니라 매치가 **어느 문장에 있는지**가 중요하다.
+
+    탐색은 strip 을 거친 텍스트(`stripped`)에서 하고 문장 경계는 원문 기준이다. strip 은 길이
+    보존 치환이라 두 좌표계가 정확히 겹친다(Q-I2)."""
+    hits: list[_Hit] = []
+    for order, (pat, value) in enumerate(rules):
+        for sent in sentences:
+            m = pat.search(stripped, sent.start, sent.end)
+            if m is not None:
+                hits.append(_Hit(value, order, m.start(), sent))
+    return hits
+
+
+def _best(hits: list[_Hit]) -> _Hit | None:
+    return min(hits, key=lambda h: h.sort_key) if hits else None
+
+
+def _clip(raw: str, hit: _Hit) -> str:
+    """근거 문자열 — 매치가 든 문장 하나.
+
+    `evidence_sentence` 와 같은 두 가지 보정을 그대로 적용한다. (V6 R4) 문장 시작과 매치
+    사이에 항목 기호가 있으면(표 조각·글머리 나열 뒤에 항목이 이어지는 모양) 그 마지막
+    기호부터 시작한다 — 안 그러면 근거가 앞 표의 숫자 나열부터 시작한다. (R1) 그러고도
+    상한을 넘으면 매치 자리를 중심으로 창을 잡아 매치 구절이 창 밖으로 밀려나지 않게 한다."""
+    start = hit.sentence.start
+    marker = _last_item_marker_start(raw, start, hit.pos)
+    if marker is not None:
+        start = marker
+    sent = raw[start : hit.sentence.end].strip()
+    if len(sent) <= _EVIDENCE_MAX:
+        return sent
+    lo = max(start, hit.pos - 150)
+    hi = min(hit.sentence.end, lo + _EVIDENCE_MAX)
+    if hi - lo < _EVIDENCE_MAX:
+        lo = max(start, hi - _EVIDENCE_MAX)
+    return raw[lo:hi].strip()
+
+
+def _heading_path(block: PolicyBlock) -> str:
+    head = re.sub(r"\s+", " ", block.heading).strip()[:60]
+    return f"{block.section} › {head}" if block.section else head
+
+
+def _held(spec: TopicSpec, block: PolicyBlock, reason: str) -> Judgement:
+    return Judgement(
+        spec.code, spec.subject_of(block), UNDETERMINED, "", "none",
+        held_reason=reason, evidence_heading_path=_heading_path(block),
+    )
+
+
+def _decide(spec: TopicSpec, block: PolicyBlock, raw: str, hit: _Hit, value: str) -> Judgement:
+    return Judgement(
+        spec.code, spec.subject_of(block), value, _clip(raw, hit), "rule",
+        sentence_kind=hit.sentence.kind,
+        sentence_subject=hit.sentence.subject,
+        evidence_heading_path=_heading_path(block),
+        is_conditional=hit.sentence.kind == KIND_CONDITIONAL,
+    )
+
+
+def _judge_std_early(spec: TopicSpec, block: PolicyBlock) -> Judgement:
+    """T1 판정 — 문장 단위로 근거를 고르고, 항목이 침묵하면 그 항목이 속한 목록의 서문에 묻는다.
+
+    순서: (조기적용 부정 ↔ 단정 충돌) → 부정 → 단정(조기적용) → 회사의 미적용 진술 →
+    시행일·허용 서술(PERMITTED_ONLY) → 목록 서문 귀속(ADOPTED/NOT_ADOPTED) → 보류.
+
+    극성 있는 목록 서문("… 조기 적용하지 아니한 기준서는 다음과 같습니다")은 **뒤 항목**의
+    것이므로 이 블록의 근거 후보에서 뺀다 — 블록이 다음 절까지 흘러들어 그 서문을 삼켜도
+    앞 항목이 미적용으로 뒤집히지 않는다(올래디오 20260327000721 제1117호)."""
+    raw = block.text
+    sentences = split_sentences(raw)
+    usable = [s for s in sentences if not preamble_polarity(s.text)]
+    dropped_preamble = len(usable) != len(sentences)
+    stripped = raw
+    for pat in spec.strip:
+        stripped = pat.sub(lambda m: " " * len(m.group(0)), stripped)
+
+    neg = _best(_scan(_T1_NEG, stripped, usable))
+    early_hits = _scan(_T1_EARLY, stripped, usable)
+    early_asserted = [h for h in early_hits if h.sentence.kind != KIND_CONDITIONAL]
+    early = _best(early_asserted)
+    if neg is not None and early is not None and neg.sentence.start == early.sentence.start:
+        # 한 문장이 조기적용을 단정하면서 동시에 부정한다 — 규칙으로는 가릴 수 없다.
+        return _held(spec, block, HELD_CONFLICT)
+    if neg is not None:
+        return _decide(spec, block, raw, neg, neg.value)
+    if early is not None:
+        return _decide(spec, block, raw, early, early.value)
+
+    effective = _scan(_T1_EFFECTIVE_DATE, stripped, usable)
+    # 시행일 서술이 회사 문장 안에 있으면 회사의 미적용 진술로 본다(브리프 §T1 근거 선택 순서).
+    stance = _scan(_T1_COMPANY_STANCE, stripped, usable) + [
+        _Hit(_EFFECTIVE_DATE_IN_COMPANY_VALUE, len(_T1_COMPANY_STANCE) + h.order, h.pos, h.sentence)
+        for h in effective
+        if h.sentence.kind == KIND_COMPANY
+    ]
+    best_stance = _best(stance)
+    if best_stance is not None:
+        return _decide(spec, block, raw, best_stance, "NOT_ADOPTED")
+
+    permitted = [h for h in effective if h.sentence.kind != KIND_COMPANY] + _scan(
+        _T1_PERMISSION, stripped, usable
+    )
+    best_permitted = _best(permitted)
+    if best_permitted is not None:
+        return _decide(spec, block, raw, best_permitted, "PERMITTED_ONLY")
+
+    if block.lead_polarity:
+        # 항목 자체는 아무 말도 하지 않는다 — 이 항목이 실린 목록의 서문이 값을 정한다.
+        kind, subject = classify_sentence(block.lead)
+        return Judgement(
+            spec.code, spec.subject_of(block),
+            "ADOPTED" if block.lead_polarity == PREAMBLE_ADOPTED else "NOT_ADOPTED",
+            block.lead[:_EVIDENCE_MAX], "rule",
+            sentence_kind=KIND_PREAMBLE, sentence_subject=subject,
+            evidence_heading_path=_heading_path(block),
+            is_conditional=kind == KIND_CONDITIONAL,
+        )
+    if early_hits:
+        return _held(spec, block, HELD_CONDITIONAL_ONLY)
+    if dropped_preamble:
+        # 이 블록에서 값이 될 만한 문장은 뒤 항목의 서문뿐이었다 — 귀속을 확정할 수 없다.
+        return _held(spec, block, HELD_ATTRIBUTION_UNCLEAR)
+    return _held(spec, block, HELD_EVIDENCE_INSUFFICIENT)
+
 
 # ---- T2 유형자산 측정모형 ------------------------------------------------------
 _T2_POS = (
@@ -479,11 +676,12 @@ def _by_topic(name: str) -> Callable[[PolicyBlock], bool]:
 TOPICS: dict[str, TopicSpec] = {
     "STD_EARLY_ADOPTION": TopicSpec(
         code="STD_EARLY_ADOPTION",
-        values=("EARLY_ADOPTED", "NOT_ADOPTED", "PERMITTED_ONLY", UNDETERMINED),
-        positive_values=frozenset({"EARLY_ADOPTED"}),
+        values=("EARLY_ADOPTED", "ADOPTED", "NOT_ADOPTED", "PERMITTED_ONLY", UNDETERMINED),
+        positive_values=frozenset({"EARLY_ADOPTED", "ADOPTED"}),
         applies=_by_std,
         subject_of=lambda b: b.standard_no,
         negative=_T1_NEG, strip=_T1_STRIP, positive=_T1_POS, fallback=_T1_FALLBACK,
+        sentence_judge=_judge_std_early,
     ),
     "PPE_MEASUREMENT": TopicSpec(
         code="PPE_MEASUREMENT",

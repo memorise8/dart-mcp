@@ -38,6 +38,10 @@ _LABEL_SUPPORT: dict[tuple[str, str], str] = {
     ("STD_EARLY_ADOPTION", "PERMITTED_ONLY"): r"허용|가능",
     ("STD_EARLY_ADOPTION", "NOT_ADOPTED"): r"않|아니|아직|검토|평가|파\s*악|영향|예정|적용|시행|재작성|차이",
 }
+# T4: 새 값 ADOPTED(당기 신규 적용 목록에 있음)는 spec.positive_values 에 들어 있어 긍정값
+# 경로(단정 패턴 검증)를 탄다 — 위 비긍정 가드 표에는 넣지 않는다. 라벨 설명(_LABEL_HELP)에도
+# 넣지 않는다: 목록 서문 귀속은 블록 밖 문맥이 있어야 하는 판단이라 규칙이 하고, 모델에게는
+# 물어보지 않는다.
 
 
 def build_prompt(spec: TopicSpec, block: PolicyBlock, subject: str | None) -> str:

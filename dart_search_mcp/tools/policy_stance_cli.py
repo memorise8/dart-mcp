@@ -19,7 +19,7 @@ from dart_search_mcp.policy_rules import TOPICS, UNDETERMINED, Judgement, judge
 from dart_search_mcp.tools.extract_facts import select_xml_path
 from dart_search_mcp.tools.kam_tagger import CallFn, call_llm
 
-PARSER_VERSION = "ps-v1"
+PARSER_VERSION = "ps-v2"
 _CONFIDENCE = {"rule": 1.0, "llm_verified": 0.9, "llm": 0.6, "none": 0.0}
 _RANK = {"rule": 3, "llm_verified": 2, "llm": 1, "none": 0}
 
@@ -47,7 +47,11 @@ def _write_atomic(output_path: Path, records: Any) -> None:
 
 
 def _record(fact: dict[str, Any], j: Judgement, block: PolicyBlock) -> dict[str, Any]:
-    """UNDETERMINED 도 행으로 남긴다 — 분포 고지에 '판단불가 N' 을 보이기 위해. 근거 자리엔 블록 첫 120자."""
+    """UNDETERMINED 도 행으로 남긴다 — 분포 고지에 '판단불가 N' 을 보이기 위해. 근거 자리엔 블록 첫 120자.
+
+    ps-v2(T4): 근거 메타 5열을 덧붙인다. 기존 열의 이름·의미·값 코드는 그대로다 — 소비자(TEMIS
+    적재)는 새 열을 몰라도 되고, 알면 "이 근거가 누구의 어떤 문장인가"와 "왜 보류인가"를 읽을
+    수 있다."""
     fy = fact.get("fiscal_year")
     evidence = j.evidence if j.value != UNDETERMINED else "판정 불가: " + block.text[:120]
     return {
@@ -61,6 +65,11 @@ def _record(fact: dict[str, Any], j: Judgement, block: PolicyBlock) -> dict[str,
         "method": j.method,
         "confidence": _CONFIDENCE[j.method],
         "block_offset": block.start,
+        "sentence_kind": j.sentence_kind,
+        "sentence_subject": j.sentence_subject,
+        "held_reason": j.held_reason,
+        "evidence_heading_path": j.evidence_heading_path,
+        "is_conditional": j.is_conditional,
         "parser_version": PARSER_VERSION,
     }
 
