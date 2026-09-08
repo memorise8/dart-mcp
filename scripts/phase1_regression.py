@@ -82,7 +82,9 @@ class PolicyExpectation:
 
 @dataclass(frozen=True)
 class VersionExpectation:
-    """산출물 전 행이 같은 파서/분할기 판이어야 한다."""
+    """산출물 전 행이 같은 파서/분할기 판이어야 한다.
+
+    열 이름이 파일마다 다르다 — 감사·정책은 `parser_version`, KAM 은 `splitter_version` 이다."""
 
     filename: str
     column: str
@@ -165,6 +167,9 @@ POLICY_EXPECTATIONS: tuple[PolicyExpectation, ...] = (
 
 VERSION_EXPECTATIONS: tuple[VersionExpectation, ...] = (
     VersionExpectation("audit_facts.jsonl", "parser_version", "af-v2"),
+    # KAM 은 판이 바뀌면 행 집합 자체가 달라지므로(kam-v1 3,543행 vs kam-v2 3,185행) 판 표시가
+    # 섞여 들어오는 사고가 특히 치명적이다 — temis 적재는 삽입 전용이라 옛 키를 덮어쓰지 않는다.
+    VersionExpectation("kam_items.jsonl", "splitter_version", "kam-v2"),
     VersionExpectation("policy_stance.jsonl", "parser_version", "ps-v2"),
 )
 

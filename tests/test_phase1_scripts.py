@@ -147,6 +147,32 @@ class RegressionChecks(unittest.TestCase):
             self.assertTrue(by_field["값 COST_MODEL 존재"].passed)
             self.assertFalse(by_field["값 REVALUATION_MODEL 없음"].passed)
 
+    def test_version_checks_cover_three_artifacts_with_their_own_columns(self) -> None:
+        """판 표시 열은 파일마다 다르다 — 감사·정책은 parser_version, KAM 은 splitter_version.
+        섞인 판이 하나라도 있으면 FAIL 이어야 한다."""
+        self.assertEqual(
+            [(v.filename, v.column, v.value) for v in reg.VERSION_EXPECTATIONS],
+            [("audit_facts.jsonl", "parser_version", "af-v2"),
+             ("kam_items.jsonl", "splitter_version", "kam-v2"),
+             ("policy_stance.jsonl", "parser_version", "ps-v2")],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            d = _out_dir(
+                tmp,
+                audit=[_AUDIT_ROW],
+                kam=[{"rcept_no": "1", "item_kind": "kam", "splitter_version": "kam-v2"},
+                     {"rcept_no": "1", "item_kind": "kam", "splitter_version": "kam-v1"}],
+                policy=[_POLICY_ROW],
+            )
+            checks = reg.run_checks(d, audit_expectations=(), policy_expectations=(),
+                                    version_expectations=reg.VERSION_EXPECTATIONS)
+            by_file = {c.target: c for c in checks}
+            self.assertTrue(by_file["audit_facts.jsonl"].passed)
+            self.assertTrue(by_file["policy_stance.jsonl"].passed)
+            # kam-v1 이 한 줄 섞여 있으므로 FAIL 이고, 실제 칸에 두 판이 다 보여야 한다.
+            self.assertFalse(by_file["kam_items.jsonl"].passed)
+            self.assertIn("kam-v1", by_file["kam_items.jsonl"].actual)
+
     def test_main_exit_code_and_report_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             d = _out_dir(tmp, audit=[_AUDIT_ROW], kam=[], policy=[])
