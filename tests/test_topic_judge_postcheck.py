@@ -128,6 +128,26 @@ class RuleTests(unittest.TestCase):
         v = self.check("EMBEDDED_DERIVATIVE_SEPARATION", raw("NOT_SEPARATED", "회계처리를 하지 않음."), win(BYEOKJE))
         self.assertEqual((v.value, v.evidence), ("NOT_SEPARATED", "회계처리를 하지 않음."))
 
+    def test_5_머리_표시와_붙은_번호는_문장을_넘지_않는다(self) -> None:  # 재리뷰 N1(trial100 실제 문맥)
+        ctx = ("또한, 리스부채의 장부금액은 리스기간의 변경, 리스료의 변경 또는 기초자산을 매수하는 선택권 평가에 변동이 있는 경우 "
+               "재측정됩니다.2.3.19.3 단기리스와 소액 기초자산 리스당사는 기계장치와 설비의 리스에 단기리스(즉, 이러한 리스는 "
+               "리스기간이 리스개시일로부터 12개월 이하이고 매수선택권을 포함하지 않음)에 대한 인식 면제 규정을 적용합니다. 또한 "
+               "당사는 소액자산으로 간주되는 사무용품의 리스에 소액자산 리스에 대한 인식 면제 규정을 적용합니다. 2.3.20 무형자산")
+        ev = ("당사는 기계장치와 설비의 리스에 단기리스(즉, 이러한 리스는 리스기간이 리스개시일로부터 12개월 이하이고 매수선택권을 "
+              "포함하지 않음)에 대한 인식 면제 규정을 적용합니다. 또한 당사는 소액자산으로 간주되는 사무용품의 리스에 소액자산 리스에 "
+              "대한 인식 면제 규정을 적용합니다.")
+        v = self.check("LEASE_EXEMPTION", raw("BOTH", ev), win(ctx))
+        self.assertEqual((v.value, v.held_reason), ("BOTH", None))
+        tmpl = ("(9) 리스 회사는 계약의 약정시점에, 계약 자체가 리스인지, 계약이 리스를 포함하는지를 판단합니다. 1) 회사가 리스이용자인 경우 "
+                "회사는 단기리스와 소액 기초자산 리스를 제외한 모든 리스에 대하여 하나의 인식과측정 접근법을 적용합니다. 회사는 리스부채를 인식합니다.")
+        ev2 = "회사는 단기리스와 소액 기초자산 리스를 제외한 모든 리스에 대하여 하나의 인식과측정 접근법을 적용합니다."
+        v = self.check("LEASE_EXEMPTION", raw("BOTH", ev2), win(tmpl))
+        self.assertEqual((v.value, v.held_reason), ("BOTH", None))
+        # 머리 표시 뒤라도 진짜 조건절은 여전히 걸린다.
+        cond = "1) 회사가 리스이용자인 경우 소액자산 요건을 충족하는 경우에는 인식 면제를 적용합니다."
+        v = self.check("LEASE_EXEMPTION", raw("LOW_VALUE", "인식 면제를 적용합니다."), win(cond))
+        self.assertEqual(v.held_reason, "conditional")
+
     def test_7_분류목록_조각도_걸린다(self) -> None:
         frag = "단기매매금융부채로 분류됩니다."
         v = self.check("EMBEDDED_DERIVATIVE_SEPARATION", raw("SEPARATED", frag), win(BNK))
@@ -181,6 +201,30 @@ class RuleTests(unittest.TestCase):
         pos = "당기 중 지출 1,200,000천원을 개발비로 자산화하였습니다."
         self.assertEqual(self.check("DEV_COST_CAPITALIZATION", raw("CAPITALIZED", pos), win(pos)).value, "CAPITALIZED")
 
+    def test_6_인용이_끊겨도_문장의_부정형은_걸린다(self) -> None:  # 재리뷰 N4
+        sent = "연구단계 지출은 개발비로 인식하지 않고 발생 즉시 비용으로 처리하였습니다."
+        v = self.check("DEV_COST_CAPITALIZATION", raw("CAPITALIZED", "연구단계 지출은 개발비로 인식"), win(sent))
+        self.assertEqual(v.held_reason, "value_words_missing")
+
+    def test_6_내재파생_분리는_내재_파생이_문장에_있어야(self) -> None:  # 재리뷰 N2
+        tmpl = ("④ 복합금융상품 회사는 당기손익인식지정항목으로 분류한 복합금융상품을 제외한 전환사채 또는 신주인수권부사채 등 "
+                "복합금융상품에 대하여 부채요소와 자본요소를 분리하여 회계처리하고 있습니다.")
+        v = self.check("EMBEDDED_DERIVATIVE_SEPARATION", raw("SEPARATED", tmpl[2:]), win(tmpl))
+        self.assertEqual(v.held_reason, "value_words_missing")
+        ok = "연결실체는 상기 전환사채의 조기상환청구권 및 전환권을 내재파생상품으로 별도로 분리하여 공정가치로 인식하였습니다."
+        v = self.check("EMBEDDED_DERIVATIVE_SEPARATION", raw("SEPARATED", "별도로 분리하여 공정가치로 인식하였습니다."), win(ok))
+        self.assertEqual((v.value, v.held_reason), ("SEPARATED", None))
+
+    def test_6_FVOCI_지정_기준서_꼴은_보류(self) -> None:  # 재리뷰 N3
+        tmpl = ("반면에 최초 인식시점에 기타포괄손익-공정가치항목으로 지정한 지분상품에 대한 투자는 이전에 인식한 손익누계액을 "
+                "당기손익으로 재분류하지 않으나 이익잉여금으로 대체합니다.")
+        v = self.check("FVOCI_DESIGNATION", raw("DESIGNATED", tmpl), win(tmpl))
+        self.assertEqual(v.held_reason, "value_words_missing")
+        ok = "연결실체는 전략적 업무제휴 등의 목적으로 보유하고 있는 지분증권에 대해 기타포괄손익-공정가치 측정 항목으로 지정하였습니다."
+        self.assertEqual(self.check("FVOCI_DESIGNATION", raw("DESIGNATED", ok), win(ok)).value, "DESIGNATED")
+        both = "회사는 전략적 투자 목적의 지분상품을 기타포괄손익-공정가치 측정 항목으로 지정하였으며, 지정한 지분상품에서 발생하는 배당금은 당기손익으로 인식합니다."
+        self.assertEqual(self.check("FVOCI_DESIGNATION", raw("DESIGNATED", both), win(both)).value, "DESIGNATED")
+
     def test_6_개발비_금액은_실제_금액만(self) -> None:  # 리뷰 L1
         for ev in ("개발비(1) 는 정액법으로 5년간 상각합니다.", "개발비 20~30년 동안 상각합니다.", "개발비 5 년"):
             self.assertEqual(self.check("DEV_COST_CAPITALIZATION", raw("CAPITALIZED", ev), win(ev)).held_reason,
@@ -229,6 +273,11 @@ class IpFairValueTests(unittest.TestCase):
         self.assertEqual(ip_fair_value(FOUR_COL_2P)[0], "FV_DIFFERS")
         eq2 = FOUR_COL_2P.replace("21,492,263 31,652,954 19,842,833", "21,492,263 21,492,263 19,842,833")
         self.assertEqual(ip_fair_value(eq2)[0], "FV_EQUALS")
+
+    def test_2기간_표의_빈_칸은_None(self) -> None:  # 재리뷰 N5
+        # 당기 합계 행의 상각누계액 칸이 비어(「-」도 없이) 열이 밀린 경우.
+        blank = FOUR_COL_2P.replace("합 계 23,442,712 (1,950,449) 21,492,263", "합 계 23,442,712 21,492,263")
+        self.assertIsNone(ip_fair_value(blank))
 
     def test_열을_확정할_수_없으면_None(self) -> None:
         short = FOUR_COL.replace("합 계 11,858,832,807 (553,397,837) 11,305,434,970 6,873,745,320", "합 계 11,858,832,807 (553,397,837)")

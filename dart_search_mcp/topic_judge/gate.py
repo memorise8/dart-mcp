@@ -17,7 +17,8 @@ def gate(samples: list[dict[str, Any]], answers: dict[str, str], *,
 
     주제마다 {n, ok, partial, wrong, unanswered, pass}와, 고칠 목록(partial 표본)을 낸다.
     `expected_topics`(기본: 8개 주제 전부) 중 표본이 하나도 없는 주제도 n=0·불통과로 보고한다."""
-    expected = list(TOPIC_DEFS) if expected_topics is None else list(expected_topics)
+    narrowed = expected_topics is not None
+    expected = list(expected_topics) if narrowed else list(TOPIC_DEFS)
     by_id = {s["sample_id"]: s for s in samples}
     unknown = sorted(set(answers) - set(by_id))
     if unknown:
@@ -31,6 +32,8 @@ def gate(samples: list[dict[str, Any]], answers: dict[str, str], *,
     }
     fix_list: list[dict[str, Any]] = []
     for s in samples:
+        if narrowed and s["topic"] not in topics:
+            continue  # --topics로 좁히면 그 밖의 주제 표본은 보지 않는다
         t = topics.setdefault(s["topic"], {"n": 0, "ok": 0, "partial": 0, "wrong": 0, "unanswered": 0})
         a = answers.get(s["sample_id"])
         if a is None:

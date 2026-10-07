@@ -37,17 +37,35 @@ def _norm(s: str) -> str:
 _MIN_PART = 10  # 근거를 두 조각으로 나눌 때 조각의 최소 길이
 
 
-_SENT_END_RE = re.compile(r"\.(?!\d)")
+# 문장 끝: 「다.」(뒤에 「2.3.19」처럼 번호가 붙어도), 또는 숫자가 뒤따르지 않는 마침표.
+_SENT_END_RE = re.compile(r"다\.|\.(?!\d)")
+# 문장 앞에 붙은 머리 표시(「1)」「(1)」「①」「2.3.」「2.3.19.3」). 문장은 마지막 머리 뒤에서 시작한다.
+_HEAD_MARK_RE = re.compile(r"(?:^|\s)(?:\d{1,2}\)|\(\d{1,2}\)|[①-⑳]|\d{1,2}(?:\.\d{1,2})+\.?)\s")
+# 머리 표시 바로 뒤의 짧은 제목 「…인/일 경우」 + 회사 주어. 제목 부분만 걷어 낸다.
+_HEAD_LABEL_RE = re.compile(
+    r"[^.]{0,30}?(?:인|일)\s*경우\s+(?=(?:회사|당사|연결실체|연결회사|연결기업|지배기업|지배회사)(?:는|은)\s)")
 _SENT_REACH = 200  # 문장 넓히기의 앞뒤 최대 거리(표처럼 마침표가 없는 곳에서 끝없이 넓히지 않는다)
 
 
 def _sentence_around(hay: str, start: int, end: int) -> str:
-    """hay[start:end]를 품은 문장. 앞은 직전 마침표 뒤(또는 200자), 뒤는 다음 마침표(또는 200자)까지."""
+    """hay[start:end]를 품은 문장. 앞은 직전 문장 끝(또는 200자) 뒤의 마지막 머리 표시 뒤,
+    뒤는 다음 문장 끝(또는 다음 머리 표시, 또는 200자)까지."""
     lo = max(0, start - _SENT_REACH)
     ends = list(_SENT_END_RE.finditer(hay, lo, start))
     s0 = ends[-1].end() if ends else lo
-    m = _SENT_END_RE.search(hay, max(start, end - 1), min(len(hay), end + _SENT_REACH))
-    e0 = m.end() if m else min(len(hay), end + _SENT_REACH)
+    heads = list(_HEAD_MARK_RE.finditer(hay[s0:start]))
+    if heads:
+        s0 += heads[-1].end()
+        # 「1) 회사가 리스이용자인 경우 회사는 …」: 머리 표시 뒤의 「…인 경우」는 제목이지 조건절이 아니다.
+        label = _HEAD_LABEL_RE.match(hay, s0)  # 끝 경계는 아래에서 본다(주어가 인용 첫머리일 수 있다)
+        if label and label.end() <= start:
+            s0 = label.end()
+    hi = min(len(hay), end + _SENT_REACH)
+    m = _SENT_END_RE.search(hay, max(start, end - 1), hi)
+    e0 = m.end() if m else hi
+    nxt = _HEAD_MARK_RE.search(hay[end:e0])
+    if nxt:
+        e0 = end + nxt.start()
     return hay[s0:e0].strip()
 
 
@@ -110,6 +128,14 @@ _VALUE_WORDS: dict[tuple[str, str], re.Pattern] = {
     ("FVOCI_DESIGNATION", "NOT_DESIGNATED"): re.compile(r"지정하지 않"),
     ("LEASE_EXEMPTION", "NONE"): re.compile(r"적용하지 않"),
 }
+# 근거 문장 전체(넓힌 문장)에서 보는 필요한 말. 「부채요소와 자본요소를 분리」는 내재파생 분리가 아니다.
+_SENTENCE_WORDS: dict[tuple[str, str], re.Pattern] = {
+    ("EMBEDDED_DERIVATIVE_SEPARATION", "SEPARATED"): re.compile(r"내재|파생"),
+}
+# FVOCI 지정: 「지정한 지분상품에 대한 투자는 …」「선택을 할 수 있」 같은 기준서 꼴 문장은 회사의 지정 진술이
+# 아니다. 같은 문장에 「지정하였·지정하여·선택권을 행사」가 있으면 그대로 둔다.
+_FVOCI_TEMPLATE_RE = re.compile(r"지정한\s*지분상품(?:에\s*대한\s*투자는|에서\s*발생)|선택을\s*할\s*수\s*있")
+_FVOCI_DESIGNATION_VERB_RE = re.compile(r"지정하였|지정하여|선택권을\s*행사")
 
 # --- 7. 내재파생 분류 목록 문장 ---------------------------------------------------
 
@@ -168,6 +194,11 @@ def _ip_from_piece(seg: str) -> tuple[str, str] | None:
         if row is None:
             continue
         cells = _CELL_RE.findall(row.group(1))  # 「-」도 한 칸이다
+        half = len(cols) // 2
+        two_period = len(cols) >= 4 and len(cols) % 2 == 0 and cols[:half] == cols[half:]
+        # 당기·전기 두 묶음 표에서 빈 칸(「-」도 아닌)이 있으면 열이 밀린다 → 칸 수가 머리 수와 같을 때만 읽는다.
+        if two_period and len(cells) != len(cols):
+            return None
         if len(cells) < k + 2 or "-" in (cells[k], cells[k + 1]):
             return None  # 열 위치를 확정할 수 없으면 숫자로 정하지 않는다
         a, b = _amount(cells[k]), _amount(cells[k + 1])
@@ -218,7 +249,14 @@ def postcheck(defn: TopicDef, raw: dict, window: Window) -> Verdict:
     if _is_conditional(sentence):
         return _held(raw, "conditional")
     words = _VALUE_WORDS.get((defn.code, value))
-    if words is not None and not words.search(evidence):
+    # 인용과 넓힌 문장 모두에서 맞아야 한다(인용이 「개발비로 인식」에서 끊기고 문장은 「…하지 않고」인 경우).
+    if words is not None and not (words.search(evidence) and words.search(sentence)):
+        return _held(raw, "value_words_missing")
+    sent_words = _SENTENCE_WORDS.get((defn.code, value))
+    if sent_words is not None and not sent_words.search(sentence):
+        return _held(raw, "value_words_missing")
+    if (defn.code, value) == ("FVOCI_DESIGNATION", "DESIGNATED") and _FVOCI_TEMPLATE_RE.search(sentence) \
+            and not _FVOCI_DESIGNATION_VERB_RE.search(sentence):
         return _held(raw, "value_words_missing")
     if defn.code == "EMBEDDED_DERIVATIVE_SEPARATION" and _CLASSIFICATION_LIST_RE.search(sentence):
         return _held(raw, "classification_list")

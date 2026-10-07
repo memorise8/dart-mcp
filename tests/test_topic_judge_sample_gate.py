@@ -117,7 +117,8 @@ class GateTests(unittest.TestCase):
         self.assertEqual(len(g["topics"]), 8)
         self.assertEqual(g["topics"]["IP_FAIR_VALUE"], {"n": 0, "ok": 0, "partial": 0, "wrong": 0, "unanswered": 0, "pass": False})
         g2 = gate(self.samples, self.answers(wrong=0), expected_topics=["LEASE_EXEMPTION"])
-        self.assertEqual(set(g2["topics"]), {"LEASE_EXEMPTION", "FVOCI_DESIGNATION"})
+        self.assertEqual(set(g2["topics"]), {"LEASE_EXEMPTION"})  # 리뷰 N6: 목록 밖 주제 표본은 빠진다
+        self.assertTrue(g2["passed"])
 
     def test_표시_순서는_섞이되_재현된다(self) -> None:
         s = draw_samples(rows_for("LEASE_EXEMPTION", {"BOTH": 70, "SHORT_TERM": 20, "LOW_VALUE": 10}))

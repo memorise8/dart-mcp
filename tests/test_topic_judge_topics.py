@@ -80,6 +80,10 @@ class TopicDefsTests(unittest.TestCase):
         self.assertTrue(emb[0].search("내재파생상품(제 2 회 상환전환우선주의 전환권)"))
         self.assertTrue(emb[0].search("당사가 발행한 전환사채의 전환권은 주계약에서 분리하여 파생상품부채로 인식"))
         self.assertIsNone(emb[0].search("주계약이 금융자산이 아닌 경우 내재파생상품은 분리하여 회계처리합니다."))
+        # 리뷰 N2: 부채요소·자본요소 분리 꼴은 회사 상품 내재파생이 아니다.
+        self.assertIsNone(emb[0].search("④ 복합금융상품 회사는 당기손익인식지정항목으로 분류한 복합금융상품을 제외한 전환사채 또는 "
+                                        "신주인수권부사채 등 복합금융상품에 대하여 부채요소와 자본요소를 분리하여 회계처리하고 있습니다."))
+        self.assertTrue(emb[0].search("전환사채에 내재된 조기상환청구권은 내재파생상품 분리요건을 충족하여 주계약과 분리하여"))
         self.assertTrue(emb[1].search("상환전환우선주") and emb[1].search("신주인수권부사채"))
         self.assertIsNone(emb[1].search("회사채"))
         self.assertTrue(emb[2].search("내재파생상품"))
@@ -101,11 +105,14 @@ class TopicDefsTests(unittest.TestCase):
         fv_all = TOPIC_DEFS["FVOCI_DESIGNATION"].priority_res
         self.assertEqual(TOPIC_DEFS["FVOCI_DESIGNATION"].priority_names[0], "FVOCI 지정 진술")
         self.assertTrue(fv_all[0].search("회사는 전략적 투자목적의 비상장 지분상품을 기타포괄손익-공정가치 측정 항목으로 지정하였습니다."))
-        self.assertTrue(fv_all[0].search("기타포괄손익-공정가치 측정 금융자산으로 지정한 지분상품"))
+        self.assertIsNone(fv_all[0].search("기타포괄손익-공정가치 측정 금융자산으로 지정한 지분상품"))
+        self.assertEqual(TOPIC_DEFS["FVOCI_DESIGNATION"].priority_names[1], "FVOCI 지정 대상")
+        self.assertTrue(fv_all[1].search("기타포괄손익-공정가치 측정 금융자산으로 지정한 지분상품"))
+        self.assertIsNone(fv_all[1].search("당기손익-공정가치측정항목으로 지정한다면 회계불일치를"))
         self.assertIsNone(fv_all[0].search("단기매매항목이 아닌 지분상품에 대한 투자는 최초 인식시점에 후속적인 공정가치 변동을 기타포괄손익으로 표시할 것을 지정하는 취소불가능한 선택을 할 수 있습니다."))
         self.assertIsNone(fv_all[0].search("기타포괄손익으로 표시하는 선택을 할 수 있습니다. ㆍ당기손익-공정가치측정항목으로 지정한다면 회계불일치를"))
         self.assertIsNone(fv_all[0].search("채무상품을 당기손익-공정가치 측정 항목으로 지정한다면 회계불일치를 제거하거나"))
-        fv = fv_all[1:]
+        fv = fv_all[2:]
         for head in ("(3) 금융자산", "2.4 금융자산", "2.4. 금융자산", "3. 금융자산", "가. 비파생금융자산"):
             self.assertTrue(fv[0].search("앞 " + head), head)
         for not_head in (" 3 금융자산", "각. 금융자산", "회사. 금융자산"):
