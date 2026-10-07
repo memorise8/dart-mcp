@@ -827,6 +827,34 @@ def extract_policy_stances_cmd(
         click.echo(f"  {topic}: {dist} (상한 도달 {s['capped_ratio'].get(topic, 0):.1%})")
 
 
+@cli.command("extract-topic-stances")
+@click.option("--facts", default="dart_collected/audit_facts.jsonl", show_default=True)
+@click.option("--docs", default="dart_collected/docs", show_default=True)
+@click.option("-o", "--output", default="dart_collected/topic_stance.jsonl", show_default=True)
+@click.option("--topics", default=None, help="콤마 구분 WS8 주제 코드. 기본: 8개 전부")
+@click.option("--limit", type=int, default=None, help="이번 실행에서 판정할 (공시, 주제) 수 상한")
+@click.option("--workers", type=click.IntRange(1, 16), default=4, show_default=True)
+@click.option("--dry-judge", is_flag=True, default=False, help="가짜 판정기(UNDETERMINED)로 배선만 확인")
+def extract_topic_stances_cmd(facts: str, docs: str, output: str, topics: str | None, limit: int | None,
+                              workers: int, dry_judge: bool) -> None:
+    """WS8 8개 정책 주제 판정. 여기서는 --dry-judge만 돈다 — 실제 luna 판정은
+    scripts/ws8_run_in_backend.py 를 TEMIS 백엔드 이미지 안에서 돌린다."""
+    from dart_search_mcp.topic_judge.run import dry_judge as _dry, run_topics
+    from dart_search_mcp.topic_judge.topics import TOPIC_DEFS
+    if not dry_judge:
+        raise click.UsageError("실제 판정은 scripts/ws8_run_in_backend.py(백엔드 이미지)로 돈다. 여기서는 --dry-judge만 쓴다.")
+    codes = [t.strip() for t in topics.split(",") if t.strip()] if topics else list(TOPIC_DEFS)
+    invalid = [t for t in codes if t not in TOPIC_DEFS]
+    if invalid:
+        raise click.BadParameter(f"알 수 없는 주제 코드: {', '.join(invalid)} (유효: {', '.join(TOPIC_DEFS)})",
+                                 param_hint="--topics")
+    s = run_topics(facts_path=Path(facts), docs_dir=Path(docs), topics=codes, out_path=Path(output),
+                   complete_json=_dry, workers=workers, limit=limit)
+    click.echo(f"판정 완료: 행 {s['rows']}건 · 이번 호출 {s['calls_this_run']}회 · 건너뜀 {s['resumed_skipped']}건 · {s['elapsed_sec']}s")
+    for t in codes:
+        click.echo(f"  {t}: {s['by_topic'][t]} 창 없음 {s['no_window'][t]}")
+
+
 @cli.command("policy-stance-gate")
 @click.option("--stances", default="dart_collected/policy_stance.jsonl", show_default=True)
 @click.option("--positives", default=None, help="양성 대조군 jsonl (rcept_no,topic,subject,expected)")
