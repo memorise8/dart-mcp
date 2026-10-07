@@ -21,6 +21,7 @@ from .topics import TOPIC_DEFS
 from .window import Window, doc_text, pick_window
 
 METHOD = "llm_luna"
+METHOD_FALLBACK = "llm_fallback"  # 백엔드가 luna 대신 폴백 모델로 답한 기록(progress usage.model_used)
 PARSER_VERSION = "ws8-v1"
 ROW_SUBJECT = "회사"
 CONFIDENCE_DETERMINED = 0.8
@@ -106,8 +107,18 @@ def combine(verdicts: list[Verdict]) -> Verdict:
     return determined[0] if determined else verdicts[0]
 
 
+def method_for(model_used: str | None) -> str:
+    """model_used가 있고 luna가 아니면 llm_fallback, 아니면 llm_luna(기록이 없으면 luna로 본다)."""
+    return METHOD_FALLBACK if model_used and "luna" not in model_used.lower() else METHOD
+
+
+def model_used_of(rec: dict[str, Any]) -> str | None:
+    usage = rec.get("usage")
+    return (usage.get("model_used") if isinstance(usage, dict) else None) or rec.get("model_used")
+
+
 def build_row(fact: dict[str, Any], topic: str, verdict: Verdict, *, window_text: str,
-              block_offset: int, anchor: str) -> dict[str, Any]:
+              block_offset: int, anchor: str, model_used: str | None = None) -> dict[str, Any]:
     fy = fact.get("fiscal_year")
     determined = verdict.value != UNDETERMINED
     kind, sent_subject = _SENTENCE_META.get(verdict.subject, _SENTENCE_META_DEFAULT)
@@ -119,7 +130,7 @@ def build_row(fact: dict[str, Any], topic: str, verdict: Verdict, *, window_text
         "subject": ROW_SUBJECT,
         "value": verdict.value,
         "evidence": verdict.evidence if determined else UNDETERMINED_PREFIX + window_text[:120],
-        "method": METHOD,
+        "method": method_for(model_used),
         "confidence": CONFIDENCE_DETERMINED if determined else CONFIDENCE_UNDETERMINED,
         "block_offset": block_offset,
         "sentence_kind": kind,
@@ -145,6 +156,11 @@ def evidence_excerpt(window_text: str, evidence: str, limit: int = EXCERPT_CHARS
 
 def progress_path_for(out_path: Path) -> Path:
     return out_path.parent / f"{out_path.stem}.progress.jsonl"
+
+
+def records_path_for(rows_path: Path) -> Path:
+    """--repostcheck가 다시 검사한 progress 기록을 쓰는 곳: <rows stem>.records.jsonl."""
+    return rows_path.parent / f"{rows_path.stem}.records.jsonl"
 
 
 def summary_path_for(out_path: Path) -> Path:
@@ -193,9 +209,12 @@ def rows_from_progress(progress: list[dict[str, Any]], facts_by_rc: dict[str, di
             recs = retried
         fact = facts_by_rc.get(rc) or {"rcept_no": rc, "corp_code": recs[0].get("corp_code"),
                                        "fiscal_year": recs[0].get("fiscal_year")}
-        v = combine([_verdict_of(r) for r in recs])
+        verdicts = [_verdict_of(r) for r in recs]
+        v = combine(verdicts)
+        chosen = next((r for r, x in zip(recs, verdicts) if x is v), recs[0])  # 고른 판정의 기록(충돌이면 첫 기록)
         first = recs[0]
-        rows.append(build_row(fact, topic, v, window_text=first.get("window_head", ""),
+        rows.append(build_row(fact, topic, v, model_used=model_used_of(chosen),
+                              window_text=first.get("window_head", ""),
                               block_offset=first.get("block_offset", 0), anchor=first.get("anchor", "")))
     return rows
 
@@ -380,7 +399,9 @@ def run_topics(
 
     by_topic: dict[str, Counter] = defaultdict(Counter)
     held: dict[str, Counter] = defaultdict(Counter)
+    by_method: Counter = Counter()
     for r in rows:
+        by_method[r["method"]] += 1
         by_topic[r["topic"]][r["value"]] += 1
         if r["held_reason"]:
             held[r["topic"]][r["held_reason"]] += 1
@@ -403,6 +424,7 @@ def run_topics(
         "workers": workers,
         "limit": limit,
         "method": METHOD,
+        "by_method": dict(by_method),
         "parser_version": PARSER_VERSION,
         "elapsed_sec": round(time.time() - started, 1),
     }
@@ -457,8 +479,13 @@ def repostcheck_progress(*, progress_path: Path, docs_dir: Path, out_path: Path)
 
     rows = rows_from_progress(updated, {})
     _write_jsonl_atomic(out_path, rows)
+    # 다시 검사한 기록(근거·발췌 포함) — 표본 뽑기가 낡은 progress 발췌 대신 읽는다.
+    records_path = records_path_for(out_path)
+    _write_jsonl_atomic(records_path, updated)
     by_topic: dict[str, Counter] = defaultdict(Counter)
+    by_method: Counter = Counter()
     for r in rows:
+        by_method[r["method"]] += 1
         by_topic[r["topic"]][r["value"]] += 1
     summary = {
         "progress": str(progress_path),
@@ -471,6 +498,8 @@ def repostcheck_progress(*, progress_path: Path, docs_dir: Path, out_path: Path)
         "value_changes": {t: dict(c) for t, c in value_changes.items()},
         "held_reason_changes": {t: dict(c) for t, c in held_changes.items()},
         "by_topic": {t: dict(c) for t, c in by_topic.items()},
+        "by_method": dict(by_method),
+        "records_path": str(records_path),
         "parser_version": PARSER_VERSION,
         "elapsed_sec": round(time.time() - started, 1),
     }

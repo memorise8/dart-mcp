@@ -263,6 +263,75 @@ class RepostcheckTests(unittest.TestCase):
             self.assertEqual(rows_path.read_text(encoding="utf-8"), out.read_text(encoding="utf-8"))
 
 
+class FallbackMethodTests(unittest.TestCase):  # 최종 리뷰 m4
+    def test_폴백_모델_기록은_llm_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            facts, docs = make_env(Path(d))
+            out = Path(d) / "t.jsonl"
+            models = {"LEASE_EXEMPTION": "gpt-5.4-mini", "DEV_COST_CAPITALIZATION": "gpt-5.6-luna"}
+            current = threading.local()
+
+            class Judge(FakeJudge):
+                def __call__(self, prompt: str) -> dict:
+                    current.topic = "LEASE_EXEMPTION" if "LEASE_EXEMPTION" in prompt else "DEV_COST_CAPITALIZATION"
+                    return super().__call__(prompt)
+
+            s = run_topics(facts_path=facts, docs_dir=docs, topics=TOPICS, out_path=out, complete_json=Judge(),
+                           usage_getter=lambda: {"model_used": models[current.topic]})
+            rows = {r["topic"]: r for r in map(json.loads, out.read_text(encoding="utf-8").splitlines())}
+            self.assertEqual((rows["LEASE_EXEMPTION"]["method"], rows["LEASE_EXEMPTION"]["confidence"]), ("llm_fallback", 0.8))
+            self.assertEqual((rows["DEV_COST_CAPITALIZATION"]["method"], rows["DEV_COST_CAPITALIZATION"]["confidence"]),
+                             ("llm_luna", 0.0))
+            self.assertEqual(s["by_method"], {"llm_fallback": 1, "llm_luna": 1})
+            # 재검사에서도 같은 규칙
+            rp = Path(d) / "re" / "rows.jsonl"
+            r = repostcheck_progress(progress_path=progress_path_for(out), docs_dir=docs, out_path=rp)
+            self.assertEqual(r["by_method"], {"llm_fallback": 1, "llm_luna": 1})
+
+    def test_method_for(self) -> None:
+        fact = {"rcept_no": "1", "corp_code": "2", "fiscal_year": 2025}
+        v = Verdict("BOTH", "근거", "self", None, None)
+        for model, method in ((None, "llm_luna"), ("gpt-5.6-luna", "llm_luna"), ("GPT-5.6-Luna-2", "llm_luna"),
+                              ("gpt-5.4-mini", "llm_fallback"), ("gpt-4o", "llm_fallback")):
+            r = build_row(fact, "LEASE_EXEMPTION", v, window_text="창", block_offset=0, anchor="a", model_used=model)
+            self.assertEqual(r["method"], method, model)
+
+
+class RecordsFileTests(unittest.TestCase):  # 최종 리뷰 m6
+    def test_repostcheck가_기록_파일을_쓰고_표본이_그_발췌를_읽는다(self) -> None:
+        import subprocess, sys
+        with tempfile.TemporaryDirectory() as d:
+            facts, docs = make_env(Path(d))
+            out = Path(d) / "t.jsonl"
+            run_topics(facts_path=facts, docs_dir=docs, topics=TOPICS, out_path=out, complete_json=FakeJudge())
+            prog = progress_path_for(out)
+            recs = read_progress(prog)
+            for r in recs:  # 옛 판정: 리스 보류, 발췌도 낡은 것
+                if r["topic"] == "LEASE_EXEMPTION":
+                    r.update(value="UNDETERMINED", evidence="", held_reason="conditional", excerpt="낡은 발췌")
+            prog.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in recs), encoding="utf-8")
+            rows_path = Path(d) / "re" / "rows.jsonl"
+            s = repostcheck_progress(progress_path=prog, docs_dir=docs, out_path=rows_path)
+            rec_path = rows_path.parent / "rows.records.jsonl"
+            self.assertEqual(s["records_path"], str(rec_path))
+            updated = {r["topic"]: r for r in read_progress(rec_path)}
+            self.assertEqual(len(updated), 2)
+            self.assertEqual(updated["LEASE_EXEMPTION"]["value"], "BOTH")
+            self.assertIn(LEASE_SELF, updated["LEASE_EXEMPTION"]["excerpt"])
+            root = Path(__file__).resolve().parent.parent
+            samples = Path(d) / "s.json"
+            for extra, expect_new in ((["--records", str(rec_path)], True), ([], False)):
+                p = subprocess.run([sys.executable, str(root / "cli.py"), "topic-stance-sample", "--stances", str(rows_path),
+                                    "--facts", str(facts), "--progress", str(prog), "-o", str(samples), *extra],
+                                   capture_output=True, text=True, cwd=str(root))
+                self.assertEqual(p.returncode, 0, p.stderr)
+                sm = {x["topic"]: x for x in json.loads(samples.read_text(encoding="utf-8"))}
+                if expect_new:
+                    self.assertIn(LEASE_SELF, sm["LEASE_EXEMPTION"]["excerpt"])
+                else:
+                    self.assertEqual(sm["LEASE_EXEMPTION"]["excerpt"], "낡은 발췌")
+
+
 class CombineTests(unittest.TestCase):
     def v(self, value: str, held=None) -> Verdict:
         return Verdict(value, "근거" if value != "UNDETERMINED" else "", "self", held, None)

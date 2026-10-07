@@ -876,17 +876,22 @@ def extract_topic_stances_cmd(facts: str, docs: str, output: str, topics: str | 
 @click.option("--stances", default="dart_collected/topic_stance.jsonl", show_default=True)
 @click.option("--facts", default="dart_collected/audit_facts.jsonl", show_default=True, help="corp_name 출처")
 @click.option("--progress", default=None, help="창 발췌 출처(기본: <stances stem>.progress.jsonl)")
+@click.option("--records", default=None,
+              help="--repostcheck 가 쓴 <rows stem>.records.jsonl — 있으면 발췌를 여기서 읽는다(없으면 progress)")
 @click.option("-o", "--output", default="dart_collected/topic_stance_samples.json", show_default=True)
 @click.option("--per-topic", type=int, default=20, show_default=True)
 @click.option("--seed", type=int, default=20261010, show_default=True)
-def topic_stance_sample_cmd(stances: str, facts: str, progress: str | None, output: str, per_topic: int, seed: int) -> None:
+def topic_stance_sample_cmd(stances: str, facts: str, progress: str | None, records: str | None, output: str,
+                            per_topic: int, seed: int) -> None:
     """WS8 판정 행에서 회계사 확인용 표본을 주제마다 값 비율대로 뽑는다(UNDETERMINED 제외)."""
     from dart_search_mcp.topic_judge.run import load_facts, progress_path_for, read_progress
     from dart_search_mcp.topic_judge.sample import draw_samples
     stances_path = Path(stances)
     rows = [json.loads(l) for l in stances_path.read_text(encoding="utf-8").splitlines() if l.strip()]
     names = {f["rcept_no"]: f.get("corp_name", "") for f in load_facts(Path(facts))}
-    prog = read_progress(Path(progress) if progress else progress_path_for(stances_path))
+    prog = read_progress(Path(records)) if records else []
+    if not prog:
+        prog = read_progress(Path(progress) if progress else progress_path_for(stances_path))
     excerpts = {(r["rcept_no"], r["topic"]): r.get("excerpt", "") for r in prog}
     for r in rows:
         r["corp_name"] = names.get(r["rcept_no"], "")
