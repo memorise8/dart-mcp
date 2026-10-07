@@ -1,0 +1,201 @@
+"""사후 검사 규칙별 통과·실패. 문장은 스파이크 adjudication.md·out_luna.jsonl의 실제 문장이다."""
+
+import unittest
+
+from dart_search_mcp.topic_judge.postcheck import Verdict, ip_fair_value, postcheck
+from dart_search_mcp.topic_judge.topics import TOPIC_DEFS
+from dart_search_mcp.topic_judge.window import Window
+
+T = TOPIC_DEFS
+
+# 실제 문장(스파이크)
+BYEOKJE = "정형화된 시장에서 거래되지 않아 시가가 없는 파생상품(상환전환우선주의 내재파생상품)에 대하여는 계약시점 및 계약시점 후 평가에 관한 회계처리를 하지 않음."  # #6
+BNK = "또한, 위험회피회계의 수단으로 지정되지 않은 파생상품이나 금융상품으로부터 분리된 내재파생상품도 단기매매금융부채로 분류됩니다."  # #7
+CLICK = "주계약과 경제적 특성 및 위험이 밀접하게 관련되어 있지 않고 당기손익-공정가치 측정 항목이 아닌 경우 별도의 파생상품으로 회계처리하고 있습니다."  # #9
+LIHAN = "전환권조정 (966,183) (1,584,057)"  # #4
+NH = "당사는 소액자산리스(가치가 낮은 소액 사무비품, IT 기기) 에 대해 인식면제 규정을 적용하고, 단기리스(리스기간이 12개월 이하인 리스)에 대해서는 인식면제 규정을 적용하지 않습니다."  # #27
+DONGJIN = "회사는 단기리스와 소액자산 리스의 경우 예외규정을 선택하여 리스료를 리스기간에 걸쳐 정액기준으로 비용 인식합니다."  # #28
+NAMYANG = "한편, 개발비를 제외한 내부적으로 창출된 무형자산은 발생시점에 비용항목으로 하여 당기손익에 반영하고 있습니다."  # #37
+STANDARD = "리스이용자는 단기리스와 소액 기초자산 리스에 인식 면제를 선택할 수 있습니다."  # 함정 예시(기준서 문장)
+MIRAE_A = "당기말 현재 투자부동산 750,375,238천원(전기말: 757,545,254천원)은 차입금과 관련하여 금융기관에 담보로 제공되어 있습니다(주석17, 43 참조)."
+MIRAE_MID = "당기 중 연결실체는 투자부동산과 관련하여 1,203,366천원(전기: 707,278천원)의 손상차손환입을 인식하였으며, 당기 중 인식한 손상차손은 없습니다."
+MIRAE_B = "한편, 당기말 투자부동산의 공정가치는 1,746,795백만원(전기말: 1,725,228백만원)이며, 연결실체는 공인된 외부 감정평가기관이 독립적으로 수행한 평가를 바탕으로 공정가치를 산출하였습니다."
+SGC = ("(3) 보고기간 종료일 현재 투자부동산의 공정가치는 다음과 같습니다. (단위: 천원) 구분 당기말 전기말 "
+       "장부금액 공정가치 장부금액 공정가치 토지 45,512 56,001 16,545,172 17,085,668 건물 10,489 374,293 "
+       "합계 56,001 56,001 16,919,465 17,085,668 (4) 보고기간 종료일 현재 투자부동산은 장ㆍ단기차입금의 담보로 제공되어 있습니다.")
+KGC = ("(4) 당기말과 전기말 현재 투자부동산의 공정가치와 장부금액은 다음과 같습니다. (단위: 천원) 구분 제 14(당) 기 제 13(전) 기 "
+       "공정가치 장부금액 공정가치 장부금액 토지 6,254,250 4,164,954 6,254,250 4,164,954 건물 9,153,830 4,379,268 9,153,830 4,593,731 "
+       "합계 15,408,080 8,544,222 15,408,080 8,758,685 투자부동산의 공정가치는 원가접근법과 시장접근법을 이용하여 결정되었습니다.")
+KORAMCO = ("(5) 당기말 현재 투자부동산에 대한 공정가치 평가 내역은 다음과 같습니다. (단위: 천원) 구 분 당기말 "
+           "장부금액 공정가치 투자부동산 207,402,685 435,700,000 (*) 투자부동산의 공정가치는 수익환원법으로 측정합니다.")
+HANMI = ("(3) 당기말 및 전기말 현재 투자부동산의 공정가치는 다음과 같습니다. (단위: 천원) 구 분 당기말 전기말 장부금액 공정가치 "
+         "장부금액 공정가치 토지 28,321,861 105,540,415 25,980,601 83,448,424 건물 29,754,463 16,117,689 회사는 투자부동산에 대해 "
+         "공시지가 및 최근의 이용가능한 유사거래가격 등을 반영한 평가금액에 근거하여 산정하고 있습니다.(4) 당기 및 전기 중 합계 1,000 2,000")
+
+
+def win(*pieces: str) -> Window:
+    return Window(text=" … ".join(pieces), spans=tuple((0, len(p)) for p in pieces), anchor="keyword")
+
+
+def raw(value: str, evidence: str, subject: str = "self") -> dict:
+    return {"value": value, "evidence": evidence, "subject": subject}
+
+
+class RuleTests(unittest.TestCase):
+    def check(self, code, r, w) -> Verdict:
+        return postcheck(T[code], r, w)
+
+    def test_통과하면_값과_근거와_subject를_낸다(self) -> None:
+        v = self.check("EMBEDDED_DERIVATIVE_SEPARATION", raw("NOT_SEPARATED", BYEOKJE), win("앞 문장. " + BYEOKJE))
+        self.assertEqual((v.value, v.evidence, v.subject, v.held_reason), ("NOT_SEPARATED", BYEOKJE, "self", None))
+        self.assertEqual(v.raw["value"], "NOT_SEPARATED")
+
+    def test_model_undetermined(self) -> None:
+        v = self.check("LEASE_EXEMPTION", raw("UNDETERMINED", STANDARD, "standard_text"), win(STANDARD))
+        self.assertEqual((v.value, v.held_reason, v.subject), ("UNDETERMINED", "model_undetermined", "standard_text"))
+
+    def test_1_invalid_value(self) -> None:
+        for bad in ("MAYBE", None, 3, "IP_FAIR_VALUE"):
+            v = self.check("LEASE_EXEMPTION", raw(bad, NH), win(NH))
+            self.assertEqual((v.value, v.held_reason), ("UNDETERMINED", "invalid_value"))
+        self.assertIsNone(self.check("LEASE_EXEMPTION", raw("LOW_VALUE", NH), win(NH)).held_reason)
+
+    def test_2_not_self(self) -> None:
+        v = self.check("LEASE_EXEMPTION", raw("BOTH", STANDARD, "standard_text"), win(STANDARD))
+        self.assertEqual((v.value, v.held_reason, v.subject), ("UNDETERMINED", "not_self", "standard_text"))
+        v = self.check("LEASE_EXEMPTION", {"value": "BOTH", "evidence": DONGJIN}, win(DONGJIN))
+        self.assertEqual(v.held_reason, "not_self")
+        self.assertEqual(self.check("LEASE_EXEMPTION", raw("BOTH", DONGJIN), win(DONGJIN)).value, "BOTH")
+
+    def test_3_evidence_missing(self) -> None:
+        for ev in ("", "   ", None):
+            v = self.check("LEASE_EXEMPTION", raw("BOTH", ev), win(DONGJIN))
+            self.assertEqual(v.held_reason, "evidence_missing")
+        self.assertIsNone(self.check("LEASE_EXEMPTION", raw("BOTH", DONGJIN), win(DONGJIN)).held_reason)
+
+    def test_4_evidence_not_in_window(self) -> None:
+        v = self.check("LEASE_EXEMPTION", raw("BOTH", DONGJIN), win(NH))
+        self.assertEqual(v.held_reason, "evidence_not_in_window")
+        # 바꿔 쓴 근거도 실패
+        v = self.check("LEASE_EXEMPTION", raw("BOTH", DONGJIN.replace("선택하여", "선택해")), win(DONGJIN))
+        self.assertEqual(v.held_reason, "evidence_not_in_window")
+
+    def test_4_줄바꿈_공백이_달라도_통과(self) -> None:
+        wtext = DONGJIN.replace("예외규정을 ", "예외규정을\n  ").replace("리스료를 ", "리스료를\t")
+        v = self.check("LEASE_EXEMPTION", raw("BOTH", DONGJIN), win(wtext))
+        self.assertEqual((v.value, v.held_reason), ("BOTH", None))
+        ev = DONGJIN.replace("선택하여 ", "선택하여\n")
+        v = self.check("LEASE_EXEMPTION", raw("BOTH", ev), win(DONGJIN))
+        self.assertEqual((v.value, v.evidence), ("BOTH", DONGJIN))
+
+    def test_4_이웃_조각에_걸친_근거(self) -> None:
+        head, tail = NH[:60], NH[60:]
+        w = win("앞쪽 표 1,234", head, tail, "뒤쪽")
+        for ev in (head + tail, head + " … " + tail):
+            v = self.check("LEASE_EXEMPTION", raw("LOW_VALUE", ev), w)
+            self.assertEqual((v.value, v.held_reason), ("LOW_VALUE", None), ev)
+        # 이웃이 아닌 조각은 실패
+        w2 = win(head, "가운데 조각입니다.", tail)
+        self.assertEqual(self.check("LEASE_EXEMPTION", raw("LOW_VALUE", head + tail), w2).held_reason, "evidence_not_in_window")
+
+    def test_4_가운데_문장을_생략한_두_문장(self) -> None:
+        # 스파이크 #22: luna가 두 문장을 이어 붙이고 가운데 문장을 뺐다.
+        w = win(MIRAE_A + MIRAE_MID + " " + MIRAE_B)
+        self.assertIsNone(self.check("IP_FAIR_VALUE", raw("FV_NOT_DISCLOSED", MIRAE_A + " " + MIRAE_B), w).held_reason)
+        # 순서가 뒤바뀌면 실패
+        v = self.check("IP_FAIR_VALUE", raw("FV_NOT_DISCLOSED", MIRAE_B + " " + MIRAE_A), w)
+        self.assertEqual(v.held_reason, "evidence_not_in_window")
+
+    def test_5_conditional(self) -> None:
+        v = self.check("EMBEDDED_DERIVATIVE_SEPARATION", raw("SEPARATED", CLICK), win(CLICK))  # #9
+        self.assertEqual(v.held_reason, "conditional")
+        # 「경우」가 있어도 선택 동사가 함께 있으면 통과(#28)
+        self.assertEqual(self.check("LEASE_EXEMPTION", raw("BOTH", DONGJIN), win(DONGJIN)).value, "BOTH")
+        amt = "제3회 전환사채의 전환권은 확정수량 조건을 충족하는 경우에 해당하여 전환권대가로 분류하였습니다."
+        self.assertEqual(self.check("CONVERSION_OPTION_CLASS", raw("EQUITY", amt), win(amt)).value, "EQUITY")
+        amt2 = "회사가 발행한 전환사채의 전환권은 조건을 충족하는 경우에 해당하여 자본 항목 전환권대가 1,112,489,070원으로 표시하였습니다."
+        self.assertEqual(self.check("CONVERSION_OPTION_CLASS", raw("EQUITY", amt2), win(amt2)).value, "EQUITY")
+
+    def test_6_value_words_전환권조정_한_줄(self) -> None:
+        for value in ("LIABILITY", "EQUITY"):  # #4 리한, #5 이엠앤아이
+            v = self.check("CONVERSION_OPTION_CLASS", raw(value, LIHAN), win("사채 1,000,000 " + LIHAN))
+            self.assertEqual(v.held_reason, "value_words_missing")
+        ok = "당사가 발행한 전환사채의 전환권은 파생상품부채로 인식하였습니다."
+        self.assertEqual(self.check("CONVERSION_OPTION_CLASS", raw("LIABILITY", ok), win(ok)).value, "LIABILITY")
+        ok2 = "당사가 발행한 복합금융상품은 상환전환우선주이며 자본요소는 공정가치와 부채요소의 차이로 최초 인식합니다."
+        self.assertEqual(self.check("CONVERSION_OPTION_CLASS", raw("EQUITY", ok2), win(ok2)).value, "EQUITY")
+
+    def test_6_value_words_개발비(self) -> None:
+        v = self.check("DEV_COST_CAPITALIZATION", raw("CAPITALIZED", NAMYANG), win(NAMYANG))  # #37
+        self.assertEqual(v.held_reason, "value_words_missing")
+        amort = "자본화된 개발비는 추정내용연수 5년 동안 정액법으로 상각합니다."  # #41
+        self.assertEqual(self.check("DEV_COST_CAPITALIZATION", raw("CAPITALIZED", amort), win(amort)).held_reason,
+                         "value_words_missing")
+        row = "개발비 1,523,640 (312,000) 1,211,640"
+        v = self.check("DEV_COST_CAPITALIZATION", raw("CAPITALIZED", row), win("무형자산 내역 산업재산권 12,000 " + row))
+        self.assertEqual((v.value, v.held_reason), ("CAPITALIZED", None))
+        stmt = "당기 중 신제품 개발 프로젝트 관련 지출 1,200,000천원을 개발비로 인식하였습니다."
+        self.assertEqual(self.check("DEV_COST_CAPITALIZATION", raw("CAPITALIZED", stmt), win(stmt)).value, "CAPITALIZED")
+
+    def test_6_value_words_리스_NONE과_FVOCI(self) -> None:
+        self.assertEqual(self.check("LEASE_EXEMPTION", raw("NONE", DONGJIN), win(DONGJIN)).held_reason, "value_words_missing")
+        none_ok = "회사는 단기리스 및 소액 기초자산 리스에 대하여 인식 면제 규정을 적용하지 않습니다."
+        self.assertEqual(self.check("LEASE_EXEMPTION", raw("NONE", none_ok), win(none_ok)).value, "NONE")
+        fv_bad = "회사는 보유 지분상품을 모두 당기손익-공정가치 측정 금융자산으로 분류합니다."
+        self.assertEqual(self.check("FVOCI_DESIGNATION", raw("NOT_DESIGNATED", fv_bad), win(fv_bad)).held_reason,
+                         "value_words_missing")
+        fv_ok = "회사는 보유 지분상품을 기타포괄손익-공정가치 측정 항목으로 지정하지 않았습니다."
+        self.assertEqual(self.check("FVOCI_DESIGNATION", raw("NOT_DESIGNATED", fv_ok), win(fv_ok)).value, "NOT_DESIGNATED")
+
+    def test_7_classification_list(self) -> None:
+        v = self.check("EMBEDDED_DERIVATIVE_SEPARATION", raw("SEPARATED", BNK), win(BNK))  # #7·8·10·14
+        self.assertEqual(v.held_reason, "classification_list")
+        self.assertEqual(self.check("EMBEDDED_DERIVATIVE_SEPARATION", raw("NOT_SEPARATED", BYEOKJE), win(BYEOKJE)).value,
+                         "NOT_SEPARATED")
+
+
+class IpFairValueTests(unittest.TestCase):
+    ip = T["IP_FAIR_VALUE"]
+
+    def test_당기_열이_같으면_FV_EQUALS(self) -> None:  # #26 SGC솔루션
+        value, ev = ip_fair_value(SGC)
+        self.assertEqual(value, "FV_EQUALS")
+        self.assertTrue(ev.startswith("당기말"))
+        self.assertTrue(ev.endswith("합계 56,001 56,001"))
+        self.assertIn(ev, SGC)
+
+    def test_공정가치_장부금액_순서와_당_표기(self) -> None:
+        self.assertEqual(ip_fair_value(KGC)[0], "FV_DIFFERS")
+        self.assertEqual(ip_fair_value(KORAMCO)[0], "FV_DIFFERS")
+
+    def test_합계_행이_표_밖이면_None(self) -> None:
+        self.assertIsNone(ip_fair_value(HANMI))
+
+    def test_숫자가_없거나_전기_먼저면_None(self) -> None:
+        self.assertIsNone(ip_fair_value(MIRAE_B))
+        self.assertIsNone(ip_fair_value("전기말 당기말 장부금액 공정가치 합계 100 200 300 400"))
+        self.assertIsNone(ip_fair_value("장부금액 공정가치 합계 100 200"))
+
+    def test_postcheck가_숫자로_결정한다(self) -> None:
+        # 모델은 FV_DIFFERS라 했지만 당기 열은 같다(#26에서 mini가 전기 열을 읽은 오류).
+        claim = "(3) 보고기간 종료일 현재 투자부동산의 공정가치는 다음과 같습니다."
+        v = postcheck(self.ip, raw("FV_DIFFERS", claim), win(SGC))
+        self.assertEqual((v.value, v.held_reason), ("FV_EQUALS", None))
+        self.assertIn("합계 56,001 56,001", v.evidence)
+
+    def test_공정가치모형이면_FV_EQUALS(self) -> None:  # #25 아시아리얼티
+        ev = "최초 인식 후 투자부동산은 공정가치모형을 적용하여 공정가치로 측정합니다."
+        v = postcheck(self.ip, raw("FV_DIFFERS", ev), win(ev))
+        self.assertEqual((v.value, v.evidence, v.held_reason), ("FV_EQUALS", ev, None))
+
+    def test_숫자가_없으면_ip_numbers_missing(self) -> None:  # #22 미래에셋(단위가 달라 숫자 비교 불가)
+        w = win(MIRAE_A + " " + MIRAE_B)
+        v = postcheck(self.ip, raw("FV_DIFFERS", MIRAE_B), w)
+        self.assertEqual((v.value, v.held_reason), ("UNDETERMINED", "ip_numbers_missing"))
+        nd = "회사는 투자부동산의 공정가치를 신뢰성 있게 측정할 수 없어 공정가치를 공시하지 아니하였습니다."
+        v = postcheck(self.ip, raw("FV_NOT_DISCLOSED", nd), win(nd))
+        self.assertEqual((v.value, v.held_reason), ("FV_NOT_DISCLOSED", None))
+
+
+if __name__ == "__main__":
+    unittest.main()
