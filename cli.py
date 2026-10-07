@@ -855,6 +855,59 @@ def extract_topic_stances_cmd(facts: str, docs: str, output: str, topics: str | 
         click.echo(f"  {t}: {s['by_topic'][t]} 창 없음 {s['no_window'][t]}")
 
 
+@cli.command("topic-stance-sample")
+@click.option("--stances", default="dart_collected/topic_stance.jsonl", show_default=True)
+@click.option("--facts", default="dart_collected/audit_facts.jsonl", show_default=True, help="corp_name 출처")
+@click.option("--progress", default=None, help="창 발췌 출처(기본: <stances stem>.progress.jsonl)")
+@click.option("-o", "--output", default="dart_collected/topic_stance_samples.json", show_default=True)
+@click.option("--per-topic", type=int, default=20, show_default=True)
+@click.option("--seed", type=int, default=20261010, show_default=True)
+def topic_stance_sample_cmd(stances: str, facts: str, progress: str | None, output: str, per_topic: int, seed: int) -> None:
+    """WS8 판정 행에서 회계사 확인용 표본을 주제마다 값 비율대로 뽑는다(UNDETERMINED 제외)."""
+    from dart_search_mcp.topic_judge.run import load_facts, progress_path_for, read_progress
+    from dart_search_mcp.topic_judge.sample import draw_samples
+    stances_path = Path(stances)
+    rows = [json.loads(l) for l in stances_path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    names = {f["rcept_no"]: f.get("corp_name", "") for f in load_facts(Path(facts))}
+    prog = read_progress(Path(progress) if progress else progress_path_for(stances_path))
+    excerpts = {(r["rcept_no"], r["topic"]): r.get("excerpt", "") for r in prog}
+    for r in rows:
+        r["corp_name"] = names.get(r["rcept_no"], "")
+        r["excerpt"] = excerpts.get((r["rcept_no"], r["topic"]), "")
+    samples = draw_samples(rows, per_topic=per_topic, seed=seed)
+    out = Path(output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(samples, ensure_ascii=False, indent=1), encoding="utf-8")
+    counts: dict[str, int] = {}
+    for s_ in samples:
+        counts[s_["topic"]] = counts.get(s_["topic"], 0) + 1
+    click.echo(f"표본 {len(samples)}건 -> {out}")
+    for t, n in counts.items():
+        click.echo(f"  {t}: {n}")
+
+
+@cli.command("topic-stance-gate")
+@click.option("--samples", default="dart_collected/topic_stance_samples.json", show_default=True)
+@click.option("--answers", required=True, help="회계사 답 json {sample_id: ok|partial|wrong}")
+@click.option("-o", "--report", default="dart_collected/topic_stance_gate.json", show_default=True)
+def topic_stance_gate_cmd(samples: str, answers: str, report: str) -> None:
+    """WS8 회계사 결과 관문. 주제마다 표본 20건 이상·wrong 1건 이하면 통과. 미달 주제가 있으면 종료코드 2."""
+    from dart_search_mcp.topic_judge.gate import gate
+    smp = json.loads(Path(samples).read_text(encoding="utf-8"))
+    ans = json.loads(Path(answers).read_text(encoding="utf-8"))
+    try:
+        rep = gate(smp, ans)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--answers")
+    Path(report).write_text(json.dumps(rep, ensure_ascii=False, indent=1), encoding="utf-8")
+    for code, t in rep["topics"].items():
+        click.echo(f"{code}: {'통과' if t['pass'] else '미달'} n={t['n']} ok={t['ok']} partial={t['partial']} "
+                   f"wrong={t['wrong']} 미응답={t['unanswered']}")
+    click.echo(f"고칠 목록(partial) {len(rep['fix_list'])}건 -> {report}")
+    if not rep["passed"]:
+        raise SystemExit(2)
+
+
 @cli.command("policy-stance-gate")
 @click.option("--stances", default="dart_collected/policy_stance.jsonl", show_default=True)
 @click.option("--positives", default=None, help="양성 대조군 jsonl (rcept_no,topic,subject,expected)")
