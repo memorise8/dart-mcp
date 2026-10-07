@@ -836,12 +836,27 @@ def extract_policy_stances_cmd(
 @click.option("--workers", type=click.IntRange(1, 16), default=4, show_default=True)
 @click.option("--dry-judge", is_flag=True, default=False, help="가짜 판정기(UNDETERMINED)로 배선만 확인")
 @click.option("--retry-errors", is_flag=True, default=False, help="progress의 llm_error·parse 기록을 다시 판정")
+@click.option("--repostcheck", is_flag=True, default=False,
+              help="LLM 없이 --progress 의 모델 답에 지금 사후 검사를 다시 걸어 -o 에 행을 쓴다")
+@click.option("--progress", "progress_path", default=None, help="--repostcheck 가 읽을 progress jsonl(읽기만 한다)")
 def extract_topic_stances_cmd(facts: str, docs: str, output: str, topics: str | None, limit: int | None,
-                              workers: int, dry_judge: bool, retry_errors: bool) -> None:
+                              workers: int, dry_judge: bool, retry_errors: bool, repostcheck: bool,
+                              progress_path: str | None) -> None:
     """WS8 8개 정책 주제 판정. 여기서는 --dry-judge만 돈다 — 실제 luna 판정은
     scripts/ws8_run_in_backend.py 를 TEMIS 백엔드 이미지 안에서 돌린다."""
-    from dart_search_mcp.topic_judge.run import dry_judge as _dry, run_topics
+    from dart_search_mcp.topic_judge.run import dry_judge as _dry, repostcheck_progress, run_topics
     from dart_search_mcp.topic_judge.topics import TOPIC_DEFS
+    if repostcheck:
+        if not progress_path:
+            raise click.UsageError("--repostcheck 에는 --progress 가 필요하다")
+        if Path(progress_path).resolve() == Path(output).resolve():
+            raise click.UsageError("-o 는 progress 파일과 달라야 한다")
+        r = repostcheck_progress(progress_path=Path(progress_path), docs_dir=Path(docs), out_path=Path(output))
+        click.echo(f"재검사: 기록 {r['records']} · 재검사 {r['rechecked']} · 바뀜 {r['changed']} · 창 바뀜 {r['window_changed']} "
+                   f"· raw 없음 {r['kept_no_raw']} -> 행 {r['rows']}건 {output}")
+        for t, c in r["value_changes"].items():
+            click.echo(f"  {t}: {c}")
+        return
     if not dry_judge:
         raise click.UsageError("실제 판정은 scripts/ws8_run_in_backend.py(백엔드 이미지)로 돈다. 여기서는 --dry-judge만 쓴다.")
     codes = [t.strip() for t in topics.split(",") if t.strip()] if topics else list(TOPIC_DEFS)

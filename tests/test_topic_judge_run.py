@@ -6,7 +6,7 @@ from pathlib import Path
 
 from dart_search_mcp.topic_judge.postcheck import Verdict
 from dart_search_mcp.topic_judge.run import (
-    ROW_COLUMNS, build_row, combine, dry_judge, is_rate_limited, progress_path_for, read_progress,
+    ROW_COLUMNS, build_row, combine, dry_judge, is_rate_limited, progress_path_for, read_progress, repostcheck_progress,
     retry_after_seconds, run_topics, summary_path_for, with_retries,
 )
 
@@ -208,6 +208,59 @@ class RunTopicsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             run_topics(facts_path=Path("x"), docs_dir=Path("y"), topics=["NOPE"], out_path=Path("z"),
                        complete_json=dry_judge)
+
+
+class RepostcheckTests(unittest.TestCase):
+    def test_raw에_사후검사를_다시_걸고_창이_바뀐_기록은_둔다(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            facts, docs = make_env(Path(d))
+            out = Path(d) / "t.jsonl"
+            run_topics(facts_path=facts, docs_dir=docs, topics=TOPICS, out_path=out, complete_json=FakeJudge())
+            prog = progress_path_for(out)
+            recs = read_progress(prog)
+            # 리스 기록: 그 당시 사후 검사가 (지금과 달리) UNDETERMINED로 보류했다고 꾸민다.
+            # 개발비 기록: 창 위치를 바꿔 「창 바뀜」으로 만든다.
+            for r in recs:
+                if r["topic"] == "LEASE_EXEMPTION":
+                    r.update(value="UNDETERMINED", evidence="", held_reason="conditional")
+                else:
+                    r["block_offset"] = r["block_offset"] + 7
+            recs.append({"rcept_no": "20260401000002", "topic": "LEASE_EXEMPTION", "corp_code": "00000001",
+                         "fiscal_year": 2025, "value": "UNDETERMINED", "evidence": "", "subject": "",
+                         "held_reason": "llm_error", "raw": None, "anchor": "", "block_offset": 0, "window_head": "창"})
+            prog.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in recs), encoding="utf-8")
+            before = prog.read_text(encoding="utf-8")
+            rows_path = Path(d) / "re" / "rows.jsonl"
+            rows_path.parent.mkdir()
+            s = repostcheck_progress(progress_path=prog, docs_dir=docs, out_path=rows_path)
+            self.assertEqual(prog.read_text(encoding="utf-8"), before)  # progress는 읽기만
+            self.assertEqual((s["records"], s["rechecked"], s["changed"], s["window_changed"], s["kept_no_raw"]),
+                             (3, 1, 1, 1, 1))
+            self.assertEqual(s["value_changes"], {"LEASE_EXEMPTION": {"UNDETERMINED->BOTH": 1}})
+            self.assertEqual(s["held_reason_changes"], {"LEASE_EXEMPTION": {"conditional->None": 1}})
+            rows = {(r["rcept_no"], r["topic"]): r for r in map(json.loads, rows_path.read_text(encoding="utf-8").splitlines())}
+            self.assertEqual(len(rows), 3)
+            lease = rows[("20260401000001", "LEASE_EXEMPTION")]
+            self.assertEqual((lease["value"], lease["evidence"], lease["held_reason"]), ("BOTH", LEASE_SELF, ""))
+            self.assertEqual(tuple(lease), ROW_COLUMNS)
+            self.assertEqual(rows[("20260401000002", "DEV_COST_CAPITALIZATION")]["held_reason"], "model_undetermined")
+            self.assertEqual(rows[("20260401000002", "LEASE_EXEMPTION")]["held_reason"], "llm_error")
+            self.assertTrue((rows_path.parent / "rows.repostcheck.json").exists())
+
+    def test_cli(self) -> None:
+        import subprocess, sys
+        with tempfile.TemporaryDirectory() as d:
+            facts, docs = make_env(Path(d))
+            out = Path(d) / "t.jsonl"
+            run_topics(facts_path=facts, docs_dir=docs, topics=TOPICS, out_path=out, complete_json=FakeJudge())
+            rows_path = Path(d) / "rows.jsonl"
+            root = Path(__file__).resolve().parent.parent
+            p = subprocess.run([sys.executable, str(root / "cli.py"), "extract-topic-stances", "--repostcheck",
+                                "--progress", str(progress_path_for(out)), "--docs", str(docs), "-o", str(rows_path)],
+                               capture_output=True, text=True, cwd=str(root))
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertIn("재검사 2", p.stdout)
+            self.assertEqual(rows_path.read_text(encoding="utf-8"), out.read_text(encoding="utf-8"))
 
 
 class CombineTests(unittest.TestCase):

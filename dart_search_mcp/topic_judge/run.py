@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 
 from .judge import CompleteJson, judge_window
-from .postcheck import UNDETERMINED, Verdict
+from .postcheck import UNDETERMINED, Verdict, postcheck
 from .topics import TOPIC_DEFS
 from .window import Window, doc_text, pick_window
 
@@ -407,6 +407,74 @@ def run_topics(
         "elapsed_sec": round(time.time() - started, 1),
     }
     _write_json_atomic(summary_path_for(out_path), summary)
+    return summary
+
+
+def repostcheck_progress(*, progress_path: Path, docs_dir: Path, out_path: Path) -> dict[str, Any]:
+    """LLM 없이 progress의 모델 답(raw)에 지금의 사후 검사를 다시 걸어 행을 새로 쓴다.
+
+    기록마다 원문으로 창을 다시 고른다. 창의 anchor·block_offset이 기록과 같으면 raw에 postcheck를
+    다시 걸고, 다르면(창 규칙이 바뀜) 기록된 판정을 그대로 두고 `window_changed`로 센다. raw가 없거나
+    value가 없는 기록(llm_error·parse)도 그대로 둔다. 행은 `out_path`에 원자적으로, 바뀐 내역 요약은
+    `<out stem>.repostcheck.json`에 쓴다. progress 파일은 읽기만 한다."""
+    started = time.time()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    records = read_progress(progress_path)
+    by_rc: dict[str, list[int]] = defaultdict(list)
+    for i, rec in enumerate(records):
+        by_rc[rec["rcept_no"]].append(i)
+
+    counts: Counter = Counter()
+    value_changes: dict[str, Counter] = defaultdict(Counter)
+    held_changes: dict[str, Counter] = defaultdict(Counter)
+    updated: list[dict[str, Any]] = list(records)
+    for rc in sorted(by_rc):
+        idxs = by_rc[rc]
+        text: str | None = None
+        loaded = False
+        for i in idxs:
+            rec = records[i]
+            raw = rec.get("raw")
+            topic = rec["topic"]
+            if topic not in TOPIC_DEFS or not isinstance(raw, dict) or "value" not in raw:
+                counts["kept_no_raw"] += 1
+                continue
+            if not loaded:
+                text, loaded = doc_text(docs_dir, rc), True
+            defn = TOPIC_DEFS[topic]
+            w = pick_window(defn, text) if text is not None else None
+            if w is None or w.anchor != rec.get("anchor") or w.spans[0][0] != rec.get("block_offset"):
+                counts["window_changed"] += 1
+                continue
+            v = postcheck(defn, raw, w)
+            counts["rechecked"] += 1
+            if (v.value, v.held_reason) != (rec.get("value"), rec.get("held_reason")):
+                counts["changed"] += 1
+                value_changes[topic][f"{rec.get('value')}->{v.value}"] += 1
+                held_changes[topic][f"{rec.get('held_reason')}->{v.held_reason}"] += 1
+            updated[i] = {**rec, "value": v.value, "evidence": v.evidence, "subject": v.subject,
+                          "held_reason": v.held_reason, "excerpt": evidence_excerpt(w.text, v.evidence)}
+
+    rows = rows_from_progress(updated, {})
+    _write_jsonl_atomic(out_path, rows)
+    by_topic: dict[str, Counter] = defaultdict(Counter)
+    for r in rows:
+        by_topic[r["topic"]][r["value"]] += 1
+    summary = {
+        "progress": str(progress_path),
+        "records": len(records),
+        "rows": len(rows),
+        "rechecked": counts["rechecked"],
+        "changed": counts["changed"],
+        "window_changed": counts["window_changed"],
+        "kept_no_raw": counts["kept_no_raw"],
+        "value_changes": {t: dict(c) for t, c in value_changes.items()},
+        "held_reason_changes": {t: dict(c) for t, c in held_changes.items()},
+        "by_topic": {t: dict(c) for t, c in by_topic.items()},
+        "parser_version": PARSER_VERSION,
+        "elapsed_sec": round(time.time() - started, 1),
+    }
+    _write_json_atomic(out_path.with_suffix(".repostcheck.json"), summary)
     return summary
 
 

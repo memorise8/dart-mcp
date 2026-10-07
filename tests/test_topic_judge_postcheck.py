@@ -143,6 +143,16 @@ class RuleTests(unittest.TestCase):
         ev2 = "회사는 단기리스와 소액 기초자산 리스를 제외한 모든 리스에 대하여 하나의 인식과측정 접근법을 적용합니다."
         v = self.check("LEASE_EXEMPTION", raw("BOTH", ev2), win(tmpl))
         self.assertEqual((v.value, v.held_reason), ("BOTH", None))
+        # 재리뷰 O1: 제목이 회사를 말하지 않으면(조건 그 자체) 조건문이다.
+        for cond_head in ("1) 리스기간이 12개월 이하인 경우 회사는 단기리스 면제를 적용하여 리스료를 비용으로 인식합니다.",
+                          "(1) 기초자산이 소액인 경우 회사는 리스부채를 인식하지 않습니다.",
+                          "② 기초자산이 소액일 경우 당사는 인식 면제를 적용합니다."):
+            ev3 = cond_head[cond_head.index("경우") + 3:]
+            v = self.check("LEASE_EXEMPTION", raw("BOTH", ev3), win(cond_head))
+            self.assertEqual(v.held_reason, "conditional", cond_head)
+        role = "1) 연결실체가 리스제공자인 경우 연결실체는 단기리스와 소액 기초자산 리스에 인식 면제를 적용합니다."
+        v = self.check("LEASE_EXEMPTION", raw("BOTH", role[role.index("경우") + 3:]), win(role))
+        self.assertEqual((v.value, v.held_reason), ("BOTH", None))
         # 머리 표시 뒤라도 진짜 조건절은 여전히 걸린다.
         cond = "1) 회사가 리스이용자인 경우 소액자산 요건을 충족하는 경우에는 인식 면제를 적용합니다."
         v = self.check("LEASE_EXEMPTION", raw("LOW_VALUE", "인식 면제를 적용합니다."), win(cond))
