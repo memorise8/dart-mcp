@@ -116,6 +116,23 @@ class RuleTests(unittest.TestCase):
         v = self.check("IP_FAIR_VALUE", raw("FV_NOT_DISCLOSED", MIRAE_B + " " + MIRAE_A), w)
         self.assertEqual(v.held_reason, "evidence_not_in_window")
 
+    def test_5_조건절을_잘라낸_조각도_conditional(self) -> None:  # 리뷰 M1, #9 클릭나라
+        frag = "별도의 파생상품으로 회계처리하고 있습니다."
+        v = self.check("EMBEDDED_DERIVATIVE_SEPARATION", raw("SEPARATED", frag), win("앞 문장입니다. " + CLICK + " 뒤 문장입니다."))
+        self.assertEqual((v.value, v.held_reason), ("UNDETERMINED", "conditional"))
+        # 두 문장 이어 붙이기에서 뒷 조각이 조건문 한가운데에서 시작해도 걸린다.
+        w = win("회사는 사무실과 차량을 리스하고 있습니다. 소액자산 요건을 충족하는 경우에는 인식 면제를 적용합니다.")
+        v = self.check("LEASE_EXEMPTION", raw("LOW_VALUE", "회사는 사무실과 차량을 리스하고 있습니다. 인식 면제를 적용합니다."), w)
+        self.assertEqual(v.held_reason, "conditional")
+        # 근거는 모델이 낸 그대로 남는다(문장 넓히기는 검사에만 쓴다).
+        v = self.check("EMBEDDED_DERIVATIVE_SEPARATION", raw("NOT_SEPARATED", "회계처리를 하지 않음."), win(BYEOKJE))
+        self.assertEqual((v.value, v.evidence), ("NOT_SEPARATED", "회계처리를 하지 않음."))
+
+    def test_7_분류목록_조각도_걸린다(self) -> None:
+        frag = "단기매매금융부채로 분류됩니다."
+        v = self.check("EMBEDDED_DERIVATIVE_SEPARATION", raw("SEPARATED", frag), win(BNK))
+        self.assertEqual(v.held_reason, "classification_list")
+
     def test_5_conditional(self) -> None:
         v = self.check("EMBEDDED_DERIVATIVE_SEPARATION", raw("SEPARATED", CLICK), win(CLICK))  # #9
         self.assertEqual(v.held_reason, "conditional")
@@ -151,6 +168,26 @@ class RuleTests(unittest.TestCase):
         stmt = "당기 중 신제품 개발 프로젝트 관련 지출 1,200,000천원을 개발비로 인식하였습니다."
         self.assertEqual(self.check("DEV_COST_CAPITALIZATION", raw("CAPITALIZED", stmt), win(stmt)).value, "CAPITALIZED")
 
+    def test_6_부정형은_필요한_말이_아니다(self) -> None:  # 리뷰 M2
+        neg = "연구단계 지출은 개발비로 인식하지 않고 발생 즉시 비용으로 처리하였습니다."
+        self.assertEqual(self.check("DEV_COST_CAPITALIZATION", raw("CAPITALIZED", neg), win(neg)).held_reason,
+                         "value_words_missing")
+        neg2 = "당사는 전환사채의 전환권을 금융부채로 분류하지 않았습니다."
+        self.assertEqual(self.check("CONVERSION_OPTION_CLASS", raw("LIABILITY", neg2), win(neg2)).held_reason,
+                         "value_words_missing")
+        neg3 = "전환권은 금융부채로 인식되지 않습니다."
+        self.assertEqual(self.check("CONVERSION_OPTION_CLASS", raw("LIABILITY", neg3), win(neg3)).held_reason,
+                         "value_words_missing")
+        pos = "당기 중 지출 1,200,000천원을 개발비로 자산화하였습니다."
+        self.assertEqual(self.check("DEV_COST_CAPITALIZATION", raw("CAPITALIZED", pos), win(pos)).value, "CAPITALIZED")
+
+    def test_6_개발비_금액은_실제_금액만(self) -> None:  # 리뷰 L1
+        for ev in ("개발비(1) 는 정액법으로 5년간 상각합니다.", "개발비 20~30년 동안 상각합니다.", "개발비 5 년"):
+            self.assertEqual(self.check("DEV_COST_CAPITALIZATION", raw("CAPITALIZED", ev), win(ev)).held_reason,
+                             "value_words_missing", ev)
+        for ev in ("개발비(*1) 1,523,640 (312,000)", "개발비 (1,234,567)"):
+            self.assertEqual(self.check("DEV_COST_CAPITALIZATION", raw("CAPITALIZED", ev), win(ev)).value, "CAPITALIZED", ev)
+
     def test_6_value_words_리스_NONE과_FVOCI(self) -> None:
         self.assertEqual(self.check("LEASE_EXEMPTION", raw("NONE", DONGJIN), win(DONGJIN)).held_reason, "value_words_missing")
         none_ok = "회사는 단기리스 및 소액 기초자산 리스에 대하여 인식 면제 규정을 적용하지 않습니다."
@@ -168,14 +205,47 @@ class RuleTests(unittest.TestCase):
                          "NOT_SEPARATED")
 
 
+# 실제 공시 20260226007165의 4열 표(취득원가·감가상각누계액·장부금액·공정가치).
+FOUR_COL = ("11.1 보고기간말 현재 당사가 보유하고 있는 투자부동산의 내역은 다음과 같습니다. (1) 당기 (단위: 원) "
+            "구분 취득원가 감가상각누계액 장부금액 공정가치 토지 3,557,865,229 - 3,557,865,229 1,635,256,350 "
+            "건물 8,300,967,578 (553,397,837) 7,747,569,741 5,238,488,970 "
+            "합 계 11,858,832,807 (553,397,837) 11,305,434,970 6,873,745,320 (*)취득시점에 감정평가를 받았습니다.")
+# 실제 공시 20260318000844: 당기·전기 4열씩, 주석 표시가 붙은 머리.
+FOUR_COL_2P = ("19. 투자부동산 (1) 당기말과 전기말 현재 투자부동산의 내역은 다음과 같습니다. (단위 : 천원) 과 목 제 73(당) 기 "
+               "제 72(전) 기 취득원가 상각누계액 장부금액 공정가치(*1) 취득원가 상각누계액 장부금액 공정가치(*1) "
+               "토지 16,018,281 - 16,018,281 31,652,954 13,646,538 - 13,646,538 28,144,000 "
+               "합 계 23,442,712 (1,950,449) 21,492,263 31,652,954 19,842,833 (1,765,996) 18,076,837 28,144,000 (*1) 투자부동산의 공정가치는 독립된 평가기관이 측정하였습니다.")
+
+
 class IpFairValueTests(unittest.TestCase):
     ip = T["IP_FAIR_VALUE"]
+
+    def test_4열_표는_장부금액_공정가치_열을_읽는다(self) -> None:  # 리뷰 H1
+        value, ev = ip_fair_value(FOUR_COL)
+        self.assertEqual(value, "FV_DIFFERS")  # 11,305,434,970 ≠ 6,873,745,320
+        self.assertTrue(ev.endswith("11,305,434,970 6,873,745,320"))
+        same = FOUR_COL.replace("11,305,434,970 6,873,745,320", "11,305,434,970 11,305,434,970")
+        self.assertEqual(ip_fair_value(same)[0], "FV_EQUALS")  # 취득원가·누계액을 읽으면 DIFFERS가 된다
+        self.assertEqual(ip_fair_value(FOUR_COL_2P)[0], "FV_DIFFERS")
+        eq2 = FOUR_COL_2P.replace("21,492,263 31,652,954 19,842,833", "21,492,263 21,492,263 19,842,833")
+        self.assertEqual(ip_fair_value(eq2)[0], "FV_EQUALS")
+
+    def test_열을_확정할_수_없으면_None(self) -> None:
+        short = FOUR_COL.replace("합 계 11,858,832,807 (553,397,837) 11,305,434,970 6,873,745,320", "합 계 11,858,832,807 (553,397,837)")
+        self.assertIsNone(ip_fair_value(short))
+        dash = FOUR_COL.replace("11,305,434,970 6,873,745,320", "11,305,434,970 -")
+        self.assertIsNone(ip_fair_value(dash))
+
+    def test_Window를_넘기면_spans_조각으로_읽는다(self) -> None:  # 리뷰 L4
+        table = SGC.replace("건물 10,489 374,293", "건물 … 10,489 374,293")  # 원문 자체에 「 … 」
+        w = Window(text=table, spans=((0, len(table)),), anchor="keyword")
+        self.assertEqual(ip_fair_value(w)[0], "FV_EQUALS")
 
     def test_당기_열이_같으면_FV_EQUALS(self) -> None:  # #26 SGC솔루션
         value, ev = ip_fair_value(SGC)
         self.assertEqual(value, "FV_EQUALS")
         self.assertTrue(ev.startswith("당기말"))
-        self.assertTrue(ev.endswith("합계 56,001 56,001"))
+        self.assertTrue(ev.endswith("합계 56,001 56,001 16,919,465 17,085,668"))
         self.assertIn(ev, SGC)
 
     def test_공정가치_장부금액_순서와_당_표기(self) -> None:
@@ -201,6 +271,14 @@ class IpFairValueTests(unittest.TestCase):
         ev = "최초 인식 후 투자부동산은 공정가치모형을 적용하여 공정가치로 측정합니다."
         v = postcheck(self.ip, raw("FV_DIFFERS", ev), win(ev))
         self.assertEqual((v.value, v.evidence, v.held_reason), ("FV_EQUALS", ev, None))
+        spaced = "투자부동산은 공정가치 모형을 적용합니다."  # 리뷰 L3
+        self.assertEqual(postcheck(self.ip, raw("FV_DIFFERS", spaced), win(spaced)).value, "FV_EQUALS")
+
+    def test_공정가치모형_부정은_지름길을_타지_않는다(self) -> None:
+        for ev in ("회사는 투자부동산에 원가모형을 적용하며 공정가치모형은 적용하지 않습니다.",
+                   "투자부동산의 후속측정은 공정가치 모형이 아니라 원가모형에 따릅니다."):
+            v = postcheck(self.ip, raw("FV_EQUALS", ev), win(ev))
+            self.assertEqual((v.value, v.held_reason), ("UNDETERMINED", "ip_numbers_missing"), ev)
 
     def test_근사치_문장은_숫자_없이_FV_EQUALS(self) -> None:  # #23 트라이씨클
         ev = "회사는 투자부동산의 공정가치와 장부금액의 차이가 중요하지 않은 것으로 판단하고 있습니다."

@@ -75,9 +75,14 @@ class TopicDefsTests(unittest.TestCase):
         self.assertTrue(conv[2].search("19. 사채"))
         self.assertIsNone(conv[2].search("회사채 투자"))
         emb = TOPIC_DEFS["EMBEDDED_DERIVATIVE_SEPARATION"].priority_res
-        self.assertTrue(emb[0].search("상환전환우선주") and emb[0].search("신주인수권부사채"))
-        self.assertIsNone(emb[0].search("회사채"))
-        self.assertTrue(emb[1].search("내재파생상품"))
+        self.assertEqual(TOPIC_DEFS["EMBEDDED_DERIVATIVE_SEPARATION"].priority_names[0], "회사 상품 내재파생")
+        self.assertTrue(emb[0].search("제3회 무기명식 이권부 무보증 사모 전환사채에 포함된 내재파생상품은 분리하여"))
+        self.assertTrue(emb[0].search("내재파생상품(제 2 회 상환전환우선주의 전환권)"))
+        self.assertTrue(emb[0].search("당사가 발행한 전환사채의 전환권은 주계약에서 분리하여 파생상품부채로 인식"))
+        self.assertIsNone(emb[0].search("주계약이 금융자산이 아닌 경우 내재파생상품은 분리하여 회계처리합니다."))
+        self.assertTrue(emb[1].search("상환전환우선주") and emb[1].search("신주인수권부사채"))
+        self.assertIsNone(emb[1].search("회사채"))
+        self.assertTrue(emb[2].search("내재파생상품"))
         bcc = TOPIC_DEFS["BUSINESS_COMBINATION_COST_CLASS"].priority_res
         self.assertTrue(bcc[0].search("회계정책 … 31. 사업결합 당기 중"))
         self.assertIsNone(bcc[0].search("사업결합과 관련하여 발생한 원가"))
@@ -93,7 +98,14 @@ class TopicDefsTests(unittest.TestCase):
         lease = TOPIC_DEFS["LEASE_EXEMPTION"].priority_res
         self.assertTrue(lease[0].search("(2) 리스이용자"))
         self.assertTrue(lease[1].search("소액 기초자산"))
-        fv = TOPIC_DEFS["FVOCI_DESIGNATION"].priority_res
+        fv_all = TOPIC_DEFS["FVOCI_DESIGNATION"].priority_res
+        self.assertEqual(TOPIC_DEFS["FVOCI_DESIGNATION"].priority_names[0], "FVOCI 지정 진술")
+        self.assertTrue(fv_all[0].search("회사는 전략적 투자목적의 비상장 지분상품을 기타포괄손익-공정가치 측정 항목으로 지정하였습니다."))
+        self.assertTrue(fv_all[0].search("기타포괄손익-공정가치 측정 금융자산으로 지정한 지분상품"))
+        self.assertIsNone(fv_all[0].search("단기매매항목이 아닌 지분상품에 대한 투자는 최초 인식시점에 후속적인 공정가치 변동을 기타포괄손익으로 표시할 것을 지정하는 취소불가능한 선택을 할 수 있습니다."))
+        self.assertIsNone(fv_all[0].search("기타포괄손익으로 표시하는 선택을 할 수 있습니다. ㆍ당기손익-공정가치측정항목으로 지정한다면 회계불일치를"))
+        self.assertIsNone(fv_all[0].search("채무상품을 당기손익-공정가치 측정 항목으로 지정한다면 회계불일치를 제거하거나"))
+        fv = fv_all[1:]
         for head in ("(3) 금융자산", "2.4 금융자산", "2.4. 금융자산", "3. 금융자산", "가. 비파생금융자산"):
             self.assertTrue(fv[0].search("앞 " + head), head)
         for not_head in (" 3 금융자산", "각. 금융자산", "회사. 금융자산"):

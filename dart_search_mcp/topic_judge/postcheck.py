@@ -37,29 +37,48 @@ def _norm(s: str) -> str:
 _MIN_PART = 10  # 근거를 두 조각으로 나눌 때 조각의 최소 길이
 
 
-def _in_window(evidence: str, window: Window) -> bool:
-    """정규화한 근거가 창의 원문 조각 하나, 또는 이웃한 두 조각 안에 있는가.
+_SENT_END_RE = re.compile(r"\.(?!\d)")
+_SENT_REACH = 200  # 문장 넓히기의 앞뒤 최대 거리(표처럼 마침표가 없는 곳에서 끝없이 넓히지 않는다)
+
+
+def _sentence_around(hay: str, start: int, end: int) -> str:
+    """hay[start:end]를 품은 문장. 앞은 직전 마침표 뒤(또는 200자), 뒤는 다음 마침표(또는 200자)까지."""
+    lo = max(0, start - _SENT_REACH)
+    ends = list(_SENT_END_RE.finditer(hay, lo, start))
+    s0 = ends[-1].end() if ends else lo
+    m = _SENT_END_RE.search(hay, max(start, end - 1), min(len(hay), end + _SENT_REACH))
+    e0 = m.end() if m else min(len(hay), end + _SENT_REACH)
+    return hay[s0:e0].strip()
+
+
+def _locate(evidence: str, window: Window) -> str | None:
+    """정규화한 근거가 창의 원문 조각 하나, 또는 이웃한 두 조각 안에 있으면 근거를 품은 온전한
+    문장(들)을 낸다. 없으면 None.
 
     - 조각은 `Window.spans` 길이로 되돌린다(원문에 ` … `가 있어도 안전).
     - 이웃 두 조각은 ` … `·공백 하나·빈 문자열로 이어 본다.
     - 근거가 두 문장(`.` 뒤에서 나눔)을 이어 붙인 꼴이면 같은 조각(또는 이웃 쌍) 안에
-      두 문장이 순서대로 있을 때 통과한다(가운데 문장 생략, 스파이크 #22)."""
+      두 문장이 순서대로 있을 때 통과한다(가운데 문장 생략, 스파이크 #22).
+    - 낸 문장으로 조건문·분류 목록 검사를 한다. 근거가 조건절을 잘라 낸 조각이어도 걸린다."""
     ev = _norm(evidence)
     pieces = [_norm(p) for p in window_pieces(window)]
     hays = list(pieces)
     for a, b in zip(pieces, pieces[1:]):
         hays += [a + JOINER + b, a + " " + b, a + b]
-    if any(ev in h for h in hays):
-        return True
-    for m in re.finditer(r"\.(?!\d)", ev):
+    for h in hays:
+        i = h.find(ev)
+        if i >= 0:
+            return _sentence_around(h, i, i + len(ev))
+    for m in _SENT_END_RE.finditer(ev):
         left, right = ev[: m.end()].strip(), ev[m.end():].strip()
         if len(left) < _MIN_PART or len(right) < _MIN_PART:
             continue
         for h in hays:
             i = h.find(left)
-            if i >= 0 and h.find(right, i + len(left)) >= 0:
-                return True
-    return False
+            j = h.find(right, i + len(left)) if i >= 0 else -1
+            if j >= 0:
+                return _sentence_around(h, i, i + len(left)) + " " + _sentence_around(h, j, j + len(right))
+    return None
 
 
 # --- 5. 조건문 -----------------------------------------------------------------
@@ -78,11 +97,15 @@ def _is_conditional(ev: str) -> bool:
 
 # --- 6. 값마다 필요한 말 --------------------------------------------------------
 
+# 「인식하지 않」「분류되지 않」 같은 부정형은 필요한 말로 치지 않는다.
+_NOT_NEG = r"(?!\s*(?:하지|되지)\s*않)"
+
 _VALUE_WORDS: dict[tuple[str, str], re.Pattern] = {
     ("CONVERSION_OPTION_CLASS", "EQUITY"): re.compile(r"전환권대가|자본요소"),
-    ("CONVERSION_OPTION_CLASS", "LIABILITY"): re.compile(r"파생상품부채|금융부채\s*(?:로\s*)?(?:분류|인식)"),
+    ("CONVERSION_OPTION_CLASS", "LIABILITY"): re.compile(r"파생상품부채|금융부채\s*(?:로\s*)?(?:분류|인식)" + _NOT_NEG),
+    # 금액은 천 단위 쉼표가 있는 실제 금액만(「개발비(1)」 주석 번호·「20~30년」 범위는 아님).
     ("DEV_COST_CAPITALIZATION", "CAPITALIZED"): re.compile(
-        r"개발비\s*(?:\(\*?\d*\)\s*)?\(?\d[\d,]*\)?(?![\d,]*\s*(?:년|개월|%))|개발비로\s*(?:인식|자산화)"
+        r"개발비\s*(?:\(\*\d*\)\s*)?\(?\d{1,3}(?:,\d{3})+|개발비로\s*(?:인식|자산화)" + _NOT_NEG
     ),
     ("FVOCI_DESIGNATION", "NOT_DESIGNATED"): re.compile(r"지정하지 않"),
     ("LEASE_EXEMPTION", "NONE"): re.compile(r"적용하지 않"),
@@ -94,15 +117,20 @@ _CLASSIFICATION_LIST_RE = re.compile(r"분리된 내재파생상품도")
 
 # --- 투자부동산 공정가치(숫자) ---------------------------------------------------
 
-_IP_FV_MODEL_RE = re.compile(r"공정가치모형")
+_IP_FV_MODEL_RE = re.compile(r"공정가치\s*모형")
+_IP_FV_MODEL_NEG_RE = re.compile(r"원가\s*모형|적용하지\s*않|아니")
 _IP_FV_APPROX_RE = re.compile(r"차이가 중요하지 않|근사치|근사한")
 _IP_FV_VALUES = ("FV_DIFFERS", "FV_EQUALS")
-# 「장부금액 공정가치」 또는 「공정가치 장부금액」 열 머리(당기·전기 두 쌍이 이어질 수 있다).
-_IP_HEADER_RE = re.compile(r"(장부\s*금액|공정\s*가치)\s+(장부\s*금액|공정\s*가치)")
-_NUM = r"\(?\d{1,3}(?:,\d{3})*\)?"
-_IP_ROW_RE = re.compile(r"(?:합\s*계|투자부동산)\s+(" + _NUM + r")\s+(" + _NUM + r")")
+# 투자부동산 표의 열 머리 낱말. 주석 표시 「(*)」「(*1)」가 붙을 수 있다.
+_IP_COL = r"(?:취득\s*원가|(?:감가\s*)?상각\s*누계액|손상\s*차손\s*누계액|(?:정부|국고)\s*보조금|장부\s*금액|공정\s*가치)"
+_IP_COL_RUN_RE = re.compile(r"(?:" + _IP_COL + r"(?:\s*\(\*\d*\))?\s*){2,}")
+_IP_COL_RE = re.compile(_IP_COL)
+_CELL = r"(?:-|\(?\d{1,3}(?:,\d{3})*\)?)"
+_IP_ROW_RE = re.compile(r"(?:합\s*계|투자부동산)((?:\s+" + _CELL + r")+)")
+_CELL_RE = re.compile(_CELL)
 _CURRENT_RE = re.compile(r"당\s*기|\(당\)")
 _PRIOR_RE = re.compile(r"전\s*기|\(전\)")
+_IP_PERIOD_REACH = 80  # 열 머리 앞에서 당기 표시를 찾는 거리
 _IP_ROW_REACH = 400  # 열 머리에서 합계 행까지 최대 거리
 _TABLE_END_RE = re.compile(r"다\.|\(\d{1,2}\)\s")
 
@@ -113,36 +141,57 @@ def _amount(tok: str) -> int:
     return -v if neg else v
 
 
-def ip_fair_value(window_text: str) -> tuple[str, str] | None:
+def _col_name(tok: str) -> str:
+    t = re.sub(r"\s", "", tok)
+    return "장부금액" if t == "장부금액" else ("공정가치" if t == "공정가치" else "기타")
+
+
+def _ip_from_piece(seg: str) -> tuple[str, str] | None:
+    for run in _IP_COL_RUN_RE.finditer(seg):
+        cols = [_col_name(m.group(0)) for m in _IP_COL_RE.finditer(run.group(0))]
+        # 당기 열 묶음 안에서 장부금액·공정가치가 붙어 있는 첫 위치 k(당기·전기 묶음이 이어지면 첫 묶음이 당기).
+        k = next((i for i in range(len(cols) - 1)
+                  if {cols[i], cols[i + 1]} == {"장부금액", "공정가치"}), None)
+        if k is None:
+            continue
+        before_lo = max(0, run.start() - _IP_PERIOD_REACH)
+        before = seg[before_lo: run.start()]
+        cur = list(_CURRENT_RE.finditer(before))
+        if not cur:
+            continue
+        prior = _PRIOR_RE.search(before)
+        if prior and prior.start() < cur[0].start():
+            continue
+        reach = min(len(seg), run.end() + _IP_ROW_REACH)
+        stop = _TABLE_END_RE.search(seg, run.end(), reach)  # 표가 끝나면(문장 끝·다음 소제목) 거기서 멈춘다
+        row = _IP_ROW_RE.search(seg, run.end(), stop.start() if stop else reach)
+        if row is None:
+            continue
+        cells = _CELL_RE.findall(row.group(1))  # 「-」도 한 칸이다
+        if len(cells) < k + 2 or "-" in (cells[k], cells[k + 1]):
+            return None  # 열 위치를 확정할 수 없으면 숫자로 정하지 않는다
+        a, b = _amount(cells[k]), _amount(cells[k + 1])
+        book, fv = (a, b) if cols[k] == "장부금액" else (b, a)
+        value = "FV_EQUALS" if book == fv else "FV_DIFFERS"
+        return value, seg[before_lo + cur[0].start(): row.end()]
+    return None
+
+
+def ip_fair_value(window_text: str | Window) -> tuple[str, str] | None:
     """창의 투자부동산 표에서 당기 장부금액과 공정가치를 읽어 비교한다.
 
-    보수적으로 읽는다: 「장부금액 공정가치」(순서 무관) 열 머리가 있고, 머리 바로
-    앞에 당기 표시가 있으며(전기 표시가 있으면 당기가 먼저), 머리 뒤 400자 안의
-    「합계」(또는 단일 「투자부동산」) 행에서 첫 두 금액(=당기 열)을 읽을 수 있을 때만
-    (값, 근거)를 낸다. 근거는 열 머리부터 그 행까지의 원문이다. 못 읽으면 None."""
-    for seg in window_text.split(JOINER):
-        seg = _norm(seg)
-        for h in _IP_HEADER_RE.finditer(seg):
-            first, second = (re.sub(r"\s", "", g) for g in h.groups())
-            if first == second:
-                continue
-            before = seg[max(0, h.start() - 60): h.start()]
-            cur = list(_CURRENT_RE.finditer(before))
-            if not cur:
-                continue
-            prior = _PRIOR_RE.search(before)
-            if prior and prior.start() < cur[0].start():
-                continue
-            reach = min(len(seg), h.end() + _IP_ROW_REACH)
-            stop = _TABLE_END_RE.search(seg, h.end(), reach)  # 표가 끝나면(문장 끝·다음 소제목) 거기서 멈춘다
-            row = _IP_ROW_RE.search(seg, h.end(), stop.start() if stop else reach)
-            if row is None:
-                continue
-            a, b = _amount(row.group(1)), _amount(row.group(2))
-            book, fv = (a, b) if first == "장부금액" else (b, a)
-            value = "FV_EQUALS" if book == fv else "FV_DIFFERS"
-            start = cur[0].start() + max(0, h.start() - 60)
-            return value, seg[start: row.end()]
+    보수적으로 읽는다: 열 머리 줄(취득원가·상각누계액·장부금액·공정가치 …)에서 장부금액과
+    공정가치가 붙은 열 위치 k를 세고, 머리 앞 80자 안에 당기 표시가 있으며(전기 표시가
+    있으면 당기가 먼저), 머리 뒤 400자 안의 「합계」(또는 「투자부동산」) 행에서 k·k+1번째
+    칸(「-」도 한 칸)을 읽을 수 있을 때만 (값, 근거)를 낸다. 근거는 당기 표시부터 그
+    행까지의 원문이다. 못 읽거나 칸 수가 모자라면 None.
+
+    `Window`를 넘기면 spans로 되돌린 원문 조각마다 본다(원문 속 「 … 」에 안전)."""
+    pieces = window_pieces(window_text) if isinstance(window_text, Window) else window_text.split(JOINER)
+    for seg in pieces:
+        found = _ip_from_piece(_norm(seg))
+        if found is not None:
+            return found
     return None
 
 
@@ -163,20 +212,21 @@ def postcheck(defn: TopicDef, raw: dict, window: Window) -> Verdict:
         return _held(raw, "not_self")
     if not evidence:
         return _held(raw, "evidence_missing")
-    if not _in_window(evidence, window):
+    sentence = _locate(evidence, window)
+    if sentence is None:
         return _held(raw, "evidence_not_in_window")
-    if _is_conditional(evidence):
+    if _is_conditional(sentence):
         return _held(raw, "conditional")
     words = _VALUE_WORDS.get((defn.code, value))
     if words is not None and not words.search(evidence):
         return _held(raw, "value_words_missing")
-    if defn.code == "EMBEDDED_DERIVATIVE_SEPARATION" and _CLASSIFICATION_LIST_RE.search(evidence):
+    if defn.code == "EMBEDDED_DERIVATIVE_SEPARATION" and _CLASSIFICATION_LIST_RE.search(sentence):
         return _held(raw, "classification_list")
 
     if defn.code == "IP_FAIR_VALUE":
-        if _IP_FV_MODEL_RE.search(evidence):
+        if _IP_FV_MODEL_RE.search(evidence) and not _IP_FV_MODEL_NEG_RE.search(sentence):
             return Verdict("FV_EQUALS", evidence, subject, None, raw)
-        nums = ip_fair_value(window.text)
+        nums = ip_fair_value(window)
         if nums is not None:
             return Verdict(nums[0], nums[1], subject, None, raw)
         if value == "FV_EQUALS" and _IP_FV_APPROX_RE.search(evidence):
