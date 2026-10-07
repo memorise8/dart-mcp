@@ -112,6 +112,19 @@ class GateTests(unittest.TestCase):
         t = gate(self.samples, a)["topics"]["LEASE_EXEMPTION"]
         self.assertEqual((t["n"], t["unanswered"], t["pass"]), (19, 1, False))
 
+    def test_표본이_없는_주제도_미달로_보고(self) -> None:  # 리뷰 M2
+        g = gate(self.samples, self.answers(wrong=0))
+        self.assertEqual(len(g["topics"]), 8)
+        self.assertEqual(g["topics"]["IP_FAIR_VALUE"], {"n": 0, "ok": 0, "partial": 0, "wrong": 0, "unanswered": 0, "pass": False})
+        g2 = gate(self.samples, self.answers(wrong=0), expected_topics=["LEASE_EXEMPTION"])
+        self.assertEqual(set(g2["topics"]), {"LEASE_EXEMPTION", "FVOCI_DESIGNATION"})
+
+    def test_표시_순서는_섞이되_재현된다(self) -> None:
+        s = draw_samples(rows_for("LEASE_EXEMPTION", {"BOTH": 70, "SHORT_TERM": 20, "LOW_VALUE": 10}))
+        values = [r["value"] for r in s]
+        self.assertNotEqual(values, sorted(values, key=["SHORT_TERM", "LOW_VALUE", "BOTH"].index))
+        self.assertEqual(s, draw_samples(rows_for("LEASE_EXEMPTION", {"BOTH": 70, "SHORT_TERM": 20, "LOW_VALUE": 10})))
+
     def test_잘못된_답_값(self) -> None:
         with self.assertRaises(ValueError):
             gate(self.samples, {self.samples[0]["sample_id"]: "maybe"})

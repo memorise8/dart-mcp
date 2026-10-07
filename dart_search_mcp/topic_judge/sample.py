@@ -62,6 +62,8 @@ def draw_samples(rows: list[dict[str, Any]], *, per_topic: int = 20, seed: int =
             pool = sorted(groups[value], key=lambda r: r["rcept_no"])
             rng = random.Random(f"{seed}:{topic}:{value}")
             picked += sorted(rng.sample(pool, quota[value]), key=lambda r: r["rcept_no"])
+        # 회계사 화면에서 값끼리 몰려 보이지 않게 표시 순서를 섞는다(시드 고정).
+        random.Random(f"{seed}:{topic}:order").shuffle(picked)
         for i, r in enumerate(picked, 1):
             out.append({
                 "sample_id": f"{topic}-{i:02d}",

@@ -835,8 +835,9 @@ def extract_policy_stances_cmd(
 @click.option("--limit", type=int, default=None, help="이번 실행에서 판정할 (공시, 주제) 수 상한")
 @click.option("--workers", type=click.IntRange(1, 16), default=4, show_default=True)
 @click.option("--dry-judge", is_flag=True, default=False, help="가짜 판정기(UNDETERMINED)로 배선만 확인")
+@click.option("--retry-errors", is_flag=True, default=False, help="progress의 llm_error·parse 기록을 다시 판정")
 def extract_topic_stances_cmd(facts: str, docs: str, output: str, topics: str | None, limit: int | None,
-                              workers: int, dry_judge: bool) -> None:
+                              workers: int, dry_judge: bool, retry_errors: bool) -> None:
     """WS8 8개 정책 주제 판정. 여기서는 --dry-judge만 돈다 — 실제 luna 판정은
     scripts/ws8_run_in_backend.py 를 TEMIS 백엔드 이미지 안에서 돌린다."""
     from dart_search_mcp.topic_judge.run import dry_judge as _dry, run_topics
@@ -849,7 +850,8 @@ def extract_topic_stances_cmd(facts: str, docs: str, output: str, topics: str | 
         raise click.BadParameter(f"알 수 없는 주제 코드: {', '.join(invalid)} (유효: {', '.join(TOPIC_DEFS)})",
                                  param_hint="--topics")
     s = run_topics(facts_path=Path(facts), docs_dir=Path(docs), topics=codes, out_path=Path(output),
-                   complete_json=_dry, workers=workers, limit=limit)
+                   complete_json=_dry, workers=workers, limit=limit, retry_errors=retry_errors,
+                   log=lambda m: click.echo(m, err=True))
     click.echo(f"판정 완료: 행 {s['rows']}건 · 이번 호출 {s['calls_this_run']}회 · 건너뜀 {s['resumed_skipped']}건 · {s['elapsed_sec']}s")
     for t in codes:
         click.echo(f"  {t}: {s['by_topic'][t]} 창 없음 {s['no_window'][t]}")
@@ -890,13 +892,16 @@ def topic_stance_sample_cmd(stances: str, facts: str, progress: str | None, outp
 @click.option("--samples", default="dart_collected/topic_stance_samples.json", show_default=True)
 @click.option("--answers", required=True, help="회계사 답 json {sample_id: ok|partial|wrong}")
 @click.option("-o", "--report", default="dart_collected/topic_stance_gate.json", show_default=True)
-def topic_stance_gate_cmd(samples: str, answers: str, report: str) -> None:
+@click.option("--topics", default=None, help="관문에 넣을 주제(콤마 구분). 기본: 8개 전부 — 표본이 없는 주제는 미달")
+def topic_stance_gate_cmd(samples: str, answers: str, report: str, topics: str | None) -> None:
     """WS8 회계사 결과 관문. 주제마다 표본 20건 이상·wrong 1건 이하면 통과. 미달 주제가 있으면 종료코드 2."""
     from dart_search_mcp.topic_judge.gate import gate
+    from dart_search_mcp.topic_judge.topics import TOPIC_DEFS
+    expected = [t.strip() for t in topics.split(",") if t.strip()] if topics else list(TOPIC_DEFS)
     smp = json.loads(Path(samples).read_text(encoding="utf-8"))
     ans = json.loads(Path(answers).read_text(encoding="utf-8"))
     try:
-        rep = gate(smp, ans)
+        rep = gate(smp, ans, expected_topics=expected)
     except ValueError as exc:
         raise click.BadParameter(str(exc), param_hint="--answers")
     Path(report).write_text(json.dumps(rep, ensure_ascii=False, indent=1), encoding="utf-8")

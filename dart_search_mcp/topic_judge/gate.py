@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable
+
+from .topics import TOPIC_DEFS
 
 ANSWERS = ("ok", "partial", "wrong")
 MIN_SAMPLES = 20
 MAX_WRONG = 1
 
 
-def gate(samples: list[dict[str, Any]], answers: dict[str, str]) -> dict[str, Any]:
+def gate(samples: list[dict[str, Any]], answers: dict[str, str], *,
+         expected_topics: Iterable[str] | None = None) -> dict[str, Any]:
     """answers: {sample_id: ok|partial|wrong}. 답이 없는 표본은 n에 들지 않는다(unanswered).
 
-    주제마다 {n, ok, partial, wrong, unanswered, pass}와, 고칠 목록(partial 표본)을 낸다."""
+    주제마다 {n, ok, partial, wrong, unanswered, pass}와, 고칠 목록(partial 표본)을 낸다.
+    `expected_topics`(기본: 8개 주제 전부) 중 표본이 하나도 없는 주제도 n=0·불통과로 보고한다."""
+    expected = list(TOPIC_DEFS) if expected_topics is None else list(expected_topics)
     by_id = {s["sample_id"]: s for s in samples}
     unknown = sorted(set(answers) - set(by_id))
     if unknown:
@@ -21,7 +26,9 @@ def gate(samples: list[dict[str, Any]], answers: dict[str, str]) -> dict[str, An
     if bad:
         raise ValueError(f"답 값은 {'|'.join(ANSWERS)} 중 하나여야 한다: {bad}")
 
-    topics: dict[str, dict[str, Any]] = {}
+    topics: dict[str, dict[str, Any]] = {
+        t: {"n": 0, "ok": 0, "partial": 0, "wrong": 0, "unanswered": 0} for t in expected
+    }
     fix_list: list[dict[str, Any]] = []
     for s in samples:
         t = topics.setdefault(s["topic"], {"n": 0, "ok": 0, "partial": 0, "wrong": 0, "unanswered": 0})

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import random
 import threading
 import time
 from collections import Counter, defaultdict
@@ -26,6 +27,7 @@ CONFIDENCE_DETERMINED = 0.8
 CONFIDENCE_UNDETERMINED = 0.0
 UNDETERMINED_PREFIX = "판정 불가: "
 HELD_CONFLICT = "conflict"
+RETRYABLE_HELD = frozenset({"llm_error", "parse"})  # --retry-errors가 다시 판정하는 보류 사유
 EXCERPT_CHARS = 400
 
 ROW_COLUMNS = (
@@ -163,6 +165,18 @@ def read_progress(path: Path) -> list[dict[str, Any]]:
     return out
 
 
+def _ensure_trailing_newline(path: Path) -> None:
+    """끊긴 실행이 남긴 잘린 마지막 줄 뒤에 새 기록이 붙어 함께 깨지지 않게 줄바꿈을 보탠다."""
+    if not path.exists() or path.stat().st_size == 0:
+        return
+    with open(path, "rb") as f:
+        f.seek(-1, 2)
+        last = f.read(1)
+    if last != b"\n":
+        with open(path, "ab") as f:
+            f.write(b"\n")
+
+
 def _verdict_of(rec: dict[str, Any]) -> Verdict:
     return Verdict(rec["value"], rec.get("evidence", ""), rec.get("subject", ""), rec.get("held_reason"), None)
 
@@ -173,6 +187,10 @@ def rows_from_progress(progress: list[dict[str, Any]], facts_by_rc: dict[str, di
         groups[(rec["rcept_no"], rec["topic"])].append(rec)
     rows = []
     for (rc, topic), recs in sorted(groups.items()):
+        # 다시 판정한 결과가 있으면 그 전의 호출 실패(llm_error·parse) 기록은 버린다.
+        retried = [r for r in recs if r.get("held_reason") not in RETRYABLE_HELD]
+        if retried and len(retried) < len(recs):
+            recs = retried
         fact = facts_by_rc.get(rc) or {"rcept_no": rc, "corp_code": recs[0].get("corp_code"),
                                        "fiscal_year": recs[0].get("fiscal_year")}
         v = combine([_verdict_of(r) for r in recs])
@@ -205,11 +223,32 @@ def is_rate_limited(exc: BaseException) -> bool:
     return "RateLimit" in type(exc).__name__
 
 
-def with_retries(fn: CompleteJson, *, max_retries: int = 3, base_delay: float = 2.0,
+def retry_after_seconds(exc: BaseException) -> float | None:
+    """오류에 실린 Retry-After(초)를 찾는다. openai 오류는 `response.headers`, 그 밖엔 `headers`."""
+    for holder in (getattr(exc, "response", None), exc):
+        headers = getattr(holder, "headers", None)
+        if not headers:
+            continue
+        try:
+            raw = headers.get("retry-after") or headers.get("Retry-After")
+        except Exception:  # noqa: BLE001
+            raw = None
+        if raw is None:
+            continue
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            return None
+    cause = exc.__cause__
+    return retry_after_seconds(cause) if cause is not None and cause is not exc else None
+
+
+def with_retries(fn: CompleteJson, *, max_retries: int = 5, base_delay: float = 5.0,
                  is_retryable: Callable[[BaseException], bool] = is_rate_limited,
-                 sleep: Callable[[float], None] = time.sleep) -> CompleteJson:
-    """429에서 지수 백오프(2·4·8초)로 최대 `max_retries`번 다시 부른다. 그 뒤엔 예외를 그대로 올린다
-    (judge_window가 llm_error로 남긴다)."""
+                 sleep: Callable[[float], None] = time.sleep,
+                 jitter: Callable[[], float] = lambda: random.uniform(0.0, 1.0)) -> CompleteJson:
+    """429에서 max(Retry-After, 지수 백오프 5·10·20·40·80초) + 지터(0~1초)만큼 쉬고 최대 `max_retries`번
+    다시 부른다. 그 뒤엔 예외를 그대로 올린다(judge_window가 llm_error로 남긴다)."""
     def wrapped(prompt: str) -> dict:
         for attempt in range(max_retries + 1):
             try:
@@ -217,7 +256,11 @@ def with_retries(fn: CompleteJson, *, max_retries: int = 3, base_delay: float = 
             except Exception as exc:  # noqa: BLE001
                 if attempt >= max_retries or not is_retryable(exc):
                     raise
-                sleep(base_delay * (2 ** attempt))
+                delay = base_delay * (2 ** attempt)
+                ra = retry_after_seconds(exc)
+                if ra is not None:
+                    delay = max(delay, ra)
+                sleep(delay + jitter())
         raise AssertionError("unreachable")
     return wrapped
 
@@ -235,11 +278,16 @@ def run_topics(
     limit: int | None = None,
     rcept_filter: set[str] | None = None,
     usage_getter: Callable[[], dict | None] | None = None,
+    retry_errors: bool = False,
+    log: Callable[[str], None] | None = None,
+    log_every: int = 2000,
 ) -> dict[str, Any]:
     """후보를 판정해 progress에 이어 쓰고, 끝나면 progress 전체로 행·요약을 원자적으로 쓴다.
 
     - `limit`: 이번 실행에서 판정할 (공시, 주제) 수의 상한(이어 하기로 건너뛴 것은 세지 않는다).
-    - `usage_getter`: 판정 직후 같은 스레드에서 불러 그 호출의 토큰 사용량을 얻는다(선택)."""
+    - `usage_getter`: 판정 직후 같은 스레드에서 불러 그 호출의 토큰 사용량·model_used를 얻는다(선택).
+    - `retry_errors`: progress의 llm_error·parse 기록을 끝난 것으로 치지 않고 다시 판정한다.
+    - `log`: 진행 상황 한 줄(후보 훑기는 `log_every`건마다, 판정은 100건마다)."""
     unknown = [t for t in topics if t not in TOPIC_DEFS]
     if unknown:
         raise ValueError(f"알 수 없는 주제: {unknown}")
@@ -251,26 +299,44 @@ def run_topics(
     if rcept_filter is not None:
         facts = [f for f in facts if f["rcept_no"] in rcept_filter]
     facts_by_rc = {f["rcept_no"]: f for f in facts}
-    done = {(r["rcept_no"], r["topic"]) for r in read_progress(progress_path)}
+    prior = read_progress(progress_path)
+    if retry_errors:
+        ok_keys = {(r["rcept_no"], r["topic"]) for r in prior if r.get("held_reason") not in RETRYABLE_HELD}
+        done = ok_keys
+    else:
+        done = {(r["rcept_no"], r["topic"]) for r in prior}
 
     stats: Counter = Counter()
     candidates = []
-    for cand in iter_candidates(facts, docs_dir, topics, skip=done, stats=stats):
+
+    def _scanned(facts_iter):
+        for i, f in enumerate(facts_iter, 1):
+            if log and i % log_every == 0:
+                log(f"scan {i}/{len(facts)} docs · candidates {len(candidates)}")
+            yield f
+
+    for cand in iter_candidates(_scanned(facts), docs_dir, topics, skip=done, stats=stats):
         candidates.append(cand)
         if limit is not None and len(candidates) >= limit:
             break
+    if log:
+        log(f"scan done · candidates {len(candidates)} · skipped(done) {len(done)}")
 
     lock = threading.Lock()
     calls = 0
     run_held: Counter = Counter()
     tokens: Counter = Counter()
+    models: Counter = Counter()
 
     def one(cand: tuple[dict[str, Any], str, Window], fh) -> None:
         nonlocal calls
         fact, topic, w = cand
         t0 = time.time()
         v = judge_window(TOPIC_DEFS[topic], w, corp_name=fact.get("corp_name", ""), complete_json=complete_json)
-        usage = usage_getter() if usage_getter else None
+        try:
+            usage = usage_getter() if usage_getter else None
+        except Exception:  # noqa: BLE001 — 사용량 기록 실패가 판정 기록을 막으면 안 된다
+            usage = None
         rec = {
             "rcept_no": fact["rcept_no"], "topic": topic,
             "corp_code": fact.get("corp_code"), "fiscal_year": fact.get("fiscal_year"),
@@ -288,12 +354,24 @@ def run_topics(
             if usage:
                 for k in ("prompt_tokens", "completion_tokens", "reasoning_tokens"):
                     tokens[k] += int(usage.get(k) or 0)
+                if usage.get("model_used"):
+                    models[usage["model_used"]] += 1
             fh.write(line)
             fh.flush()
+            if log and calls % 100 == 0:
+                log(f"judged {calls}/{len(candidates)} · llm_error {run_held['llm_error']} · parse {run_held['parse']}")
 
-    with open(progress_path, "a", encoding="utf-8") as fh, ThreadPoolExecutor(max_workers=workers) as ex:
-        for fut in [ex.submit(one, c, fh) for c in candidates]:
-            fut.result()
+    _ensure_trailing_newline(progress_path)
+    ex = ThreadPoolExecutor(max_workers=workers)
+    try:
+        with open(progress_path, "a", encoding="utf-8") as fh:
+            for fut in [ex.submit(one, c, fh) for c in candidates]:
+                fut.result()
+    except BaseException:
+        # 중단(Ctrl-C·예외)되면 아직 시작하지 않은 판정은 버린다. 끝난 것은 progress에 있다.
+        ex.shutdown(wait=True, cancel_futures=True)
+        raise
+    ex.shutdown(wait=True)
 
     progress = read_progress(progress_path)
     progress = [r for r in progress if r["topic"] in topics and (rcept_filter is None or r["rcept_no"] in rcept_filter)]
@@ -320,6 +398,8 @@ def run_topics(
         "by_topic": {t: dict(by_topic[t]) for t in topics},
         "held_reason": {t: dict(held[t]) for t in topics},
         "tokens_this_run": dict(tokens),
+        "models_this_run": dict(models),
+        "retry_errors": retry_errors,
         "workers": workers,
         "limit": limit,
         "method": METHOD,

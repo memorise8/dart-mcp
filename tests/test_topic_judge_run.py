@@ -6,8 +6,8 @@ from pathlib import Path
 
 from dart_search_mcp.topic_judge.postcheck import Verdict
 from dart_search_mcp.topic_judge.run import (
-    ROW_COLUMNS, build_row, combine, dry_judge, is_rate_limited, progress_path_for, run_topics,
-    summary_path_for, with_retries,
+    ROW_COLUMNS, build_row, combine, dry_judge, is_rate_limited, progress_path_for, read_progress,
+    retry_after_seconds, run_topics, summary_path_for, with_retries,
 )
 
 LEASE_SELF = "회사는 단기리스와 소액자산 리스의 경우 예외규정을 선택하여 리스료를 리스기간에 걸쳐 정액기준으로 비용 인식합니다."
@@ -111,6 +111,73 @@ class RunTopicsTests(unittest.TestCase):
             self.assertEqual(s["resumed_skipped"], 2)
             self.assertEqual(out.read_text(encoding="utf-8"), first)
 
+    def test_잘린_줄_뒤에_이어_써도_새_기록이_온전하다(self) -> None:  # 리뷰 M1
+        with tempfile.TemporaryDirectory() as d:
+            facts, docs = make_env(Path(d))
+            out = Path(d) / "t.jsonl"
+            run_topics(facts_path=facts, docs_dir=docs, topics=TOPICS, out_path=out, complete_json=FakeJudge())
+            prog = progress_path_for(out)
+            lines = prog.read_text(encoding="utf-8").splitlines()
+            lease = next(l for l in lines if "LEASE_EXEMPTION" in l)
+            # 리스 기록을 지우고(아직 안 한 후보로 만든다) 끝에 잘린 줄을 남긴다.
+            prog.write_text("\n".join(l for l in lines if l != lease) + "\n" + lease[:40], encoding="utf-8")
+            judge = FakeJudge()
+            s = run_topics(facts_path=facts, docs_dir=docs, topics=TOPICS, out_path=out, complete_json=judge)
+            self.assertEqual(judge.calls, 1)
+            self.assertEqual(s["rows"], 2)
+            recs = read_progress(prog)
+            self.assertEqual(sorted(r["topic"] for r in recs), sorted(TOPICS))
+            rows = [json.loads(l) for l in out.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(next(r for r in rows if r["topic"] == "LEASE_EXEMPTION")["value"], "BOTH")
+
+    def test_retry_errors는_호출_실패만_다시_판정(self) -> None:  # 리뷰 L2
+        def boom(prompt: str) -> dict:
+            raise RuntimeError("gateway down")
+
+        with tempfile.TemporaryDirectory() as d:
+            facts, docs = make_env(Path(d))
+            out = Path(d) / "t.jsonl"
+            run_topics(facts_path=facts, docs_dir=docs, topics=TOPICS, out_path=out, complete_json=boom)
+            judge = FakeJudge()
+            s = run_topics(facts_path=facts, docs_dir=docs, topics=TOPICS, out_path=out, complete_json=judge)
+            self.assertEqual(judge.calls, 0)  # 기본은 실패 기록도 끝난 것으로 본다
+            s = run_topics(facts_path=facts, docs_dir=docs, topics=TOPICS, out_path=out, complete_json=judge,
+                           retry_errors=True)
+            self.assertEqual((judge.calls, s["calls_this_run"], s["rows"]), (2, 2, 2))
+            rows = {r["topic"]: r for r in map(json.loads, out.read_text(encoding="utf-8").splitlines())}
+            self.assertEqual(rows["LEASE_EXEMPTION"]["value"], "BOTH")
+            self.assertEqual(rows["DEV_COST_CAPITALIZATION"]["held_reason"], "model_undetermined")  # llm_error 기록은 버려진다
+            self.assertEqual(s["errors_total"]["llm_error"], 0)
+            judge2 = FakeJudge()
+            run_topics(facts_path=facts, docs_dir=docs, topics=TOPICS, out_path=out, complete_json=judge2,
+                       retry_errors=True)
+            self.assertEqual(judge2.calls, 0)  # 이미 판정된 것은 다시 부르지 않는다
+
+    def test_model_used와_진행_로그(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            facts, docs = make_env(Path(d))
+            out = Path(d) / "t.jsonl"
+            logs = []
+            s = run_topics(facts_path=facts, docs_dir=docs, topics=TOPICS, out_path=out, complete_json=FakeJudge(),
+                           usage_getter=lambda: {"prompt_tokens": 10, "model_used": "gpt-5.6-luna"},
+                           log=logs.append, log_every=1)
+            self.assertEqual(s["models_this_run"], {"gpt-5.6-luna": 2})
+            self.assertEqual(s["tokens_this_run"]["prompt_tokens"], 20)
+            self.assertTrue(any(l.startswith("scan ") for l in logs))
+            recs = read_progress(progress_path_for(out))
+            self.assertTrue(all(r["usage"]["model_used"] == "gpt-5.6-luna" for r in recs))
+
+    def test_usage_getter_예외는_기록을_막지_않는다(self) -> None:
+        def bad_usage():
+            raise RuntimeError("x")
+
+        with tempfile.TemporaryDirectory() as d:
+            facts, docs = make_env(Path(d))
+            out = Path(d) / "t.jsonl"
+            s = run_topics(facts_path=facts, docs_dir=docs, topics=TOPICS, out_path=out, complete_json=FakeJudge(),
+                           usage_getter=bad_usage)
+            self.assertEqual(s["rows"], 2)
+
     def test_limit와_rcept_filter(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             facts, docs = make_env(Path(d))
@@ -189,10 +256,10 @@ class RetryTests(unittest.TestCase):
                 raise self.E429()
             return {"value": "BOTH"}
 
-        self.assertEqual(with_retries(flaky, sleep=sleeps.append)("p"), {"value": "BOTH"})
-        self.assertEqual(sleeps, [2.0, 4.0])
+        self.assertEqual(with_retries(flaky, sleep=sleeps.append, jitter=lambda: 0.0)("p"), {"value": "BOTH"})
+        self.assertEqual(sleeps, [5.0, 10.0])
 
-    def test_3번_넘으면_예외(self) -> None:
+    def test_5번_넘으면_예외(self) -> None:
         n, sleeps = [0], []
 
         def always(p: str) -> dict:
@@ -200,8 +267,29 @@ class RetryTests(unittest.TestCase):
             raise self.E429()
 
         with self.assertRaises(self.E429):
-            with_retries(always, sleep=sleeps.append)("p")
-        self.assertEqual((n[0], sleeps), (4, [2.0, 4.0, 8.0]))
+            with_retries(always, sleep=sleeps.append, jitter=lambda: 0.5)("p")
+        self.assertEqual((n[0], sleeps), (6, [5.5, 10.5, 20.5, 40.5, 80.5]))
+
+    def test_Retry_After를_따른다(self) -> None:
+        class Resp:
+            headers = {"retry-after": "30"}
+
+        class E(Exception):
+            status_code = 429
+            response = Resp()
+
+        n, sleeps = [0], []
+
+        def once(p: str) -> dict:
+            n[0] += 1
+            if n[0] == 1:
+                raise E()
+            return {}
+
+        with_retries(once, sleep=sleeps.append, jitter=lambda: 0.0)("p")
+        self.assertEqual(sleeps, [30.0])
+        self.assertEqual(retry_after_seconds(E()), 30.0)
+        self.assertIsNone(retry_after_seconds(RuntimeError()))
 
     def test_429가_아니면_바로_예외(self) -> None:
         n = [0]

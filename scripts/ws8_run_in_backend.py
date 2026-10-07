@@ -61,10 +61,17 @@ def _backend_complete_json():
 
     def complete_json(prompt: str) -> dict:
         tl.usage = None
-        return client.complete_json(prompt=prompt, model=model).payload
+        tl.model_used = None
+        completion = client.complete_json(prompt=prompt, model=model)
+        tl.model_used = completion.model_used  # 폴백 모델로 답했는지 행마다 남긴다
+        return completion.payload
 
     def usage_getter():
-        return getattr(tl, "usage", None)
+        usage = dict(getattr(tl, "usage", None) or {})
+        model_used = getattr(tl, "model_used", None)
+        if model_used:
+            usage["model_used"] = model_used
+        return usage or None
 
     effort = (getattr(config, "llm_reasoning_efforts", {}) or {}).get(model)
     return complete_json, usage_getter, {"model": model, "reasoning_effort": effort}
@@ -79,6 +86,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--limit", type=int, default=None, help="이번 실행에서 판정할 (공시, 주제) 수 상한")
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--rcept-file", default=None, help="이 파일의 rcept_no(줄마다)만 판정")
+    ap.add_argument("--retry-errors", action="store_true", help="progress의 llm_error·parse 기록을 다시 판정")
     ap.add_argument("--dry-judge", action="store_true", help="LLM 없이 가짜 판정기(UNDETERMINED)로 배선만 확인")
     args = ap.parse_args(argv)
 
@@ -92,14 +100,15 @@ def main(argv: list[str] | None = None) -> int:
         complete_json, usage_getter, info = run_mod.dry_judge, None, {"model": "dry-judge", "reasoning_effort": None}
     else:
         complete_json, usage_getter, info = _backend_complete_json()
-        complete_json = run_mod.with_retries(complete_json, max_retries=3)
+        complete_json = run_mod.with_retries(complete_json)  # 429: Retry-After·5초부터 지수 백오프, 5번
     print(json.dumps({"start": info, "topics": topics, "limit": args.limit, "workers": args.workers},
                      ensure_ascii=False), flush=True)
 
     summary = run_mod.run_topics(
         facts_path=Path(args.facts), docs_dir=Path(args.docs), topics=topics, out_path=Path(args.out),
         complete_json=complete_json, workers=args.workers, limit=args.limit, rcept_filter=rcept_filter,
-        usage_getter=usage_getter,
+        usage_getter=usage_getter, retry_errors=args.retry_errors,
+        log=lambda m: print(m, flush=True),
     )
     summary["judge"] = info
     run_mod._write_json_atomic(run_mod.summary_path_for(Path(args.out)), summary)
