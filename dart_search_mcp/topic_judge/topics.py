@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import Mapping
 
 
 @dataclass(frozen=True)
@@ -16,29 +18,39 @@ class TopicDef:
     code: str
     title: str
     values: tuple[str, ...]
-    value_help: dict[str, str]
-    traps: tuple[str, ...]
-    keyword_re: re.Pattern
-    priority_res: tuple[re.Pattern, ...]
+    value_help: Mapping[str, str] = field(hash=False)  # 읽기 전용(MappingProxyType)
+    traps: tuple[str, ...] = ()
+    keyword_re: re.Pattern = re.compile(r"(?!)")
+    priority_res: tuple[re.Pattern, ...] = ()
+    priority_names: tuple[str, ...] = ()  # priority_res와 같은 순서의 사람이 읽는 이름(Window.anchor)
 
 
 def _def(code: str, title: str, value_help: dict[str, str], traps: list[str],
-         keyword: str, priorities: list[str]) -> TopicDef:
+         keyword: str, priorities: list[tuple[str, str]]) -> TopicDef:
     return TopicDef(
         code=code,
         title=title,
         values=tuple(value_help),
-        value_help=dict(value_help),
+        value_help=MappingProxyType(dict(value_help)),
         traps=tuple(traps),
         keyword_re=re.compile(keyword),
-        priority_res=tuple(re.compile(p) for p in priorities),
+        priority_res=tuple(re.compile(p) for _, p in priorities),
+        priority_names=tuple(n for n, _ in priorities),
     )
 
 
 # 번호 붙은 주석 머리("31. 사업결합"). "2.5 사업결합" 같은 회계정책 소절은 제외.
 _BC_NOTE_HEAD = r"(?:^|\s)\d{1,2}\.\s*사업결합"
 # 회계정책·주석의 금융자산 절 머리("(3) 금융자산", "2.7 금융자산", "가. 비파생금융자산").
-_FA_SECTION_HEAD = r"(?:^|\s)(?:\d{1,2}(?:\.\d{1,2})*\.?|\(\d{1,2}\)|[가-하]\.)\s*(?:비파생\s*)?금융자산"
+# 숫자 머리는 점이 있어야 한다("2.4", "2.4.", "3."). 목록 기호는 가~하 14자만.
+_FA_SECTION_HEAD = (
+    r"(?:^|\s)(?:\d{1,2}(?:\.\d{1,2})+\.?|\d{1,2}\.|\(\d{1,2}\)"
+    r"|(?:가|나|다|라|마|바|사|아|자|차|카|타|파|하)\.)\s*(?:비파생\s*)?금융자산"
+)
+# 「회사채」는 사채 주석이 아니다.
+_BOND = r"(?<!회)사채"
+# 금액(천 단위 쉼표) 300자 안에 있는 투자부동산 공정가치(표·금액 문장 우선).
+_IP_FV_WITH_AMOUNT = r"투자부동산.{0,40}공정가치(?=.{0,300}?\d{1,3}(?:,\d{3})+)"
 
 _DEFS = [
     _def(
@@ -49,7 +61,7 @@ _DEFS = [
         ['"전환권이 확정수량의 지분상품과 교환되지 않는 경우 금융부채로 분류합니다." → 조건문(conditional), UNDETERMINED.',
          '"종속기업이 발행한 전환사채의 전환권은 파생상품부채로 인식하였습니다." → 다른 실체(other), UNDETERMINED.'],
         r"전환권",
-        [r"전환권대가|파생상품부채", r"복합금융상품", r"사채"],
+        [("전환권대가·파생상품부채", r"전환권대가|파생상품부채"), ("복합금융상품", r"복합금융상품"), ("사채", _BOND)],
     ),
     _def(
         "EMBEDDED_DERIVATIVE_SEPARATION", "복합금융상품 내재파생상품 분리 여부",
@@ -60,7 +72,7 @@ _DEFS = [
         ['"내재파생상품을 포함하는 복합계약은 계약상 현금흐름이 원금과 이자로만 구성되어 있는지를 결정할 때 해당 복합계약 전체를 고려합니다." → 기준서 일반규정(standard_text), UNDETERMINED.',
          '"주계약이 금융자산이 아닌 경우 내재파생상품은 분리하여 회계처리합니다." → 조건부 일반규정, 회사 실행 진술 없음, UNDETERMINED.'],
         r"내재파생|내재된 파생",
-        [r"(?:전환|신주인수|교환)?사채|우선주", r"내재파생"],
+        [("사채·우선주", r"(?:전환|신주인수|교환)?" + _BOND + r"|우선주"), ("내재파생", r"내재파생")],
     ),
     _def(
         "BUSINESS_COMBINATION_COST_CLASS", "사업결합 관련 비용(취득관련원가) 표시 위치",
@@ -70,7 +82,7 @@ _DEFS = [
         ['"취득관련원가는 발생시 당기 비용으로 인식합니다." → 비용 처리만 있고 영업/영업외 구분 없음, UNDETERMINED.',
          '"피합병법인은 사업결합과 관련하여 발생한 원가를 판매비와관리비로 처리하였습니다." → 다른 실체(other), UNDETERMINED.'],
         r"취득관련원가|사업결합 관련 원가|사업결합과 관련하여 발생한 원가",
-        [_BC_NOTE_HEAD, r"취득관련원가"],
+        [("사업결합 주석", _BC_NOTE_HEAD), ("취득관련원가", r"취득관련원가")],
     ),
     _def(
         "PPA_MEASUREMENT_PERIOD", "사업결합 잠정금액(측정기간) 사용 여부",
@@ -81,7 +93,7 @@ _DEFS = [
         ['"사업결합이 발생한 보고기간말까지 사업결합에 대한 첫 회계처리를 완료하지 못한다면, 잠정금액으로 재무제표에 보고합니다." → 조건부 정책 문장(conditional), UNDETERMINED.',
          '"측정기간은 취득일부터 1년을 초과할 수 없습니다." → 기준서 일반규정(standard_text), UNDETERMINED.'],
         r"측정기간|잠정적인 금액|잠정금액",
-        [r"사업결합"],
+        [("사업결합 주석", _BC_NOTE_HEAD), ("사업결합", r"사업결합")],
     ),
     _def(
         "IP_FAIR_VALUE", "투자부동산 공정가치 공시",
@@ -92,7 +104,7 @@ _DEFS = [
         ['"투자부동산의 공정가치는 독립된 평가인이 수행한 평가에 기초하여 결정합니다." → 방법만 있고 금액·장부금액 비교 없음, UNDETERMINED.',
          '"관계기업이 보유한 투자부동산의 공정가치는 …원입니다." → 다른 실체(other), UNDETERMINED.'],
         r"투자부동산의 공정가치",
-        [r"투자부동산.{0,40}공정가치"],
+        [("투자부동산 공정가치 금액", _IP_FV_WITH_AMOUNT), ("투자부동산 공정가치", r"투자부동산.{0,40}공정가치")],
     ),
     _def(
         "LEASE_EXEMPTION", "리스 인식 면제(단기·소액) 적용",
@@ -104,7 +116,7 @@ _DEFS = [
         ['"리스이용자는 단기리스와 소액 기초자산 리스에 인식 면제를 선택할 수 있습니다." → 기준서 일반규정(standard_text), UNDETERMINED.',
          '"단기리스 및 소액 기초자산 리스 관련 비용: 12,345" 같은 표 항목 → 금액 공시는 회사가 면제를 적용했다는 근거로 쓸 수 있음(self). 단, 표 제목만 있고 금액이 없으면 UNDETERMINED.'],
         r"단기리스|소액 ?기초자산|소액자산 리스",
-        [r"리스이용자", r"단기리스|소액"],
+        [("리스이용자", r"리스이용자"), ("단기·소액", r"단기리스|소액")],
     ),
     _def(
         "FVOCI_DESIGNATION", "지분상품 기타포괄손익-공정가치(FVOCI) 지정",
@@ -114,7 +126,7 @@ _DEFS = [
         ['"단기매매항목이 아닌 지분상품에 대한 투자는 최초 인식시점에 … 지정하는 취소불가능한 선택을 할 수 있습니다." → 기준서 일반규정(standard_text), UNDETERMINED.',
          '"채무상품을 기타포괄손익-공정가치 측정 금융자산으로 분류합니다." → 채무상품 분류는 지정이 아님, UNDETERMINED.'],
         r"기타포괄손익-공정가치 ?측정 ?항목으로 지정|기타포괄손익-공정가치로 지정|FVOCI로 지정|취소불가능한 선택",
-        [_FA_SECTION_HEAD, r"기타포괄손익-?공정가치"],
+        [("금융자산 절", _FA_SECTION_HEAD), ("기타포괄손익-공정가치", r"기타포괄손익-?공정가치")],
     ),
     _def(
         "DEV_COST_CAPITALIZATION", "개발비 자산화 여부",
@@ -124,7 +136,7 @@ _DEFS = [
         ['"개발단계 지출은 다음 요건을 모두 충족하는 경우 무형자산으로 인식합니다." → 조건문(conditional), UNDETERMINED.',
          '"연구개발비 중 개발비는 자산 인식요건을 충족하지 못하여 …" 처럼 회사 진술이면 self지만, "종속기업의 개발비"는 other → UNDETERMINED.'],
         r"개발비",
-        [r"개발비\s*[\d,]", r"연구.{0,3}개발"],
+        [("개발비 금액", r"개발비\s*[\d,]"), ("연구개발", r"연구.{0,3}개발")],
     ),
 ]
 

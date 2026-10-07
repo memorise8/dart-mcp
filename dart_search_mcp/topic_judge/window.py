@@ -21,8 +21,10 @@ NOTYET_RE = re.compile(
     r"아직 (?:시행일이 도래하지 않|적용하지 않|시행되지 않)|시행일이 도래하지 (?:않|아니)"
     r"|제정[ㆍ·]?공표되었으나 (?:아직 )?(?:시행|적용)되지|공표되었으나 시행일"
 )
-# 다음 번호 머리("3. 중요한 회계정책"). 미시행 절은 여기서 끝난다.
-HEAD_RE = re.compile(r"(?:^|\s)\d{1,2}\.\s+[가-힣]{2,}")
+# 다음 번호 머리. 미시행 절은 여기서 끝난다. 「3. 중요한 회계정책」 같은 장 머리와
+# 「2.4 금융자산」 같은 소절 머리를 모두 본다. 「(1)」 머리는 보지 않는다(미시행
+# 기준서 목록 자체가 「(1) 기업회계기준서 …」로 이어지기 때문이다).
+HEAD_RE = re.compile(r"(?:^|\s)(?:\d{1,2}\.\s+|\d{1,2}\.\d{1,2}\.?\s*)[가-힣]{2,}")
 # 다음 번호 머리를 못 찾을 때 미시행 절의 최대 길이(스파이크의 2,500자 되돌아보기와 같다).
 NOTYET_MAX_SPAN = 2500
 
@@ -31,6 +33,7 @@ MAIN_RADIUS = 450       # 중심 구간 반경
 KEYWORD_RADIUS = 250    # 덧붙이는 키워드 구간 반경
 EXTRA_KEYWORDS = 2      # 덧붙이는 키워드 위치 수
 JOINER = " … "
+MIN_PIECE = 20          # 이보다 짧은 조각(잘린 꼬리, 제외 구간에 깎인 자투리)은 버린다
 
 _ENTITY_RE = re.compile(r"&[a-zA-Z#0-9]+;")
 
@@ -39,7 +42,7 @@ _ENTITY_RE = re.compile(r"&[a-zA-Z#0-9]+;")
 class Window:
     text: str
     spans: tuple[tuple[int, int], ...]  # 원문(doc_text) 좌표, 창에 놓인 순서
-    anchor: str  # 고른 우선 위치 정규식의 pattern, 또는 "keyword"
+    anchor: str  # 고른 우선 위치의 이름(TopicDef.priority_names), 또는 "keyword"
 
 
 def _unescape_entity(m: re.Match) -> str:
@@ -84,56 +87,87 @@ def _span(text: str, m: re.Match, radius: int) -> tuple[int, int]:
     return max(0, m.start() - radius), min(len(text), m.end() + radius)
 
 
+def _clip(span: tuple[int, int], pos: int, ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """구간에서 제외 구간을 깎아 낸 조각들. `pos`(앵커)를 품은 조각은 짧아도 남긴다."""
+    parts = [span]
+    for ra, rb in ranges:
+        nxt = []
+        for a, b in parts:
+            if rb <= a or b <= ra:
+                nxt.append((a, b))
+                continue
+            if a < ra:
+                nxt.append((a, ra))
+            if rb < b:
+                nxt.append((rb, b))
+        parts = nxt
+    return [(a, b) for a, b in parts if b - a >= MIN_PIECE or a <= pos < b]
+
+
 def pick_window(defn: TopicDef, text: str, *, limit: int = 2000) -> Window | None:
-    """주제 창을 고른다. 미시행 절 밖에 키워드가 없으면 None(창 없음)."""
+    """주제 창을 고른다. 미시행 절 밖에 키워드가 없으면 None(창 없음).
+
+    창의 어느 글자도 미시행 절(제외 구간) 안에 있지 않다: 각 구간을 제외 구간 둘레로
+    깎는다."""
     ranges = excluded_ranges(text)
     keywords = [m for m in defn.keyword_re.finditer(text) if _eligible(m.start(), ranges)]
     if not keywords:
         return None
 
-    main: tuple[int, int] | None = None
+    centre: re.Match | None = None
     anchor = "keyword"
-    for pat in defn.priority_res:
+    for name, pat in zip(defn.priority_names, defn.priority_res):
         for pm in pat.finditer(text):
             if not _eligible(pm.start(), ranges):
                 continue
             if any(abs(pm.start() - k.start()) <= PRIORITY_RADIUS for k in keywords):
-                main = _span(text, pm, MAIN_RADIUS)
-                anchor = pat.pattern
+                centre, anchor = pm, name
                 break
-        if main is not None:
+        if centre is not None:
             break
 
     rest = keywords
-    if main is None:
-        main = _span(text, keywords[0], MAIN_RADIUS)
-        rest = keywords[1:]
-    extras = [
-        _span(text, k, KEYWORD_RADIUS)
-        for k in rest
-        if not (main[0] <= k.start() and k.end() <= main[1])
-    ][:EXTRA_KEYWORDS]
+    if centre is None:
+        centre, rest = keywords[0], keywords[1:]
+    main = _span(text, centre, MAIN_RADIUS)
+    extras = [k for k in rest if not (main[0] <= k.start() and k.end() <= main[1])][:EXTRA_KEYWORDS]
 
-    # 겹치거나 맞닿은 구간을 합친다. 중심 구간을 품은 묶음이 창 맨 앞에 온다.
+    clipped: list[tuple[int, int]] = _clip(main, centre.start(), ranges)
+    for k in extras:
+        clipped += _clip(_span(text, k, KEYWORD_RADIUS), k.start(), ranges)
+
+    # 겹치거나 맞닿은 구간을 합친다. 중심 위치를 품은 묶음이 창 맨 앞에 온다.
     merged: list[list[int]] = []
-    for a, b in sorted([main, *extras]):
+    for a, b in sorted(clipped):
         if merged and a <= merged[-1][1]:
             merged[-1][1] = max(merged[-1][1], b)
         else:
             merged.append([a, b])
-    first = next(i for i, (a, b) in enumerate(merged) if a <= main[0] and main[1] <= b)
+    first = next(i for i, (a, b) in enumerate(merged) if a <= centre.start() < b)
     ordered = [merged[first]] + merged[:first] + merged[first + 1:]
 
     # limit 안에서 구간을 잇는다. 넘치는 구간은 잘라 내고 spans도 그만큼 줄인다.
+    # 첫 조각이 아닌데 MIN_PIECE보다 짧게 남는 꼬리는 버린다.
     pieces: list[str] = []
     spans: list[tuple[int, int]] = []
     used = 0
     for a, b in ordered:
         room = limit - used - (len(JOINER) if pieces else 0)
-        if room <= 0:
+        b = min(b, a + max(0, room))
+        if pieces and b - a < MIN_PIECE:
+            continue
+        if b <= a:
             break
-        b = min(b, a + room)
         pieces.append(text[a:b])
         spans.append((a, b))
         used += (b - a) + (len(JOINER) if len(pieces) > 1 else 0)
     return Window(text=JOINER.join(pieces), spans=tuple(spans), anchor=anchor)
+
+
+def window_pieces(window: Window) -> list[str]:
+    """창을 원문 조각들로 되돌린다(조각 길이는 spans에서 온다; JOINER가 원문에 있어도 안전)."""
+    out, off = [], 0
+    for a, b in window.spans:
+        out.append(window.text[off: off + (b - a)])
+        off += (b - a) + len(JOINER)
+    return out

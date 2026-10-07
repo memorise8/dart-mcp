@@ -54,6 +54,14 @@ class TopicDefsTests(unittest.TestCase):
         with self.assertRaises(Exception):
             TOPIC_DEFS["IP_FAIR_VALUE"].title = "x"  # type: ignore[misc]
 
+    def test_우선위치_이름과_불변(self) -> None:
+        for d in TOPIC_DEFS.values():
+            self.assertEqual(len(d.priority_names), len(d.priority_res))
+            self.assertTrue(all(d.priority_names))
+            hash(d)
+            with self.assertRaises(TypeError):
+                d.value_help["UNDETERMINED"] = "x"  # type: ignore[index]
+
     def test_키워드가_대표문장에_맞는다(self) -> None:
         for code, sentence in SAMPLES.items():
             self.assertIsNotNone(TOPIC_DEFS[code].keyword_re.search(sentence), code)
@@ -65,21 +73,31 @@ class TopicDefsTests(unittest.TestCase):
         self.assertTrue(conv[0].search("파생상품부채로 인식하였습니다"))
         self.assertTrue(conv[1].search("복합금융상품"))
         self.assertTrue(conv[2].search("19. 사채"))
+        self.assertIsNone(conv[2].search("회사채 투자"))
         emb = TOPIC_DEFS["EMBEDDED_DERIVATIVE_SEPARATION"].priority_res
         self.assertTrue(emb[0].search("상환전환우선주") and emb[0].search("신주인수권부사채"))
+        self.assertIsNone(emb[0].search("회사채"))
         self.assertTrue(emb[1].search("내재파생상품"))
         bcc = TOPIC_DEFS["BUSINESS_COMBINATION_COST_CLASS"].priority_res
         self.assertTrue(bcc[0].search("회계정책 … 31. 사업결합 당기 중"))
         self.assertIsNone(bcc[0].search("사업결합과 관련하여 발생한 원가"))
         self.assertTrue(bcc[1].search("취득관련원가"))
-        self.assertTrue(TOPIC_DEFS["PPA_MEASUREMENT_PERIOD"].priority_res[0].search("사업결합"))
+        ppa = TOPIC_DEFS["PPA_MEASUREMENT_PERIOD"].priority_res
+        self.assertTrue(ppa[0].search("주석 … 34. 사업결합 (1) 당기 중"))
+        self.assertIsNone(ppa[0].search("2.5 사업결합 회계정책"))
+        self.assertTrue(ppa[1].search("사업결합"))
         ip = TOPIC_DEFS["IP_FAIR_VALUE"].priority_res
-        self.assertTrue(ip[0].search("투자부동산의 장부금액과 공정가치는 다음과 같습니다"))
+        self.assertIsNone(ip[0].search("투자부동산의 공정가치는 독립된 평가인이 수행한 평가에 기초하여 결정합니다."))
+        self.assertTrue(ip[0].search("당기말 투자부동산의 공정가치는 889,079천원(전기말 : 870,367천원)입니다."))
+        self.assertTrue(ip[1].search("투자부동산의 장부금액과 공정가치는 다음과 같습니다"))
         lease = TOPIC_DEFS["LEASE_EXEMPTION"].priority_res
         self.assertTrue(lease[0].search("(2) 리스이용자"))
         self.assertTrue(lease[1].search("소액 기초자산"))
         fv = TOPIC_DEFS["FVOCI_DESIGNATION"].priority_res
-        self.assertTrue(fv[0].search("(3) 금융자산"))
+        for head in ("(3) 금융자산", "2.4 금융자산", "2.4. 금융자산", "3. 금융자산", "가. 비파생금융자산"):
+            self.assertTrue(fv[0].search("앞 " + head), head)
+        for not_head in (" 3 금융자산", "각. 금융자산", "회사. 금융자산"):
+            self.assertIsNone(fv[0].search(not_head), not_head)
         self.assertIsNone(fv[0].search("당기손익-공정가치 측정 금융자산"))
         self.assertTrue(fv[1].search("기타포괄손익-공정가치") and fv[1].search("기타포괄손익공정가치"))
         dev = TOPIC_DEFS["DEV_COST_CAPITALIZATION"].priority_res

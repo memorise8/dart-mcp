@@ -7,10 +7,13 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 
+from dart_search_mcp.audit_xml_parser import _normalize_text
+
 from .topics import TopicDef
-from .window import JOINER, Window
+from .window import JOINER, Window, window_pieces
 
 UNDETERMINED = "UNDETERMINED"
 
@@ -25,7 +28,8 @@ class Verdict:
 
 
 def _norm(s: str) -> str:
-    return re.sub(r"\s+", " ", s or "").strip()
+    """doc_text와 같은 정규화(공백 하나로·갈라진 어미 닫기) + NFC."""
+    return unicodedata.normalize("NFC", _normalize_text(s or ""))
 
 
 # --- 4. 근거가 창 안에 있는가 -------------------------------------------------
@@ -33,28 +37,28 @@ def _norm(s: str) -> str:
 _MIN_PART = 10  # 근거를 두 조각으로 나눌 때 조각의 최소 길이
 
 
-def _in_window(evidence: str, window_text: str) -> bool:
-    """공백을 정규화한 근거가 창 안에 있는가.
+def _in_window(evidence: str, window: Window) -> bool:
+    """정규화한 근거가 창의 원문 조각 하나, 또는 이웃한 두 조각 안에 있는가.
 
-    - 창 전체(` … ` 포함) 안에 그대로 있으면 통과.
-    - 창을 ` … `로 나눈 이웃 두 조각을 공백 하나나 빈 문자열로 이은 문자열 안에 있으면 통과.
-    - 근거가 두 문장(`.` 뒤에서 나눔)을 이어 붙인 꼴이고 두 문장이 창에 순서대로 있으면
-      통과(가운데 문장을 생략한 경우, 스파이크 #22)."""
+    - 조각은 `Window.spans` 길이로 되돌린다(원문에 ` … `가 있어도 안전).
+    - 이웃 두 조각은 ` … `·공백 하나·빈 문자열로 이어 본다.
+    - 근거가 두 문장(`.` 뒤에서 나눔)을 이어 붙인 꼴이면 같은 조각(또는 이웃 쌍) 안에
+      두 문장이 순서대로 있을 때 통과한다(가운데 문장 생략, 스파이크 #22)."""
     ev = _norm(evidence)
-    hay = _norm(window_text)
-    if ev in hay:
+    pieces = [_norm(p) for p in window_pieces(window)]
+    hays = list(pieces)
+    for a, b in zip(pieces, pieces[1:]):
+        hays += [a + JOINER + b, a + " " + b, a + b]
+    if any(ev in h for h in hays):
         return True
-    segs = [_norm(s) for s in window_text.split(JOINER)]
-    for a, b in zip(segs, segs[1:]):
-        if ev in a + " " + b or ev in a + b:
-            return True
     for m in re.finditer(r"\.(?!\d)", ev):
         left, right = ev[: m.end()].strip(), ev[m.end():].strip()
         if len(left) < _MIN_PART or len(right) < _MIN_PART:
             continue
-        i = hay.find(left)
-        if i >= 0 and hay.find(right, i + len(left)) >= 0:
-            return True
+        for h in hays:
+            i = h.find(left)
+            if i >= 0 and h.find(right, i + len(left)) >= 0:
+                return True
     return False
 
 
@@ -76,7 +80,7 @@ def _is_conditional(ev: str) -> bool:
 
 _VALUE_WORDS: dict[tuple[str, str], re.Pattern] = {
     ("CONVERSION_OPTION_CLASS", "EQUITY"): re.compile(r"전환권대가|자본요소"),
-    ("CONVERSION_OPTION_CLASS", "LIABILITY"): re.compile(r"파생상품부채|금융부채로 분류"),
+    ("CONVERSION_OPTION_CLASS", "LIABILITY"): re.compile(r"파생상품부채|금융부채\s*(?:로\s*)?(?:분류|인식)"),
     ("DEV_COST_CAPITALIZATION", "CAPITALIZED"): re.compile(
         r"개발비\s*(?:\(\*?\d*\)\s*)?\(?\d[\d,]*\)?(?![\d,]*\s*(?:년|개월|%))|개발비로\s*(?:인식|자산화)"
     ),
@@ -91,6 +95,7 @@ _CLASSIFICATION_LIST_RE = re.compile(r"분리된 내재파생상품도")
 # --- 투자부동산 공정가치(숫자) ---------------------------------------------------
 
 _IP_FV_MODEL_RE = re.compile(r"공정가치모형")
+_IP_FV_APPROX_RE = re.compile(r"차이가 중요하지 않|근사치|근사한")
 _IP_FV_VALUES = ("FV_DIFFERS", "FV_EQUALS")
 # 「장부금액 공정가치」 또는 「공정가치 장부금액」 열 머리(당기·전기 두 쌍이 이어질 수 있다).
 _IP_HEADER_RE = re.compile(r"(장부\s*금액|공정\s*가치)\s+(장부\s*금액|공정\s*가치)")
@@ -158,7 +163,7 @@ def postcheck(defn: TopicDef, raw: dict, window: Window) -> Verdict:
         return _held(raw, "not_self")
     if not evidence:
         return _held(raw, "evidence_missing")
-    if not _in_window(evidence, window.text):
+    if not _in_window(evidence, window):
         return _held(raw, "evidence_not_in_window")
     if _is_conditional(evidence):
         return _held(raw, "conditional")
@@ -174,6 +179,8 @@ def postcheck(defn: TopicDef, raw: dict, window: Window) -> Verdict:
         nums = ip_fair_value(window.text)
         if nums is not None:
             return Verdict(nums[0], nums[1], subject, None, raw)
+        if value == "FV_EQUALS" and _IP_FV_APPROX_RE.search(evidence):
+            return Verdict("FV_EQUALS", evidence, subject, None, raw)
         if value in _IP_FV_VALUES:
             return _held(raw, "ip_numbers_missing")
 

@@ -98,6 +98,16 @@ class RuleTests(unittest.TestCase):
         w2 = win(head, "가운데 조각입니다.", tail)
         self.assertEqual(self.check("LEASE_EXEMPTION", raw("LOW_VALUE", head + tail), w2).held_reason, "evidence_not_in_window")
 
+    def test_4_갈라진_어미와_원문_속_말줄임표(self) -> None:
+        # 모델이 원문의 「있습니 다.」를 그대로 베꼈어도 doc_text와 같은 정규화로 맞는다.
+        ev = "회사는 단기리스 및 소액 기초자산 리스에 대하여 인식 면제 규정을 적용하지 않습니 다."
+        wt = "회사는 단기리스 및 소액 기초자산 리스에 대하여 인식 면제 규정을 적용하지 않습니다."
+        self.assertEqual(self.check("LEASE_EXEMPTION", raw("NONE", ev), win(wt)).value, "NONE")
+        # 원문 자체에 「 … 」가 있어도 조각 경계는 spans로 정한다.
+        inner = "회사는 사무용품 … 정수기 등 소액자산 리스에 인식 면제를 적용하고 단기리스에도 면제를 적용합니다."
+        w = Window(text=inner + " … 뒤쪽 조각입니다 그리고 더", spans=((0, len(inner)), (100, 116)), anchor="keyword")
+        self.assertEqual(self.check("LEASE_EXEMPTION", raw("BOTH", inner), w).value, "BOTH")
+
     def test_4_가운데_문장을_생략한_두_문장(self) -> None:
         # 스파이크 #22: luna가 두 문장을 이어 붙이고 가운데 문장을 뺐다.
         w = win(MIRAE_A + MIRAE_MID + " " + MIRAE_B)
@@ -122,6 +132,10 @@ class RuleTests(unittest.TestCase):
             self.assertEqual(v.held_reason, "value_words_missing")
         ok = "당사가 발행한 전환사채의 전환권은 파생상품부채로 인식하였습니다."
         self.assertEqual(self.check("CONVERSION_OPTION_CLASS", raw("LIABILITY", ok), win(ok)).value, "LIABILITY")
+        kraver = "(주4) 전환상환우선주, 전환권 및 상환권 금융부채 인식"  # #3 크레이버
+        self.assertEqual(self.check("CONVERSION_OPTION_CLASS", raw("LIABILITY", kraver), win(kraver)).value, "LIABILITY")
+        ok3 = "당사는 전환사채의 전환권을 금융부채로 인식하였습니다."
+        self.assertEqual(self.check("CONVERSION_OPTION_CLASS", raw("LIABILITY", ok3), win(ok3)).value, "LIABILITY")
         ok2 = "당사가 발행한 복합금융상품은 상환전환우선주이며 자본요소는 공정가치와 부채요소의 차이로 최초 인식합니다."
         self.assertEqual(self.check("CONVERSION_OPTION_CLASS", raw("EQUITY", ok2), win(ok2)).value, "EQUITY")
 
@@ -187,6 +201,16 @@ class IpFairValueTests(unittest.TestCase):
         ev = "최초 인식 후 투자부동산은 공정가치모형을 적용하여 공정가치로 측정합니다."
         v = postcheck(self.ip, raw("FV_DIFFERS", ev), win(ev))
         self.assertEqual((v.value, v.evidence, v.held_reason), ("FV_EQUALS", ev, None))
+
+    def test_근사치_문장은_숫자_없이_FV_EQUALS(self) -> None:  # #23 트라이씨클
+        ev = "회사는 투자부동산의 공정가치와 장부금액의 차이가 중요하지 않은 것으로 판단하고 있습니다."
+        v = postcheck(self.ip, raw("FV_EQUALS", ev), win(ev))
+        self.assertEqual((v.value, v.held_reason), ("FV_EQUALS", None))
+        bien = "당기말 현재 장부금액이 공정가치의 합리적인 근사치인 것으로 판단하고 있습니다."
+        self.assertEqual(postcheck(self.ip, raw("FV_EQUALS", bien), win(bien)).value, "FV_EQUALS")
+        # FV_DIFFERS에는 근사치 예외가 없다.
+        v = postcheck(self.ip, raw("FV_DIFFERS", ev), win(ev))
+        self.assertEqual(v.held_reason, "ip_numbers_missing")
 
     def test_숫자가_없으면_ip_numbers_missing(self) -> None:  # #22 미래에셋(단위가 달라 숫자 비교 불가)
         w = win(MIRAE_A + " " + MIRAE_B)
