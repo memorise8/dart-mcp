@@ -222,14 +222,16 @@ def render_markdown(result: dict, gold_index: dict[str, dict]) -> str:
         g3 = gs["3"]
         L += ["## 정답 묶음", "",
               f"- 1층: 맞음 {gs['1']['passed']}, 틀림 {len(gs['1']['failed'])}, 표본 밖 {gs['1']['skipped']}",
-              f"- 2층: 맞음 {gs['2']['passed']}, 틀림 {len(gs['2']['failed'])}, 표본 밖 {gs['2']['skipped']}",
+              (f"- 2층: 맞음 {gs['2']['passed']}, 틀림 {len(gs['2']['failed'])}, "
+               f"건너뜀 {gs['2']['skipped']}(그중 공시 없음 {len(gs['2'].get('no_data') or [])})"
+               if gs["2"].get("scored", True) else "- 2층: 채점 안 함(--facts·--instruments 없음)"),
               f"- 3층: 맞음 {g3['passed']}, **틀린 판정 {len(g3['failed'])}**, 판단불가로 놓침 {len(g3['missed'])}, "
               f"표본 밖 {g3['skipped']} — 관문(스펙 §7.2)은 틀린 판정 0", ""]
         for layer in ("1", "2"):
             if gs[layer]["items"]:
                 L += [f"### {layer}층 항목", ""]
                 L += _md_table(["id", "결과", "내용"],
-                               [[r["id"], "맞음" if r["ok"] else "**틀림**", r["detail"][:160]]
+                               [[r["id"], {True: "맞음", False: "**틀림**", None: "건너뜀"}[r["ok"]], r["detail"][:160]]
                                 for r in gs[layer]["items"]]) + [""]
         if g3["items"]:
             L += ["### 3층 항목", ""]
@@ -264,6 +266,9 @@ def render_markdown(result: dict, gold_index: dict[str, dict]) -> str:
                            [[t] + [c.get(k, 0) for k in cols] + [sum(c.values())] for t, c in sorted(m["by_topic"].items())]
                            + [["합계"] + [m["totals"].get(k, 0) for k in cols] + [m["n"]]]) + [""]
     return "\n".join(L) + "\n"
+
+
+last_result: dict | None = None  # 마지막 main() 결과(테스트용)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -329,6 +334,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.work_dir and not args.json:
             args.json = args.work_dir / "ledger.measure.json"
 
+    global last_result
+    last_result = result
     text = json.dumps(result, ensure_ascii=False, indent=2)
     if args.json:
         args.json.write_text(text, encoding="utf-8")

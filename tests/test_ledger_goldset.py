@@ -164,9 +164,9 @@ def _write_jsonl(path: Path, rows: list[dict]) -> Path:
     return path
 
 
-def _fact(rcept, concept, period, amount_krw, scope="consolidated"):
-    return {"rcept_no": rcept, "fs_scope": scope, "concept": concept, "period": period,
-            "amount": amount_krw, "amount_krw": amount_krw, "label": concept}
+def _fact(rcept, concept, period, amount_krw, scope="consolidated", unit_kind="krw", amount=None):
+    return {"rcept_no": rcept, "fs_scope": scope, "concept": concept, "period": period, "unit_kind": unit_kind,
+            "amount": amount_krw if amount is None else amount, "amount_krw": amount_krw, "label": concept}
 
 
 def _stance(rcept, topic, value, held="", scope="separate"):
@@ -236,6 +236,41 @@ class ScoreLayer2Test(unittest.TestCase):
         self.assertFalse(both["no-liab"]["ok"])   # run2 에 부채 기록
         self.assertFalse(both["sep"]["ok"])       # run2 에 R2 없음
         self.assertIn("run2", both["sep"]["detail"])
+
+    def test_absent_items_skip_when_filing_missing(self):
+        base = {"layer": 2, "absent": True}
+        gold = [
+            dict(base, id="fact-nofiling", source="fact", rcept_no="R9", concept="HOST_LIABILITY"),
+            dict(base, id="ins-nofiling", source="instrument", rcept_no="R9", field="option_class",
+                 equals="derivative_liability"),
+            dict(base, id="ins-run2-missing", source="instrument", rcept_no="R2", field="option_class",
+                 equals="derivative_liability"),
+        ]
+        res = {r["id"]: r for r in score_layer2(gold, self.facts, [self.run1, self.run2])}
+        for k in res:
+            self.assertTrue(res[k]["skipped"], k)
+            self.assertIsNone(res[k]["ok"], k)
+        self.assertIn("사실에 공시 없음", res["fact-nofiling"]["detail"])
+        self.assertIn("실행에 공시 없음", res["ins-nofiling"]["detail"])
+        self.assertIn("run2", res["ins-run2-missing"]["detail"])
+        out = score(gold, None, self.facts, [self.run1, self.run2], None)
+        self.assertEqual((out[2]["passed"], out[2]["failed"], out[2]["skipped"]), (0, [], 3))
+        self.assertEqual(out[2]["no_data"], ["fact-nofiling", "ins-nofiling", "ins-run2-missing"])
+
+    def test_amount_field_consistent(self):
+        # 원 단위는 amount_krw, 그 밖(주식 수 등)은 amount 를 같은 규칙으로 쓴다
+        facts = _write_jsonl(self.tmp / "f2.jsonl", [
+            _fact("S", "HOST_LIABILITY", "current_end", 0, amount=5),            # krw: amount_krw 0 → 없음
+            _fact("S", "CONV_OPTION_EQUITY", "current_end", None, unit_kind="shares", amount=700),
+        ])
+        base = {"layer": 2, "source": "fact", "rcept_no": "S"}
+        gold = [dict(base, id="host-absent", concept="HOST_LIABILITY", absent=True),
+                dict(base, id="host-present", concept="HOST_LIABILITY", value_krw=5),
+                dict(base, id="shares-present", concept="CONV_OPTION_EQUITY", value_krw=700),
+                dict(base, id="shares-absent", concept="CONV_OPTION_EQUITY", absent=True)]
+        res = {r["id"]: r["ok"] for r in score_layer2(gold, facts, [])}
+        self.assertEqual(res, {"host-absent": True, "host-present": False, "shares-present": True,
+                               "shares-absent": False})
 
     def test_rcepts_filter_skips_items(self):
         gold = [{"id": "eq", "layer": 2, "source": "fact", "rcept_no": "R1", "concept": "CONV_OPTION_EQUITY",
@@ -473,8 +508,8 @@ class MeasureFullTest(unittest.TestCase):
         self.assertEqual(res["compare"]["topics"][CONV]["directions"], {"value→other": 1})
         self.assertEqual(res["compare"]["measure"]["policy+contradicted"]["totals"], {"other:EQUITY": 1})
         md = (work / "ledger.measure.md").read_text(encoding="utf-8")
-        self.assertIn("3층", md)
-        self.assertIn("틀린 판정 0", md)
+        self.assertEqual(gs["3"]["failed"], [])
+        self.assertIn("**틀린 판정 0**", md)
         self.assertIn("LIABILITY", md)
 
     def test_given_v2_stance_reports_wrong(self):
@@ -485,8 +520,12 @@ class MeasureFullTest(unittest.TestCase):
                                 "--v1-stance", str(self.v1), "--v2-stance", str(v2), "--md", str(md)])
         self.assertEqual(rc, 0)
         text = md.read_text(encoding="utf-8")
-        self.assertIn("틀린 판정 1", text)
+        self.assertIn("**틀린 판정 1**", text)
         self.assertIn("l3", text)
+        self.assertIn("2층: 채점 안 함", text)   # facts·사채 기록 없이 v2 만 주면 2층은 0/0 이 아니라 채점 안 함
+        res = json.loads(json.dumps(self.cli.last_result)) if hasattr(self.cli, "last_result") else None
+        self.assertIsNotNone(res)
+        self.assertFalse(res["goldset"]["2"]["scored"])
 
 
 if __name__ == "__main__":

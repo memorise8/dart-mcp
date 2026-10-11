@@ -9,8 +9,12 @@ read_failed 표는 세지 않는다(행·칸을 잡지 못한 표다).
 - `fact`: facts.jsonl 에 `concept`(문자열 또는 목록)·`period`(선택)·`fs_scope`(선택)가 맞고 `value_krw`가
   amount_krw 의 절댓값과 같은 사실이 있으면 맞다. `absent: true`면 그런 개념의 0 아닌 사실이 **없어야** 맞다
   (`period`는 문자열이나 목록, 없으면 모든 기간).
+  금액은 있음·없음 검사 모두 같은 칸을 본다: unit_kind 가 krw 면 amount_krw, 그 밖(주식 수·% 등)이면 amount.
+  `absent` 항목인데 facts 에 그 공시 줄이 아예 없으면 맞음이 아니라 건너뜀(skipped, 「사실에 공시 없음」)이다.
 - `instrument`: 사채 기록 실행마다 그 공시(`fs_scope` 선택)의 기록 중 `field` 값이 `equals`인 것이 있어야 맞다.
   `absent: true`면 어느 실행에도 없어야 맞다. 실행이 여럿이면 모두 맞아야 맞다(두 실행 합의, R16).
+  `absent` 항목인데 어느 실행에 그 공시 기록이 아예 없으면 건너뜀(skipped, 「실행에 공시 없음」)이다.
+결과 항목: {id, ok(True/False, 건너뜀이면 None), skipped, detail}.
 
 3층 항목: `topic`과 `expect`(받아들이는 값 목록, 판단불가는 "UNDETERMINED"), 선택 `fs_scope`·`held_reason`.
 그 공시·주제의 v2 행(범위별)을 모아 상태를 정한다.
@@ -124,19 +128,30 @@ def _fact_desc(f: dict) -> str:
     return f"{f.get('concept')} {f.get('fs_scope')} {f.get('period')}={f.get('amount_krw')}"
 
 
+def _amount(f: dict):
+    """비교에 쓰는 금액: 원 단위(unit_kind krw)는 amount_krw, 그 밖은 amount."""
+    v = f.get("amount_krw") if (f.get("unit_kind") or "krw") == "krw" else f.get("amount")
+    return v if isinstance(v, (int, float)) else None
+
+
+def _skip(detail: str) -> dict:
+    return {"ok": None, "skipped": True, "detail": detail}
+
+
 def _score_fact(item: dict, facts: list[dict]) -> dict:
     concepts = set(_as_list(item["concept"]))
     periods = set(_as_list(item.get("period")))
     cand = [f for f in facts if f.get("concept") in concepts
             and (not item.get("fs_scope") or (f.get("fs_scope") or "separate") == item["fs_scope"])]
     if item.get("absent"):
-        bad = [f for f in cand if (not periods or f.get("period") in periods)
-               and isinstance(f.get("amount"), (int, float)) and f["amount"] != 0]
+        if not facts:
+            return _skip("사실에 공시 없음")
+        bad = [f for f in cand if (not periods or f.get("period") in periods) and _amount(f)]
         if bad:
             return {"ok": False, "detail": "있어선 안 되는 사실: " + "; ".join(_fact_desc(f) for f in bad[:5])}
         return {"ok": True, "detail": "해당 사실 없음"}
     hits = [f for f in cand if (not periods or f.get("period") in periods)
-            and isinstance(f.get("amount_krw"), (int, float)) and abs(f["amount_krw"]) == item["value_krw"]]
+            and _amount(f) is not None and abs(_amount(f)) == item["value_krw"]]
     if hits:
         src = hits[0].get("source") or {}
         return {"ok": True, "detail": f"{_fact_desc(hits[0])} {src.get('table_id', '')}".strip()}
@@ -159,8 +174,10 @@ def _load_runs(paths, rcepts: set[str]) -> list[tuple[str, dict]]:
 def _score_instrument(item: dict, runs: list[tuple[str, dict]]) -> dict:
     if not runs:
         return {"ok": False, "detail": "사채 기록 실행 없음"}
-    notes, ok = [], True
+    notes, ok, missing = [], True, []
     for name, recs_by_key in runs:
+        if not any(rc == item["rcept_no"] for rc, _scope in recs_by_key):
+            missing.append(name)
         recs = [rec for (rc, scope), recs in recs_by_key.items()
                 if rc == item["rcept_no"] and (not item.get("fs_scope") or scope == item["fs_scope"])
                 for rec in recs]
@@ -169,6 +186,8 @@ def _score_instrument(item: dict, runs: list[tuple[str, dict]]) -> dict:
         good = (not hit) if item.get("absent") else hit
         ok = ok and good
         notes.append(f"{name}: {item['field']}={'/'.join(vals) if vals else '기록 없음'}")
+    if item.get("absent") and missing:
+        return _skip(f"실행에 공시 없음({', '.join(missing)})")
     return {"ok": ok, "detail": "; ".join(notes)}
 
 
@@ -190,7 +209,7 @@ def score_layer2(gold: list[dict], facts_path, instruments_paths, rcepts=None) -
             res = _score_instrument(g, runs)
         else:
             res = _score_fact(g, facts.get(g["rcept_no"], []))
-        out.append({"id": g["id"], **res})
+        out.append({"id": g["id"], "skipped": False, **res})
     return out
 
 
@@ -252,9 +271,12 @@ def score(gold: list[dict], tables_dir, facts_path, instruments_path, stance_pat
     l1 = score_layer1(gold, tables_dir, rcepts) if tables_dir else []
     out[1] = {"passed": sum(r["ok"] for r in l1), "failed": [r["id"] for r in l1 if not r["ok"]],
               "skipped": skipped(1), "items": l1}
-    l2 = score_layer2(gold, facts_path, instruments_path, rcepts) if (facts_path or instruments_path) else []
-    out[2] = {"passed": sum(r["ok"] for r in l2), "failed": [r["id"] for r in l2 if not r["ok"]],
-              "skipped": skipped(2), "items": l2}
+    scored2 = bool(facts_path or instruments_path)
+    l2 = score_layer2(gold, facts_path, instruments_path, rcepts) if scored2 else []
+    no_data = [r["id"] for r in l2 if r.get("skipped")]
+    out[2] = {"scored": scored2, "passed": sum(r["ok"] is True for r in l2),
+              "failed": [r["id"] for r in l2 if r["ok"] is False],
+              "skipped": skipped(2) + len(no_data), "no_data": no_data, "items": l2}
     l3 = score_layer3(gold, stance_path, rcepts) if stance_path else []
     out[3] = {"passed": sum(r["status"] == "pass" for r in l3),
               "failed": [r["id"] for r in l3 if r["status"] == "wrong"],

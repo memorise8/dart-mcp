@@ -1012,6 +1012,13 @@ class R27LeaseExcludingShortTermTest(unittest.TestCase):
         self.assertEqual(set(got.values()), {"LEASE_SHORT_LOW_EXP"})
         self.assertEqual(len(got), 2)
 
+    def test_excluding_both_is_not_combined(self):
+        # 「단기리스 및 소액자산리스를 제외한 …」은 면제 리스료가 아니다(합친 행으로 읽으면 안 됨)
+        got = self.facts(("단기리스 및 소액자산리스를 제외한 리스료", [7, 7]),
+                         ("단기리스및소액자산리스를제외한 리스의 총현금유출", [8, 8]))
+        self.assertNotIn("LEASE_SHORT_LOW_EXP", set(got.values()))
+        self.assertNotIn("LEASE_LOW_VALUE_EXP", set(got.values()))
+
 
 if __name__ == "__main__":
     unittest.main()
