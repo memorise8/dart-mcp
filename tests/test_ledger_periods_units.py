@@ -2,6 +2,7 @@ import unittest
 
 from dart_search_mcp.ledger.grid import parse_table
 from dart_search_mcp.ledger.periods import classify_columns
+from dart_search_mcp.ledger.units import Unit, column_units, table_unit, value_krw
 from tests.test_ledger_grid import FINANCE, TWO_LEVEL
 
 
@@ -62,6 +63,44 @@ class PeriodTest(unittest.TestCase):
                         "<TBODY><TR><TD>a</TD><TD>1</TD><TD>2</TD><TD>3</TD><TD>4</TD></TR></TBODY></TABLE>")
         self.assertEqual([c.period for c in classify_columns(g, None, "")][1:],
                          ["opening", "current_end", "opening", "prior_end"])
+
+
+class UnitTest(unittest.TestCase):
+    def test_krw_variants(self):
+        for raw, m in [("(단위: 원)", 1), ("(단위 : 천원)", 1000), ("(단위:백만원)", 1_000_000), ("(단위: 억원)", 100_000_000)]:
+            u, found = table_unit(raw, "", None)
+            self.assertEqual((u.kind, u.multiplier, found), ("krw", m, True))
+
+    def test_foreign(self):
+        u, _ = table_unit("(단위: USD, 천원)", "", None)
+        self.assertEqual((u.kind, u.multiplier), ("krw", 1000))
+        u2, _ = table_unit("(단위: 천USD)", "", None)
+        self.assertEqual((u2.kind, u2.currency, u2.multiplier), ("foreign", "USD", 1000))
+
+    def test_shares_percent(self):
+        self.assertEqual(table_unit("(단위: 주)", "", None)[0].kind, "shares")
+        self.assertEqual(table_unit("(단위: %)", "", None)[0].kind, "percent")
+        self.assertEqual(table_unit("(단위: 명)", "", None)[0].kind, "count")
+
+    def test_mixed_unit_columns(self):   # Review Focus 2
+        g = parse_table("<TABLE><THEAD><TR><TH>구분</TH><TH>주식수(주)</TH><TH>금액(천원)</TH></TR></THEAD><TBODY><TR><TD>보통주</TD><TD>1,000</TD><TD>5,000</TD></TR></TBODY></TABLE>")
+        cols = classify_columns(g, None, "")
+        cu = column_units(cols, Unit("(단위: 원)", "krw", 1, "KRW"))
+        self.assertEqual((cu[1].kind, cu[2].kind, cu[2].multiplier), ("shares", "krw", 1000))
+        self.assertIsNone(value_krw(1000, cu[1]))
+        self.assertEqual(value_krw(5000, cu[2]), 5_000_000)
+
+    def test_column_foreign_and_percent(self):
+        g = parse_table("<TABLE><THEAD><TR><TH>구분</TH><TH>금액(USD)</TH><TH>비율(%)</TH></TR></THEAD><TBODY><TR><TD>a</TD><TD>1</TD><TD>2</TD></TR></TBODY></TABLE>")
+        cu = column_units(classify_columns(g, None, ""), Unit("(단위: 천원)", "krw", 1000, "KRW"))
+        self.assertEqual((cu[1].kind, cu[1].currency), ("foreign", "USD"))
+        self.assertEqual(cu[2].kind, "percent")
+        self.assertEqual(cu[0].kind, "krw")
+
+    def test_missing_uses_default(self):
+        u, found = table_unit("", "", Unit("(단위: 천원)", "krw", 1000, "KRW"))
+        self.assertEqual((u.multiplier, found), (1000, False))
+        self.assertEqual(table_unit("", "", None)[0].kind, "unknown")
 
 
 if __name__ == "__main__":
