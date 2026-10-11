@@ -2216,6 +2216,66 @@ class T9bFixRound1Test(unittest.TestCase):
             self.assertIn(phrase, user)
 
 
+class T9bFixRound2Test(unittest.TestCase):
+    """fix round 2: 보유자·투자 대상 자산 칸 — 20260327000244:00760:t073·t074(「당사가 보유하고 있는 파생상품의 내역」,
+    「B사 전환사채의 전환권 등」·「H사 신주인수권부사채의 신주인수권 등」)은 분리 근거가 아니다."""
+
+    T073 = _rcell(302801, "B사 전환사채의 전환권 등", col="파생상품자산", nt="파생상품", n_value_cols=4, multiplier=1000,
+                  tt="21. 파생상품 보고기간종료일 현재 당사가 보유하고 있는 파생상품의 내역은 다음과 같습니다.〈당기말〉")
+    T074 = _rcell(315789, "H사 신주인수권부사채의 신주인수권 등", col="파생상품자산", period="prior_end", nt="파생상품",
+                  n_value_cols=4, multiplier=1000, tt="〈전기말〉")
+    S198 = "당사는 파생상품을 포함한 전환사채 및 신주인수권부사채를 매매목적으로 보유하고 있습니다."
+
+    def test_real_holder_cells(self):
+        for kind, cid, c in (("CB", "20260327000244:00760:t073:r3:c1", self.T073),
+                             ("BW", "20260327000244:00760:t074:r6:c1", self.T074)):
+            inp = _inp9b({cid: c}, {"s198": self.S198})
+            for sk in ("", f"{kind}-1"):
+                out, reasons = validate(_rec_emb("separated", [cid], kind=kind, series_key=sk), inp)
+                self.assertEqual(out["embedded_separation"], "unconfirmed", (cid, sk))
+                self.assertEqual(reasons, ["no_separation_ref"], (cid, sk))
+
+    def test_holder_title_and_investee_prefix(self):
+        from dart_search_mcp.ledger.instrument_validate import _separation_cell
+        base = dict(label="전환사채 매도청구권", label_path=["전환사채 매도청구권"])
+        ok = _pcell("전환사채 매도청구권", tt="당기말 현재 파생상품자산의 내역", nt="파생상품", value=300)
+        self.assertTrue(_separation_cell("A:r1:c1", ok, "CB", None, set()))
+        for tt, nt in (("당기말 현재 당사가 보유하고 있는 파생상품자산의 내역", "파생상품"),
+                       ("당기말 현재 파생상품자산의 내역", "보유한 금융상품"),
+                       ("취득한 전환사채 관련 파생상품자산의 내역", "파생상품"),
+                       ("파생상품자산(투자 전환사채)의 내역", "파생상품")):
+            c = dict(ok, table_title=tt, note_title=nt, **base)
+            self.assertFalse(_separation_cell("A:r1:c1", c, "CB", None, set()), (tt, nt))
+        for label in ("B사 전환사채 매도청구권", "에이비씨사의 전환사채 콜옵션", "Kxx사 상환전환우선주 전환권"):
+            c = dict(ok, label=label, label_path=[label])
+            kind = "RCPS" if "우선주" in label else "CB"
+            self.assertFalse(_separation_cell("A:r1:c1", c, kind, None, set()), label)
+        for label in ("당사 전환사채 매도청구권", "회사 전환사채 매도청구권", "연결회사의 전환사채 매도청구권"):
+            c = dict(ok, label=label, label_path=[label])
+            self.assertTrue(_separation_cell("A:r1:c1", c, "CB", None, set()), label)
+        # 「투자자의 조기상환청구권」(부채 쪽)은 막지 않는다
+        liab = _pcell("전환사채 투자자의 조기상환청구권", tt="당기말 현재 파생상품부채의 내역", nt="파생상품", value=300)
+        self.assertTrue(_separation_cell("L:r1:c1", liab, "CB", None, set()))
+
+    def test_host_sum_runs_after_derivative_row(self):
+        """derivative_row 로 버린 칸이 하나여도 host 합 경로는 돈다."""
+        tt = "당기말 현재 전환사채의 내역"
+        cells = {"H:r1:c1": _pcell("사채", path=["전환사채 및 파생상품부채", "사채"], tt=tt, value=900),
+                 "H:r2:c1": _pcell("전환권조정", path=["전환사채 및 파생상품부채", "전환권조정"], tt=tt, value=0)}
+        inp = _inp9b(cells)
+        out, reasons = validate(_rec5("host_carrying", "current_end", 900, ["H:r1:c1", "H:r2:c1"]), inp)
+        self.assertEqual(out["balance"]["current_end"]["host_carrying"], 900)
+        self.assertEqual(out["matched"]["balance.current_end.host_carrying"], "H:r1:c1+H:r2:c1")
+        self.assertEqual(reasons, [])
+        out, reasons = validate(_rec5("host_carrying", "current_end", 900, ["H:r1:c1"]), inp)
+        self.assertEqual(reasons, ["derivative_row:balance.current_end.host_carrying"])
+
+    def test_prompt_rule8_holder(self):
+        user = build_messages(_inp())[1]["content"]
+        for phrase in ("보유하고 있는", "B사 전환사채", "당사·회사"):
+            self.assertIn(phrase, user)
+
+
 class PromptI5Test(unittest.TestCase):
     def test_i5_version_and_rules(self):
         self.assertEqual(PROMPT_VERSION, "i5")

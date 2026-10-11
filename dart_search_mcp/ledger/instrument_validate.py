@@ -658,13 +658,21 @@ def _cell_tied(cell: dict, kind: str) -> bool:
 
 # 자산 쪽 분리 칸에서 막는 것: 제3자(지정 가능) 콜, 「…권자의」 보유자 옵션, 회사·투자 이름 층(남의 상품·지분 옵션).
 _ASSET_SEP_BLOCK_RE = re.compile(r"제\s*3\s*자|제삼자|권자")
+# 보유자 쪽 표(fix round 2): 표 제목(앞 문장이 붙어 온 것 포함)·주석 제목이 보유·취득·투자를 말하면 자산 칸은 남의 상품이다.
+_HOLDER_TITLE_RE = re.compile(r"보유\s*(?:하고\s*있는|한|중인|중|하는)|취득\s*(?:한|하여)|투자(?!자)")
+# 투자 대상 이름 + 상품 종류(「B사 전환사채」·「에이비씨사의 전환사채」). 당사·회사·연결회사·지배회사·발행회사 등은 자기 자신.
+_INVESTEE_RE = re.compile(r"(?<![가-힣A-Za-z0-9])([가-힣A-Za-z0-9]{0,10}사)\s*의?\s*"
+                          r"(?:전환사채|신주인수권부사채|교환사채|(?:상환)?(?:전환)?(?:상환)?우선주)")
+_SELF_COMPANY = {"당사", "회사", "동사", "연결회사", "지배회사", "모회사", "발행회사", "본사"}
 _COMPANY_LAYER_RE = re.compile(r"\(주\)|㈜|주식회사|유한회사|합자회사|조합|투자|펀드|(?<![A-Za-z])(?:Inc|Ltd|Co|Corp|LLC)(?![A-Za-z])")
 
 
 def _separation_cell(cid: str, cell: dict, kind: str, series: str | None, nb: set) -> bool:
     """이 상품의 분리 파생상품 금액 칸(잔액 표, 0 아님, 종류·회차가 맞고 상품 종류 낱말로 그 상품에 묶임).
     기본은 부채 쪽 칸만이다(fix round 1). 자산 쪽 칸은 행 이름·열 머리글 자체가 기록 종류를 말하고, 제3자·권자(보유자)
-    낱말과 회사·투자 이름 층(label_path)이 없을 때만 — 제3자 지정 콜, 보유한 신주인수권, 남의 지분 콜은 분리가 아니다."""
+    낱말과 회사·투자 이름 층(label_path)이 없을 때만 — 제3자 지정 콜, 보유한 신주인수권, 남의 지분 콜은 분리가 아니다.
+    fix round 2: 상품 앞의 투자 대상 이름(「B사 전환사채」, 당사·회사 제외)이나 표 제목(앞 문장 포함)·주석 제목의 보유자
+    낱말(보유하고 있는·보유한·취득한·투자)이 있어도 자산 칸은 아니다."""
     if cid in nb or not _num(cell.get("value")) or not _series_fits(cell, series, kind) or not _cell_tied(cell, kind):
         return False
     side = _deriv_side(cell)
@@ -674,8 +682,14 @@ def _separation_cell(cid: str, cell: dict, kind: str, series: str | None, nb: se
         return False
     texts = [re.sub(r"\s+", "", t) for t in _row_col_texts(cell)]
     own = set().union(*(_text_kinds(t) for t in texts))
-    return (kind in own and not any(_ASSET_SEP_BLOCK_RE.search(t) for t in texts)
-            and not any(_COMPANY_LAYER_RE.search(p) for p in (cell.get("label_path") or [])))
+    if kind not in own or any(_ASSET_SEP_BLOCK_RE.search(t) for t in texts):
+        return False
+    if any(_COMPANY_LAYER_RE.search(p) for p in (cell.get("label_path") or [])):
+        return False
+    if any(m.group(1) not in _SELF_COMPANY for t in _row_col_texts(cell) for m in _INVESTEE_RE.finditer(t)):
+        return False  # 「B사 전환사채의 전환권 등」 — 투자 대상 회사의 상품
+    titles = re.sub(r"\s+", " ", (cell.get("table_title") or "") + " | " + (cell.get("note_title") or ""))
+    return not _HOLDER_TITLE_RE.search(titles)
 
 
 def _measured_cell(cid: str, cell: dict, kind: str, series: str | None, nb: set, rx: re.Pattern) -> bool:
@@ -795,12 +809,10 @@ def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = N
         side = _DERIV_AMOUNT_KEYS.get(key)
         if side is None and key in _NON_DERIV_KEYS:
             nonderiv = [i for i in bal if not _derivative_row(cells[i])]
-            if bal and not nonderiv:
-                holder[key] = None
-                evidence[field] = []
-                reasons.append(f"derivative_row:{field}")
-                continue
+            deriv_row_only = bool(bal) and not nonderiv  # 사유만 정해 두고 host 합 경로는 그대로 돈다(fix round 2)
             bal = nonderiv
+        else:
+            deriv_row_only = False
         good = [i for i in bal if side is None or _deriv_side(cells[i]) == side]
         sum_reason = None
         if not good and key == "host_carrying" and amount is not None and len(ids) == cited.get(field):
@@ -827,6 +839,8 @@ def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = N
                 reasons.append(f"amount_mismatch:{field}")
             elif not fit:
                 reasons.append(f"series_mismatch:{field}")
+            elif deriv_row_only:
+                reasons.append(f"derivative_row:{field}")
             elif not bal:
                 reasons.append(f"not_balance:{field}")
             elif all(_is_host_cell(cells[i]) for i in bal):
