@@ -785,8 +785,8 @@ class T6bTest(unittest.TestCase):
     def facts(self, *tables, stats=None):
         return extract_facts(list(tables), self.concepts, stats=stats)
 
-    def test_version_c7(self):  # c6 = T6b, c7 = T6b 수정 1차(R25)
-        self.assertEqual(self.concepts[0].version, "c7")
+    def test_version_c8(self):  # c6 = T6b, c7 = T6b 수정 1차(R25), c8 = R27 리스 「단기리스를 제외한」
+        self.assertEqual(self.concepts[0].version, "c8")
 
     # ---- 1. FVOCI_EQUITY 표 제목 + 합계 행 ----
     def test_real_title_equity_total_row(self):
@@ -980,6 +980,37 @@ class RunnerTest(unittest.TestCase):
             self.assertTrue((out / "facts.unmatched.tsv").read_text(encoding="utf-8").startswith("count\tlabel"))
             # 다시 돌리면 덮지 않고 멈춘다
             self.assertEqual(ledger_facts.main(["--tables", str(tables), "--out-dir", str(out), "--workers", "1"]), 2)
+
+
+
+class R27LeaseExcludingShortTermTest(unittest.TestCase):
+    """R27: 「소액자산 리스 중 단기리스를 제외한 …」은 소액자산 리스료 행이다(단기·소액 합친 행 아님, c8)."""
+
+    def setUp(self):
+        self.concepts = load_concepts()
+
+    def facts(self, *rows):
+        t = _table(list(rows), note_title="리스", title="리스 비용", periods=("current_period", "prior_period"))
+        return {f["label"]: f["concept"] for f in extract_facts([t], self.concepts)}
+
+    def test_real_taelim_rows(self):
+        # 20260319001237 주석 33 리스(연결): 단기리스 비용 행과 소액자산 리스 비용 행이 따로 있다
+        got = self.facts(("단기리스와 관련된 비용", [623569, 753347]),
+                         ("소액자산 리스 중 단기리스를 제외한 리스에 관련된 비용", [6210514, 4753039]))
+        self.assertEqual(got, {"단기리스와 관련된 비용": "LEASE_SHORT_TERM_EXP",
+                               "소액자산 리스 중 단기리스를 제외한 리스에 관련된 비용": "LEASE_LOW_VALUE_EXP"})
+
+    def test_excluding_short_term_variants(self):
+        got = self.facts(("단기리스를 제외한 소액자산 리스료", [1, 1]), ("소액자산리스료(단기리스 제외)", [2, 2]),
+                         ("소액자산 리스료(단기리스는 제외)", [3, 3]),
+                         ("소액자산 중 단기리스를 제외한 리스에 관련된 비용", [4, 4]))  # c7 합친 행, 「리스」 낱말 앞에 「중」
+        self.assertEqual(set(got.values()), {"LEASE_LOW_VALUE_EXP"})
+        self.assertEqual(len(got), 4)
+
+    def test_genuine_combined_rows_stay_combined(self):
+        got = self.facts(("단기리스 및 소액자산리스료", [4, 3]), ("단기 및 소액리스료(매출원가 및 판매비와관리비)", [5, 5]))
+        self.assertEqual(set(got.values()), {"LEASE_SHORT_LOW_EXP"})
+        self.assertEqual(len(got), 2)
 
 
 if __name__ == "__main__":
