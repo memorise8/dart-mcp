@@ -18,6 +18,11 @@ class PeriodTest(unittest.TestCase):
         g = parse_table("<TABLE><THEAD><TR><TH>과목</TH><TH>제 12(당)기말</TH><TH>제 11(전)기말</TH></TR></THEAD><TBODY><TR><TD>a</TD><TD>1</TD><TD>2</TD></TR></TBODY></TABLE>")
         self.assertEqual([c.period for c in classify_columns(g, None, "")][1:], ["current_end", "prior_end"])
 
+    def test_numbered_terms_with_gi_before_marker(self):  # 본문 「제49기(당) 기말」「제24(당)기 기말」
+        g = parse_table("<TABLE><THEAD><TR><TH>과목</TH><TH>제49기(당) 기말</TH><TH>제48기(전) 기말</TH><TH>제24(당)기 기말</TH></TR></THEAD>"
+                        "<TBODY><TR><TD>a</TD><TD>1</TD><TD>2</TD><TD>3</TD></TR></TBODY></TABLE>")
+        self.assertEqual([c.period for c in classify_columns(g, None, "")][1:], ["current_end", "prior_end", "current_end"])
+
     def test_dates_against_period_end(self):
         g = parse_table("<TABLE><THEAD><TR><TH>구분</TH><TH>2025.12.31</TH><TH>2024.12.31</TH></TR></THEAD><TBODY><TR><TD>a</TD><TD>1</TD><TD>2</TD></TR></TBODY></TABLE>")
         cols = classify_columns(g, "2025-12-31", "")

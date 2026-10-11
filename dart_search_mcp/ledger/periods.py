@@ -84,8 +84,8 @@ def _table_marker(context: str) -> str:
 
 
 _PAREN_RE = re.compile(r"\((?![당전]\))[^)]*\)")
-_END_RE = re.compile(r"^(?:제\d+)?\(?([당전])\)?(?:분)?기말$")
-_TERM_ONLY_RE = re.compile(r"^(?:제\d+)?\(?([당전])\)?(?:분)?기(?:중)?$")
+_END_RE = re.compile(r"^(?:제\d+기?)?\(?([당전])\)?(?:분)?기기?말$")  # 「제49기(당)기말」「제24(당)기기말」 포함
+_TERM_ONLY_RE = re.compile(r"^(?:제\d+기?)?\(?([당전])\)?(?:분)?기(?:중)?$")
 _FLOW_RE = re.compile("^(?:" + "|".join(_FLOW) + ")$")
 
 
