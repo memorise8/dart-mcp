@@ -36,6 +36,11 @@
    표에서 쓰지 않는다. 범주 행렬의 다른 범주 열(상각후원가·기타포괄 …)은 파생상품 칸이 아니다. 회차 일치는 칸이 말하는
    상품 종류(전환사채·신주인수권부사채·교환사채·우선주)도 본다. embedded_separation 은 뜻이 맞는 근거(_separation_supported)가
    있어야 하고, 아니면 `no_separation_ref` 로 unconfirmed.
+9. fix round 5(R18): 분리 문장(분리함·분리 안 함·FVPL 지정·상각후원가)은 상품 종류를 말해야 그 종류의 확인 근거다
+   (_strict_fits; 일반 옵션 낱말만이면 어느 종류도 아님, 바로 앞 문장이 한 종류만 말하고 이어 쓰면 그 종류). 막는 쪽(섞인
+   부정 문장·모순 검사)은 이전처럼 넓게 본다. 분리 동사는 제 마디로 읽어 자본 분리 마디를 거르고, 「분리하여 공시하지 않」은
+   분리 진술이 아니다. 「X가 발행한」(X 자기 회사 아님)·종속기업·관계기업·「B사 전환사채」 문장은 확인 근거가 아니다.
+   option_class 문장·칸에도 보유자 낱말·보유자 공시 가드를 건다(_issuer_option_sentence·_issuer_option_cell).
 """
 from __future__ import annotations
 
@@ -559,6 +564,16 @@ _NEG_SEP_RE = re.compile(
 _SEP_WORD_RE = re.compile(r"분리\s*(?:하여|해서|하고|하였|했|하며|한|된|되어|되었|되며|되는|처리)")
 _SEP_NEAR_RE = re.compile(r"파생|공정가치")
 _EQUITY_SPLIT_RE = re.compile(r"자본부분|자본요소|전환권대가|신주인수권대가|교환권대가|자본으로|자본잉여금")
+# fix round 5: 분리 동사는 제 마디(「,」·「…고 」·「…며 」로 나눈 조각)에 묶는다. 자본 분리 마디는 다른 마디가 「파생」을 말해도
+# 분리가 아니다. 「분리하여 공시(표시)하지 않」은 분리 진술이 아니다(다른 마디가 정한다).
+_CLAUSE_BREAK_RE = re.compile(r"[,，]|(?<=[가-힣])(?:고|며)(?=\s)")
+_SEP_NOT_SHOWN_RE = re.compile(r"\s*(?:별도로?\s*)?(?:공시|표시|기재)\s*(?:하지|되지|하고\s*있지)\s*(?:않|아니)")
+
+
+def _clause(text: str, start: int, end: int) -> str:
+    a = max([m.end() for m in _CLAUSE_BREAK_RE.finditer(text, 0, start)] or [0])
+    nxt = _CLAUSE_BREAK_RE.search(text, end)
+    return text[a:nxt.start() if nxt else len(text)]
 # 보유자 쪽(취득한 상품의 옵션, 금융자산)은 회사 자신의 상품 분리가 아니다. 제3자 지정 콜을 파생상품자산으로 잡은 문장은
 # 분리 동사가 없고(「구분 계상」) 옵션 경로가 자산 끝을 받지 않으므로 따로 막지 않는다(「…풋과 (제3자) 콜을 분리하여」는 분리).
 _HOLDER_RE = re.compile(r"금융자산|취득한|취득하여|투자한")
@@ -682,6 +697,68 @@ def _sentence_fits(text: str, kind: str, series: str | None) -> bool:
     return not tags or (series is not None and series in tags)
 
 
+# fix round 5(R18): 분리 문장은 종류를 말해야 그 종류에 묶인다. 일반 옵션 낱말(매도청구권·콜·풋·조기상환)이나 전환권·
+# 신주인수권·교환권만 있는 문장은 어느 종류에도 묶이지 않는다. 단, 바로 앞 문장(s<n-1>)이 한 종류만 말하고 이 문장이 그것을
+# 이어 쓸 때(새 항목 표시로 시작하지 않고, 앞 문장이 「…다.」로 끝난 글이며 보유자·남의 상품·조건 문장이 아님)는 그 종류다.
+_SENT_NUM_RE = re.compile(r"^s(\d+)$")
+_ITEM_START_RE = re.compile(r"^\s*(?:\(\s*\*|\(\s*주|\*|\(\s*\d+\s*\)|\d+\s*[.)]|[가-하]\s*[.)]|[①-⑳]|주\s*\d|\[|[-•·ㆍ※])")
+
+
+def _prev_sentence(sid: str | None, sentences: dict) -> str | None:
+    """입력의 바로 앞 문단(s<n-1>). 각주(f:…)·없는 번호는 None."""
+    m = _SENT_NUM_RE.match(sid or "")
+    return sentences.get(f"s{int(m.group(1)) - 1}") if m else None
+
+
+def _series_tags(text: str) -> set:
+    return {m.group(1) or m.group(2) for m in _SENT_SERIES_RE.finditer(text or "")}
+
+
+def _strict_fits(text: str, kind: str, series: str | None, prev: str | None) -> bool:
+    """분리 문장(분리함·분리 안 함·상각후원가·FVPL 지정)이 이 기록의 상품을 말하는가(fix round 5, 확인 쪽에만 쓴다).
+    문장이 종류 낱말을 말하면 그 안에 기록 종류가 있어야 한다. 말하지 않으면 바로 앞 문장(prev)이 이 종류 하나만 말하고 이
+    문장이 그것을 이어 써야 한다. 회차는 문장(이어 쓰면 앞 문장 포함)에 적힌 것과 같아야 한다."""
+    kinds = _text_kinds(text)
+    tags = _series_tags(text)
+    if kinds:
+        if kind not in kinds:
+            return False
+    else:
+        if (not prev or _ITEM_START_RE.match(text or "") or not re.search(r"다\s*\.?\s*$", prev)
+                or _text_kinds(prev) != {kind} or _holder_wording(prev) or _non_self_issuer(prev)
+                or _SEP_CONDITIONAL_RE.search(prev)):  # 조건문(「…경우」)은 이어 쓸 사실이 아니다
+            return False
+        tags |= _series_tags(prev)
+    return not tags or (series is not None and series in tags)
+
+
+# 「X가/이 발행한」에서 X 가 자기 회사가 아닌 문장(fix round 5) — 남(종속기업·관계기업·투자 대상)이 발행한 상품이다.
+_SELF_ISSUER_EXTRA = {"지배기업", "연결실체", "연결기업", "연결회사", "지배회사"}  # + _SELF_COMPANY(아래)
+_ISSUE_VERB_RE = re.compile(r"발행\s*(?:한|하였|했|하는|하고)")
+_SUBJECT_TOKEN_RE = re.compile(r"(?<!\S)(\S+?)(?:가|이)(?=\s)")
+_AFFILIATE_RE = re.compile(r"(?:종속|관계|공동)(?:기업|회사)|피?투자(?:회사|기업)|자회사|관계사")
+_AFFILIATE_INSTRUMENT_RE = re.compile(_AFFILIATE_RE.pattern + r"[^.。,]{0,20}?(?:발행|" + _KIND_NAME + r"|신주인수권부사채)")
+
+
+def _non_self_issuer(text: str | None) -> bool:
+    """문장이 남이 발행한 상품을 말하는가: 「X가/이 (…) 발행한」의 X(발행 바로 앞 30자 안의 마지막 주어)가 자기 회사가
+    아님, 종속기업·관계기업·공동기업·투자회사·자회사 + 상품·발행, 「B사(의) 전환사채」(_investee_named 문장판)."""
+    text = text or ""
+    for m in _ISSUE_VERB_RE.finditer(text):
+        a = m.start() - 30
+        head = text[max(0, a):m.start()]
+        head = re.split(r"[,.。]", head)[-1]
+        subs = list(_SUBJECT_TOKEN_RE.finditer(head + " "))
+        if subs:
+            tok = re.sub(r"[^가-힣A-Za-z0-9()]", "", subs[-1].group(1))
+            tok = re.sub(r"^.*\(이하", "", tok).strip("()")
+            if tok not in _SELF_COMPANY and tok not in _SELF_ISSUER_EXTRA:
+                return True
+    if _AFFILIATE_INSTRUMENT_RE.search(text):
+        return True
+    return any(m.group(1) not in _SELF_COMPANY for m in _INVESTEE_RE.finditer(text))
+
+
 def _separation_kind(text: str) -> str | None:
     """문장 하나가 말하는 분리 여부: "sep"(분리함), "not"(분리 안 함), None(어느 쪽도 아니거나 둘 다)."""
     text = text or ""
@@ -692,11 +769,16 @@ def _separation_kind(text: str) -> str | None:
     for m in _SEP_WORD_RE.finditer(text):
         if any(a <= m.start() < b for a, b in neg_spans) or text[max(0, m.start() - 1):m.start()] == "비":
             continue
+        if _SEP_NOT_SHOWN_RE.match(text, m.end()):
+            continue  # 「별도로 분리하여 공시하지 않았습니다」 — 공시 방식이지 분리 진술이 아니다
         window = text[max(0, m.start() - 40):m.end() + 60]
         if not _SEP_NEAR_RE.search(window):
             continue
         if _EQUITY_SPLIT_RE.search(window) and "파생" not in window:
             continue  # 부채부분·자본부분(전환권대가) 분리는 내재파생상품 분리가 아니다
+        clause = _clause(text, m.start(), m.end())
+        if _EQUITY_SPLIT_RE.search(clause) and "파생" not in clause:
+            continue  # 「…파생상품자산으로 구분하여 인식하고 복합금융상품은 부채요소와 자본요소로 분리」 — 제 마디는 자본 분리
         pos = True
     if not pos:
         # 겹친 후보도 본다(「전환권은 자본으로 분류되지 않았으며, 전환권과 …을 파생상품부채로 분류」의 둘째 주어)
@@ -788,12 +870,37 @@ def _holder_filing(cells: dict, sentences: dict) -> bool:
     return False
 
 
-def _issuer_sep_sentence(text: str, kind: str, series: str | None, holder_filing: bool) -> bool:
+def _issuer_sep_sentence(text: str, kind: str, series: str | None, holder_filing: bool, prev: str | None = None) -> bool:
     """separated 를 확인하는 발행자 쪽 분리 문장(fix round 4, R17): 분리 진술("sep")이고 이 상품(종류·회차)을 말하며,
-    보유자 낱말이 없고, 보유자 공시에서는 자기 회사를 발행자로 적어야 한다(「당사가 발행한」)."""
-    if _separation_kind(text) != "sep" or not _sentence_fits(text, kind, series) or _holder_wording(text):
+    보유자 낱말이 없고, 보유자 공시에서는 자기 회사를 발행자로 적어야 한다(「당사가 발행한」).
+    fix round 5: 종류는 문장이 말하거나 바로 앞 문장(prev)을 이어 써야 하고(_strict_fits), 남이 발행한 상품(「종속기업인
+    오스틴제약(주)가 발행한」)을 말하면 아니다."""
+    if (_separation_kind(text) != "sep" or not _strict_fits(text, kind, series, prev) or _holder_wording(text)
+            or _non_self_issuer(text)):
         return False
     return not holder_filing or bool(_ISSUER_NAMED_RE.search(text or ""))
+
+
+def _issuer_option_sentence(text: str, kind: str, holder_filing: bool) -> bool:
+    """option_class = derivative_liability 를 확인하는 문장(fix round 5): 전환권·신주인수권·교환권을 파생상품부채로 분류한
+    문장(_option_liability_sentence)이고, 이 종류를 말하며(종류 낱말이 있으면 그 안에, 없으면 전환권 → CB·RCPS ·
+    신주인수권 → BW · 교환권 → EB), 보유자 낱말·남이 발행한 상품이 없고, 보유자 공시면 자기 회사를 발행자로 적는다."""
+    if (not _option_liability_sentence(text) or _ties([text], kind) is not True or _holder_wording(text)
+            or _non_self_issuer(text)):
+        return False
+    return not holder_filing or bool(_ISSUER_NAMED_RE.search(text or ""))
+
+
+def _issuer_option_cell(cell: dict, holder_filing: bool, issuer_sentence: bool) -> bool:
+    """option_class 근거 칸의 보유자 가드(fix round 5, 분리 칸 부채 쪽 규칙과 같다): 투자 대상 이름·회사 이름 칸은 아니고,
+    보유자 제목 표나 보유자 공시의 칸은 입력에 이 종류의 발행자 문장(issuer_sentence)이 있거나 (보유자 제목이 아닌) 그 표
+    제목이 자기 회사를 발행자로 적을 때만."""
+    if _investee_named(cell) or any(_COMPANY_NAME_RE.search(re.sub(r"\s+", "", t)) for t in _row_col_texts(cell)):
+        return False
+    if issuer_sentence or not (_holder_title(cell) or holder_filing):
+        return True
+    own_title = _title_core(cell.get("table_title")) + " | " + (cell.get("note_title") or "")
+    return not _holder_title(cell) and bool(_ISSUER_NAMED_RE.search(own_title))
 
 
 def _separation_cell(cid: str, cell: dict, kind: str, series: str | None, nb: set, *, sep_sentence: bool = False,
@@ -863,7 +970,10 @@ def _separation_supported(claim: str, ids: list[str], rec: dict, cells: dict, se
     주의: 이 「입력 전체」 검사는 build_input 이 넘긴 문장·칸만 본다. 문장은 MAX_SENTENCES(200)·대상 주석으로 잘리므로
     잘린 곳에 있는 분리 문장은 모순으로 잡히지 않는다(최선 노력 검사이지 보증이 아니다)."""
     kind, series = rec.get("kind"), _record_series(rec)
+    # 막는 쪽(분리하지 않았다는 문장 섞임·분리 문장 모순)은 넓게(_sentence_fits), 확인하는 쪽은 좁게(_strict_fits, fix round 5)
     sent = [sentences[i] for i in ids if i in sentences and _sentence_fits(sentences[i], kind, series)]
+    strict = [sentences[i] for i in ids if i in sentences and not _non_self_issuer(sentences[i])
+              and _strict_fits(sentences[i], kind, series, _prev_sentence(i, sentences))]
     ev_cells = [(i, cells[i]) for i in ids if i in cells]
     kinds = [_separation_kind(t) for t in sent]
     if claim == "separated":
@@ -872,9 +982,11 @@ def _separation_supported(claim: str, ids: list[str], rec: dict, cells: dict, se
         # 발행자 쪽 분리 문장만(fix round 4). 입력 어딘가에 같은 종류(회차)의 발행자 분리 문장이 있어야 자산 칸과
         # 보유자 표·보유자 공시의 부채 칸이 근거가 된다(R17).
         holder_filing = _holder_filing(cells, sentences)
-        if any(_issuer_sep_sentence(t, kind, series, holder_filing) for t in sent):
+        if any(_issuer_sep_sentence(sentences[i], kind, series, holder_filing, _prev_sentence(i, sentences))
+               for i in ids if i in sentences):
             return True
-        any_issuer = any(_issuer_sep_sentence(t, kind, series, holder_filing) for t in sentences.values())
+        any_issuer = any(_issuer_sep_sentence(t, kind, series, holder_filing, _prev_sentence(i, sentences))
+                         for i, t in sentences.items())
         return any(_separation_cell(i, c, kind, series, nb, sep_sentence=any_issuer, holder_filing=holder_filing)
                    for i, c in ev_cells)
     if has_deriv_amount or "sep" in kinds:
@@ -883,11 +995,11 @@ def _separation_supported(claim: str, ids: list[str], rec: dict, cells: dict, se
     any_sep = any(_separation_kind(t) == "sep" and _sentence_fits(t, kind, series) for t in sentences.values())
     if any_sep or any(_separation_cell(i, c, kind, series, nb, contradiction=True) for i, c in cells.items()):
         return False
-    fvpl = any(_fvpl_designation(t) for t in sent) or any(
+    fvpl = any(_fvpl_designation(t) for t in strict) or any(
         _measured_cell(i, c, kind, series, nb, _FVPL_LIAB_RE) for i, c in ev_cells)
     if claim == "whole_fvpl":
         return fvpl
-    return fvpl or "not" in kinds or any(_amortised_sentence(t) for t in sent) or any(
+    return fvpl or any(_separation_kind(t) == "not" for t in strict) or any(_amortised_sentence(t) for t in strict) or any(
         _measured_cell(i, c, kind, series, nb, _AMORTISED_RE) for i, c in ev_cells)
 
 def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = None) -> tuple[dict | None, list[str]]:
@@ -1017,9 +1129,13 @@ def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = N
     if rec.get("option_class") == "derivative_liability":
         ids = evidence.get("option_class") or []
         ev_cells = [cells[i] for i in ids if i in cells and i not in nb]
+        # fix round 5: 문장·칸 모두 보유자 낱말·보유자 공시·남이 발행한 상품 가드(분리 근거와 같은 R17 규칙)
+        hf = _holder_filing(cells, sentences)
+        issuer_any = any(_issuer_option_sentence(t, kind, hf) for t in sentences.values()) or any(
+            _issuer_sep_sentence(t, kind, series, hf, _prev_sentence(i, sentences)) for i, t in sentences.items())
         has_deriv = any(_deriv_side(c) == "liability" and _names_conversion_option(c) and _series_fits(c, series, kind)
-                        for c in ev_cells) or any(
-            _positive_deriv_liability_sentence(sentences[i]) for i in ids if i in sentences)
+                        and _issuer_option_cell(c, hf, issuer_any) for c in ev_cells) or any(
+            _issuer_option_sentence(sentences[i], kind, hf) for i in ids if i in sentences)
         if not has_deriv:
             rec["option_class"] = UNCONFIRMED
             only_host = bool(ev_cells) and all(_is_host_cell(c) for c in ev_cells)

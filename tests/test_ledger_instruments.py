@@ -18,7 +18,7 @@ from dart_search_mcp.ledger.instrument_input import (
 from dart_search_mcp.ledger import instruments as instruments_mod
 from dart_search_mcp.ledger.instruments import (
     OUTPUT_SCHEMA,
-    PROMPT_I6,
+    PROMPT_I7,
     PROMPT_VERSION,
     Cache,
     build_messages,
@@ -208,7 +208,8 @@ class ValidatorTest(unittest.TestCase):
 
     def test_validator_derivative_liability_by_sentence(self):
         inp = _no_equity(_inp())
-        inp["sentences"]["s12"] = "전환권은 파생상품부채로 분류하였습니다."
+        # fix round 5: 분리 문장은 종류를 말해야 한다(「전환권은 …」만으로는 어느 종류에도 묶이지 않는다)
+        inp["sentences"]["s12"] = "전환사채의 전환권은 파생상품부채로 분류하였습니다."
         rec = _record(option_class="derivative_liability")
         for period in ("current_end", "prior_end"):
             rec["balance"][period]["equity_component"] = None   # 자본요소가 있으면 equity_conflict
@@ -561,7 +562,7 @@ class ExtractInstrumentsTest(unittest.TestCase):
         inp["tables_text"] = "[T1] (separate) / 단위: (단위: 천원)\nr3 전환사채 | c1=1,000,000"
         msgs = build_messages(inp)
         self.assertEqual([m["role"] for m in msgs], ["system", "user"])
-        self.assertEqual(msgs[0]["content"], PROMPT_I6["system"])
+        self.assertEqual(msgs[0]["content"], PROMPT_I7["system"])
         for phrase in ("전환사채·신주인수권부사채·교환사채·상환전환우선주", "표 칸 id와 문장 id로만",
                        "null 또는 unconfirmed", "부채요소(주계약)와 전환권 파생상품부채는 다른 칸"):
             self.assertIn(phrase, msgs[0]["content"])
@@ -830,8 +831,8 @@ class ModelUsedTest(unittest.TestCase):
 
 class PromptExampleTest(unittest.TestCase):
     def test_example_has_no_synthetic_series_key(self):
-        self.assertNotIn("CB-?", PROMPT_I6["example"])
-        self.assertIn('"series_key": ""', PROMPT_I6["example"])
+        self.assertNotIn("CB-?", PROMPT_I7["example"])
+        self.assertIn('"series_key": ""', PROMPT_I7["example"])
         self.assertNotIn("CB-?", build_messages(_inp())[1]["content"])
 
 
@@ -1528,7 +1529,7 @@ class NonBalanceCellsTest(unittest.TestCase):
 
 class PromptI3Test(unittest.TestCase):
     def test_i3_version_and_rules(self):
-        self.assertEqual(PROMPT_VERSION, "i6")  # i3 규칙 문구는 i6 에도 남는다
+        self.assertEqual(PROMPT_VERSION, "i7")  # i3 규칙 문구는 i7 에도 남는다
         user = build_messages(_inp())[1]["content"]
         for phrase in ("1499943000 이 아니다", '"s:494"', "<표 id>:r<행>:v<번호>", "[current_end]",
                        "null 이 아닌 필드는 모두 evidence", "「전환권가치」", "「전환사채 및 조기상환권」",
@@ -1542,7 +1543,7 @@ class PromptI3Test(unittest.TestCase):
 
     def test_prompt_examples_pass_validator(self):
         """프롬프트 예시 출력이 지금 검증기를 통과한다(예시가 거부되는 근거를 가르치지 않는다)."""
-        for inp, rec in instruments_mod._EXAMPLE_CASES_I6:
+        for inp, rec in instruments_mod._EXAMPLE_CASES_I7:
             out, reasons = validate(copy.deepcopy(rec), inp)
             self.assertEqual(reasons, [], rec.get("series_key"))
             for f, ids in rec["evidence"].items():
@@ -1769,7 +1770,7 @@ class HolderSideSentenceTest(unittest.TestCase):
 
 class PromptI4Test(unittest.TestCase):
     def test_i4_version_and_rules(self):
-        self.assertEqual(PROMPT_VERSION, "i6")  # i6 가 i4 문구를 그대로 담는다
+        self.assertEqual(PROMPT_VERSION, "i7")  # i7 이 i4 문구를 그대로 담는다
         user = build_messages(_inp())[1]["content"]
         for phrase in ("equity_conflict", "자본요소", "회차가 다르", "만기", "이연법인세", "현금유입", "거래상대방",
                        "파생금융자산(부채)", "발행시", "비파생"):
@@ -2528,16 +2529,212 @@ class T9bFixRound4Test(unittest.TestCase):
         self.assertNotIn("not_balance:balance.current_end.face", reasons)
 
     def test_prompt_i6(self):
-        self.assertEqual(PROMPT_VERSION, "i6")
+        self.assertEqual(PROMPT_VERSION, "i7")  # i7 이 i6 문구를 그대로 담는다
         user = build_messages(_inp())[1]["content"]
         for phrase in ("발행회사에 대하여", "행사할 수 있는 권리", "매매목적으로 보유", "당사가 발행한", "부채 칸도",
                        "종속회사", "전환가치", "발행자의 매도청구권", "전환상환우선주-투자자 상환전환권",
                        "당사가 발행한 전환사채 및 관련 내재파생상품", "(주)에이투지엔터테인먼트"):
             self.assertIn(phrase, user)
 
+
+KINDS_ALL = ("CB", "BW", "EB", "RCPS")
+
+
+class T9bFixRound5Test(unittest.TestCase):
+    """fix round 5(R18): 일반 옵션 낱말 문장은 어느 종류에도 묶이지 않는다(분리 문장은 종류를 말하거나, 바로 앞 문장이 한 종류만
+    말하고 이어 쓰는 문장이어야 한다). 「부채요소와 자본요소로 분리」 마디는 다른 마디에 「파생」이 있어도 분리가 아니다.
+    option_class 문장·칸에도 보유자 낱말·보유자 공시 가드를 건다. 「X가 발행한」(X 가 자기 회사가 아님)·종속기업·관계기업
+    상품 문장은 분리·option_class 근거가 아니다. 「분리하여 공시하지 않」은 분리 진술이 아니다.
+    실제 문장은 build_input 출력에서 손으로 옮겼다."""
+
+    # 20260318001038:00761 s776·s777 — BW·EB 를 말하는 앞 문장과 일반 옵션 낱말 문장
+    S776 = ("회사가 발행한 복합금융상품은 발행자 또는 발행자가 지정하는 제3자의 매도청구권(콜옵션)이 포함되고 보유자의 선택에 의해 "
+            "상환을 요청할 수 있는 권리(풋옵션) 및 확정수량의 지분상품으로 전환될 수 있는 권리(전환권) 등이 포함되어 있는 "
+            "신주인수권부사채와 교환사채입니다.")
+    S777 = ("매도청구권(콜옵션)은 독립적으로 양도 가능하므로 별도의 파생상품자산으로 구분하여 인식하고 복합금융상품은 부채요소와 "
+            "자본요소로 분리하여 인식하고 있습니다.")
+    # 20260313001246:00760 s232·s233, 20260410000374:00761 s181·s182 — 같은 꼴
+    S232 = ("회사가 발행한 복합금융상품은 발행자의 조기상환청구권(콜옵션)이 포함되고 보유자의 선택에 의해 확정수량의 지분상품으로 "
+            "전환될 수 있는 권리(전환권) 등이 포함되어 있는 전환사채 입니다.")
+    S233 = ("조기상환청구권(콜옵션)은 별도의 파생상품자산으로 구분하여 인식하고 복합금융상품은 부채요소와 자본요소로 분리하여 "
+            "인식하고 있습니다.")
+    S182 = ("매도청구권(콜옵션)은 독립적으로 양도 가능하므로 별도의 파생상품자산으로 구분하여 인식하고 복합금융상품은 부채요소와 "
+            "자본요소로 분리하여 인식하고 있습니다.")
+    # 20260403001709:00760 s334 — 자본요소는 앞 마디, 분리는 뒤 마디(파생) — 그대로 분리
+    S334 = ("16. 전환상환우선주 전환상환우선주에 내재된 전환권 및 조기상환권은 자본요소에 해당하지 않으므로 금융부채로 "
+            "분류하였으며, 전환권 및 조기상환권이 내재파생상품의 분리조건을 모두 충족하므로 주계약에서 분리하여 별도의 "
+            "파생금융상품으로 회계처리하였습니다.")
+    # 20260319000958:00761 s1049·s1050 — (주2) 각주는 앞 문장을 이어 쓰지 않는다
+    S1049 = ("제4회 전환사채의 발행시 전환권대가는 시가가 하락할 경우 전환가액이 조정되는 리픽싱 조항이 포함되어 있지 않음에 따라 "
+             "자본잉여금으로 분류하였습니다.")
+    S1050 = ("(주2) 조기상환청구권은 하나의 주계약에 포함된 복수의 내재파생상품으로, 주계약과 분리하여 공정가치 평가를 수행하고 "
+             "있으며, 공정가치 평가에 따른 손익을 포괄손익계산서상 금융손익으로 계상하였습니다.")
+    # 20260325000468:00760 s142 — 보유자(기타대출채권) 문장
+    S142 = ("(*2) 기타대출채권으로 분류된 전환사채와 관련된 금액으로 전환사채에 포함된 전환권 및 조기상환청구권을 별도로 분리하여 "
+            "내재파생상품으로 인식한 후, 취득시점의 주계약의 공정가치와 전환사채 액면금액의 차이를 현재가치할인차금으로 "
+            "인식하였습니다.")
+    # 20260319001208:00760 s489 — 종속기업이 발행한 전환우선주에 대한 보증
+    S489 = ("(*2) 상기 이외에 종속기업인 오스틴제약(주)가 발행한 전환우선주와 관련하여 인수자에게 풋옵션(상환보증)을 제공하고 "
+            "있으며, 당기말 현재 -원(전기말 : 1,795,590,302원)을 파생금융부채로 계상하고 있습니다.")
+    # 20260408001182:00760 s292, 20260325001160:00760 s326 — 「분리하여 공시하지 않았습니다」
+    S292 = ("(*1) 당사의 파생상품 44,035,460천원(전기말: 24,291,728천원)은 상환전환우선주부채에 대한 내재파생상품으로 구성되어 "
+            "있으며 유동성위험에 대한 양적공시 목적으로 해당 파생상품은 별도로 분리하여 공시하지 않았습니다.")
+    S326 = ("(*2) 당사의 파생상품부채는 전액 상환전환우선주부채에 대한 내재파생상품으로 구성되어 있으며 유동성위험에 대한 양적공시 "
+            "목적으로 해당 파생상품은 별도로 분리하여 공시하지 않았습니다.")
+    GENERIC = "조기상환청구권은 주계약과 분리하여 파생상품부채로 인식하였습니다."
+
+    def _sep(self, kind, sid, sents, series_key=""):
+        return validate(_rec_emb("separated", [sid], kind=kind, series_key=series_key), _inp9b({}, sents))
+
+    def test_real_generic_sentence_ties_nothing(self):
+        for sents, sid in (({"s776": self.S776, "s777": self.S777}, "s777"), ({"s777": self.S777}, "s777"),
+                           ({"s232": self.S232, "s233": self.S233}, "s233"), ({"s182": self.S182}, "s182")):
+            for kind in KINDS_ALL:
+                out, reasons = self._sep(kind, sid, sents)
+                self.assertEqual(out["embedded_separation"], "unconfirmed", (sid, kind))
+                self.assertEqual(reasons, ["no_separation_ref"], (sid, kind))
+
+    def test_generic_sentence_continuation(self):
+        from dart_search_mcp.ledger.instrument_validate import _separation_kind
+        self.assertEqual(_separation_kind(self.GENERIC), "sep")
+        # 앞 문장 없음 → 어느 종류에도 묶이지 않는다
+        for kind in KINDS_ALL:
+            self.assertEqual(self._sep(kind, "s10", {"s10": self.GENERIC})[1], ["no_separation_ref"], kind)
+        # 바로 앞 문장이 한 종류만 말하면 그 종류에만
+        prev = {"s9": "회사는 2024년 중 제3회 전환사채를 발행하였습니다.", "s10": self.GENERIC}
+        out, reasons = self._sep("CB", "s10", prev, series_key="CB-3")
+        self.assertEqual((out["embedded_separation"], reasons), ("separated", []))
+        for kind in ("BW", "EB", "RCPS"):
+            self.assertEqual(self._sep(kind, "s10", prev)[1], ["no_separation_ref"], kind)
+        # 앞 문장의 회차도 본다
+        self.assertEqual(self._sep("CB", "s10", prev, series_key="CB-4")[1], ["no_separation_ref"])
+        # 앞 문장이 두 종류를 말하거나, 바로 앞이 아니거나, 이 문장이 새 항목(각주 표시)으로 시작하면 아니다
+        for sents, sid in (({"s9": "회사는 전환사채와 신주인수권부사채를 발행하였습니다.", "s10": self.GENERIC}, "s10"),
+                           ({"s8": "회사는 전환사채를 발행하였습니다.", "s10": self.GENERIC}, "s10"),
+                           ({"s9": "회사는 전환사채를 발행하였습니다.", "s10": "(*2) " + self.GENERIC}, "s10"),
+                           ({"s9": "(3) 전환사채", "s10": self.GENERIC}, "s10"),
+                           ({"s1049": self.S1049, "s1050": self.S1050}, "s1050")):
+            self.assertEqual(self._sep("CB", sid, sents)[1], ["no_separation_ref"], sents)
+        # 앞 문장이 조건문이면 이어 쓸 수 없다(20260326000446:00760 s184·s185 — 앞 문장은 전체 FVPL 지정 조건)
+        s184 = ("전환상환우선주의 전환권이 자본요소를 만족하지 못할 경우 전환권과 조기상환권을 부채로 분류하며, "
+                "당기손익-공정가치측정 금융부채로 지정하여 하나의 금융부채로 보아 최초 인식합니다.")
+        s185 = "복합파생상품으로 보아 함께 분리하여 최초 인식합니다."
+        self.assertEqual(self._sep("RCPS", "s185", {"s184": s184, "s185": s185})[1], ["no_separation_ref"])
+        # 앞 문장이 보유자·남의 상품이면 이어 쓴 문장도 아니다
+        for p in ("당사는 B사가 발행한 전환사채를 취득하였습니다.", "종속기업인 (주)가나가 발행한 전환사채가 있습니다."):
+            self.assertEqual(self._sep("CB", "s10", {"s9": p, "s10": self.GENERIC})[1], ["no_separation_ref"], p)
+        # 종류를 말하는 문장은 그대로(S391·S1179·s334)
+        for kind, sid, text in (("CB", "s391", S391), ("CB", "s1179", S1179), ("RCPS", "s334", self.S334)):
+            out, reasons = self._sep(kind, sid, {sid: text})
+            self.assertEqual((out["embedded_separation"], reasons), ("separated", []), sid)
+
+    def test_generic_not_separated_sentence(self):
+        # 분리하지 않았다는 일반 옵션 낱말 문장도 종류를 말해야 not_separated 근거다
+        text = "조기상환청구권은 주계약과 밀접하게 관련되어 있어 분리하지 않았습니다."
+        out, reasons = validate(_rec_emb("not_separated", ["s10"], series_key=""), _inp9b({}, {"s10": text}))
+        self.assertEqual(reasons, ["no_separation_ref"])
+        out, reasons = validate(_rec_emb("not_separated", ["s10"], series_key=""),
+                                _inp9b({}, {"s9": "회사는 전환사채를 발행하였습니다.", "s10": text}))
+        self.assertEqual((out["embedded_separation"], reasons), ("not_separated", []))
+        # 모순 검사는 넓게 그대로: 일반 옵션 낱말 분리 문장이 입력에 있으면 not_separated 는 아니다
+        out, reasons = validate(_rec_emb("not_separated", ["s13"], series_key=""),
+                                _inp9b({}, {"s13": "전환사채에 내재된 조기상환청구권은 분리하지 않았습니다.",
+                                            "s40": self.GENERIC}))
+        self.assertEqual(reasons, ["no_separation_ref"])
+
+    def test_equity_split_clause(self):
+        from dart_search_mcp.ledger.instrument_validate import _separation_kind
+        for t in (self.S777, self.S233, self.S182):
+            self.assertIsNone(_separation_kind(t), t[:20])
+        self.assertEqual(_separation_kind(self.S334), "sep")
+        self.assertEqual(_separation_kind("전환사채는 부채요소와 자본요소로 분리하여 인식하고, 조기상환청구권은 주계약과 분리하여 "
+                                          "파생상품부채로 인식하였습니다."), "sep")
+        self.assertIsNone(_separation_kind("전환사채의 콜옵션은 파생상품자산으로 인식하며 전환사채는 부채요소와 자본요소로 "
+                                           "분리하여 인식합니다."))
+        # BW 앞 문장(S232 은 CB 한 종류)이 있어도 자본 분리 마디는 분리가 아니다
+        self.assertEqual(self._sep("CB", "s233", {"s232": self.S232, "s233": self.S233})[1], ["no_separation_ref"])
+
+    def test_option_class_holder_guard(self):
+        def oc(ids, cells, sents, kind="CB"):
+            rec = {"instrument": "전환사채", "series_key": f"{kind}-3", "kind": kind, "balance": {},
+                   "option_class": "derivative_liability", "embedded_separation": None, "evidence": {"option_class": ids}}
+            return validate(rec, _inp9b(cells, sents))
+        # 실제 s142(보유자 낱말·보유자 공시) → 아니다
+        out, reasons = oc(["s142"], {}, {"s142": self.S142})
+        self.assertEqual((out["option_class"], reasons), ("unconfirmed", ["no_derivative_ref"]))
+        # 보유자 낱말만(공시 가드 없이)도 아니다
+        out, reasons = oc(["s1"], {}, {"s1": "당사가 취득한 상품의 전환권은 파생상품부채로 분류하였습니다."})
+        self.assertEqual(reasons, ["no_derivative_ref"])
+        # 보유자 공시: 발행자를 적지 않은 문장은 아니고, 「당사가 발행한」 문장은 된다
+        holder = "당사는 파생상품을 포함한 전환사채 및 신주인수권부사채를 매매목적으로 보유하고 있습니다."
+        plain = "전환사채의 전환권은 파생상품부채로 분류하였습니다."
+        named = "당사가 발행한 전환사채의 전환권은 파생상품부채로 분류하였습니다."
+        self.assertEqual(oc(["s2"], {}, {"s2": plain})[0]["option_class"], "derivative_liability")
+        self.assertEqual(oc(["s2"], {}, {"s1": holder, "s2": plain})[1], ["no_derivative_ref"])
+        self.assertEqual(oc(["s2"], {}, {"s1": holder, "s2": named})[0]["option_class"], "derivative_liability")
+        # 종류가 다른 문장은 아니다(전환권 → CB·RCPS)
+        self.assertEqual(oc(["s2"], {}, {"s2": plain}, kind="BW")[1], ["no_derivative_ref"])
+        # 칸: 투자 대상 이름·회사 이름·보유자 제목 표(보유자 공시)는 아니다
+        tt = "당기말 현재 파생상품부채의 내역은 다음과 같습니다."
+        own = _rcell(500, "제3회 전환사채 전환권", col="당기말", tt=tt, nt="파생상품", n_value_cols=1)
+        self.assertEqual(oc(["A:r1:c1"], {"A:r1:c1": own}, {})[0]["option_class"], "derivative_liability")
+        bad_cells = (_rcell(500, "B사 전환사채의 전환권 등", col="파생상품부채", tt=tt, nt="파생상품", n_value_cols=1),
+                     _rcell(500, "(주)가나 전환사채 전환권", col="파생상품부채", tt=tt, nt="파생상품", n_value_cols=1),
+                     _rcell(500, "전환사채 전환권", col="파생상품부채", nt="파생상품", n_value_cols=1,
+                            tt="보고기간종료일 현재 당사가 보유하고 있는 파생상품의 내역은 다음과 같습니다."))
+        for c in bad_cells:
+            self.assertEqual(oc(["A:r1:c1"], {"A:r1:c1": c}, {})[1], ["no_derivative_ref"], c["label"])
+        # 보유자 공시의 부채 칸: 발행자 문장이 있거나 표 제목이 「당사가 발행한」이면 된다
+        self.assertEqual(oc(["A:r1:c1"], {"A:r1:c1": own}, {"s1": holder})[1], ["no_derivative_ref"])
+        self.assertEqual(oc(["A:r1:c1"], {"A:r1:c1": own}, {"s1": holder, "s2": named})[0]["option_class"],
+                         "derivative_liability")
+        own_t = _rcell(500, "제3회 전환사채 전환권", col="파생상품부채", nt="파생상품", n_value_cols=1,
+                       tt="당기말 현재 당사가 발행한 전환사채 및 관련 내재파생상품의 세부내역")
+        self.assertEqual(oc(["A:r1:c1"], {"A:r1:c1": own_t}, {"s1": holder})[0]["option_class"], "derivative_liability")
+
+    def test_non_self_issuer(self):
+        from dart_search_mcp.ledger.instrument_validate import _non_self_issuer
+        out, reasons = self._sep("RCPS", "s489", {"s489": self.S489})
+        self.assertEqual((out["embedded_separation"], reasons), ("unconfirmed", ["no_separation_ref"]))
+        for t in (self.S489, "종속기업이 발행한 전환사채의 전환권은 분리하여 파생상품부채로 인식하였습니다.",
+                  "관계기업인 가나바이오가 발행한 상환전환우선주의 전환권은 파생상품부채로 분류하였습니다.",
+                  "B사가 발행한 전환사채의 조기상환청구권은 분리하여 파생상품부채로 인식하였습니다.",
+                  "투자회사가 발행한 전환사채", "B사의 전환사채에 내재된 전환권은 분리하여 파생상품부채로 인식하였습니다.",
+                  "종속기업의 전환사채에 내재된 전환권은 분리하여 파생상품부채로 인식하였습니다."):
+            self.assertTrue(_non_self_issuer(t), t[:25])
+        for t in (S391, S1179, T9bFixRound4Test.S419, self.S334,
+                  "당사가 발행한 전환사채의 전환권은 분리하여 파생상품부채로 인식하였습니다.",
+                  "회사가 2024년 중 발행한 전환사채의 전환권은 파생상품부채로 분류하였습니다.",
+                  "지배기업이 발행한 상환전환우선주의 전환권은 파생상품부채로 분류하였습니다.",
+                  "주식회사 가나(이하 '회사')가 발행한 전환사채는 다음과 같습니다."):
+            self.assertFalse(_non_self_issuer(t), t[:25])
+        # option_class 문장도 같다
+        rec = {"instrument": "전환사채", "series_key": "", "kind": "CB", "balance": {}, "option_class": "derivative_liability",
+               "embedded_separation": None, "evidence": {"option_class": ["s1"]}}
+        out, reasons = validate(rec, _inp9b({}, {"s1": "종속기업이 발행한 전환사채의 전환권은 파생상품부채로 분류하였습니다."}))
+        self.assertEqual(reasons, ["no_derivative_ref"])
+
+    def test_not_disclosed_separately_is_not_separation(self):
+        from dart_search_mcp.ledger.instrument_validate import _separation_kind
+        for t in (self.S292, self.S326):
+            self.assertIsNone(_separation_kind(t), t[:20])
+            self.assertEqual(self._sep("RCPS", "s1", {"s1": t})[1], ["no_separation_ref"])
+        self.assertIsNone(_separation_kind("상환전환우선주의 파생상품은 별도로 분리하여 표시하지 않았습니다."))
+        # 다른 마디가 분리를 말하면 그 마디가 정한다
+        self.assertEqual(_separation_kind("상환전환우선주의 전환권은 주계약과 분리하여 파생상품부채로 인식하였으며, 만기분석에서는 "
+                                          "해당 파생상품을 별도로 분리하여 공시하지 않았습니다."), "sep")
+
+    def test_prompt_i7(self):
+        self.assertEqual(PROMPT_VERSION, "i7")
+        user = build_messages(_inp())[1]["content"]
+        for phrase in ("바로 앞 문장", "부채요소와 자본요소로 분리", "분리하여 공시하지 않", "오스틴제약(주)가 발행한",
+                       "종속기업", "지배력을 취득", "option_class 근거도", "취득(취득시점·취득한·취득하여·지배력을 취득 등 「취득」이 든 모든 말)"):
+            self.assertIn(phrase, user)
+
+
 class PromptI5Test(unittest.TestCase):
     def test_i5_version_and_rules(self):
-        self.assertEqual(PROMPT_VERSION, "i6")  # i6 가 i5 문구를 그대로 담는다
+        self.assertEqual(PROMPT_VERSION, "i7")  # i7 이 i5 문구를 그대로 담는다
         user = build_messages(_inp())[1]["content"]
         for phrase in ("계약상현금흐름", "합계 열", "취득일 현재", "발행조건", "자본금", "상각후원가측정금융부채",
                        "신주인수권부사채", "no_separation_ref", "분리하여", "자본부분", "당기손익-공정가치 측정 금융부채로 지정",
