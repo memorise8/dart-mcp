@@ -254,6 +254,107 @@ class FilingTablesTest(unittest.TestCase):
         t = build_filing_tables("X", [("x.xml", doc.encode())], {})[1]
         self.assertEqual(t["title"], "재무상태표 상 부채 당기말 전기말")
 
+    # ---- T5: 표 단위 기간 표지 ----
+    def _periods(self, doc):
+        return [[c["period"] for c in t["columns"] if c["role"] == "value"]
+                for t in build_filing_tables("X", [("x.xml", doc.encode())], {}) if any(c["role"] == "value" for c in t["columns"])]
+
+    _MOVE = ("<TABLE BORDER=\"1\"><THEAD><TR><TH>구분</TH><TH>산업재산권</TH><TH>소프트웨어</TH></TR></THEAD>"
+             "<TBODY><TR><TD>기초</TD><TD>1</TD><TD>2</TD></TR><TR><TD>취득</TD><TD>3</TD><TD>4</TD></TR></TBODY></TABLE>")
+
+    def test_korean_angle_marker_paragraph_kept(self):  # 원문 <P><당기></P>는 태그가 아니라 글이다
+        doc = ("<DOCUMENT><BODY><P>(2) 당기와 전기 중 무형자산의 변동은 다음과 같습니다.</P><P><당기></P><P>(단위: 원)</P>"
+               + self._MOVE + "<P><전기></P><P>(단위: 원)</P>" + self._MOVE + "</BODY></DOCUMENT>")
+        self.assertEqual(self._periods(doc), [["current_period"] * 2, ["prior_period"] * 2])
+
+    def test_korean_angle_marker_header_cell_kept(self):
+        doc = ("<DOCUMENT><BODY><P>(단위: 원)</P><TABLE BORDER=\"1\"><THEAD><TR><TH>구분</TH><TH><당기말></TH><TH><전기말></TH></TR></THEAD>"
+               "<TBODY><TR><TD>현금</TD><TD>1</TD><TD>2</TD></TR></TBODY></TABLE></BODY></DOCUMENT>")
+        t = build_filing_tables("X", [("x.xml", doc.encode())], {})[0]
+        self.assertEqual([c["period"] for c in t["columns"] if c["role"] == "value"], ["current_end", "prior_end"])
+        self.assertEqual(t["columns"][1]["header_path"], ["〈당기말〉"])
+
+    def test_borderless_unit_table_passes_on_preceding_context(self):
+        unit = "<TABLE BORDER=\"0\"><TBODY><TR><TD>(단위: 천원)</TD></TR></TBODY></TABLE>"
+        doc = "<DOCUMENT><BODY><P>(1) 당기</P>" + unit + self._MOVE + "</BODY></DOCUMENT>"
+        self.assertEqual(self._periods(doc), [["current_period"] * 2])
+        plan = ("<TABLE BORDER=\"1\"><THEAD><TR><TH>구분</TH><TH>2026년</TH><TH>2027년</TH></TR></THEAD>"
+                "<TBODY><TR><TD>장기차입금</TD><TD>10</TD><TD>20</TD></TR></TBODY></TABLE>")
+        doc = "<DOCUMENT><BODY><P>(2) 당기말 현재 장기차입금의 연도별 상환계획은 다음과 같습니다.</P>" + unit + plan + "</BODY></DOCUMENT>"
+        tabs = build_filing_tables("X", [("x.xml", doc.encode())], {})
+        self.assertEqual([c["period"] for c in tabs[1]["columns"] if c["role"] == "value"], ["current_end"] * 2)
+        self.assertTrue(tabs[1]["title"].startswith("(2) 당기말 현재"))
+        # 테두리 있는 앞 표의 문맥은 넘겨받지 않는다
+        doc = "<DOCUMENT><BODY><P>(1) 당기</P>" + self._MOVE + self._MOVE + "</BODY></DOCUMENT>"
+        self.assertEqual(self._periods(doc), [["current_period"] * 2, ["unknown"] * 2])
+
+    def test_paired_table_inherits_unit_across_marker(self):  # 「(단위: 천원) 〈당기〉 표 〈전기〉 표」
+        doc = ("<DOCUMENT><BODY><TITLE>주석</TITLE><P>1. 일반사항</P><P>회사는 설립되었습니다.</P>"
+               "<P>5. 유형자산</P><P>(1) 변동내역은 다음과 같습니다.</P><P>(단위: 천원)</P><P>〈당기〉</P>" + self._MOVE
+               + "<P>② 전기</P>" + self._MOVE + "<P>(2) 담보 내역은 다음과 같습니다.</P>" + self._MOVE + "</BODY></DOCUMENT>")
+        doc = doc.replace("〈", "<").replace("〉", ">")
+        tabs = build_filing_tables("X", [("x.xml", doc.encode())], {})
+        self.assertEqual([t["checks"]["unit_found"] for t in tabs], [True, True, False])
+        self.assertEqual(tabs[1]["unit"]["multiplier"], 1000)
+        self.assertEqual(tabs[1]["rows"][0]["cells"][0]["value_krw"], 1000)
+
+    def test_sum_within_rowspan_group(self):  # 감사참여자 표: 「투입시간」 묶음의 합계는 그 묶음 행만 더한다
+        doc = ("<DOCUMENT><BODY><P>(단위 : 명, 시간)</P><TABLE BORDER=\"1\"><THEAD><TR><TH COLSPAN=\"2\">구분</TH><TH>당기</TH></TR></THEAD><TBODY>"
+               "<TR><TD COLSPAN=\"2\">투입 인원수</TD><TD>6</TD></TR>"
+               "<TR><TD ROWSPAN=\"3\">투입시간</TD><TD>분ㆍ반기검토</TD><TD>-</TD></TR>"
+               "<TR><TD>감사</TD><TD>197</TD></TR><TR><TD>합계</TD><TD>197</TD></TR></TBODY></TABLE></BODY></DOCUMENT>")
+        t = build_filing_tables("X", [("x.xml", doc.encode())], {})[0]
+        self.assertEqual(t["rows"][-1]["kind"], "total")
+        self.assertTrue(t["checks"]["sum_ok"])
+        bad = doc.replace("<TD>197</TD></TR><TR><TD>합계</TD><TD>197</TD>", "<TD>197</TD></TR><TR><TD>합계</TD><TD>200</TD>")
+        self.assertFalse(build_filing_tables("X", [("x.xml", bad.encode())], {})[0]["checks"]["sum_ok"])
+
+    def test_sum_uses_total_level_run(self):  # 손익계산서 「계」(ALEVEL 2) = 바로 위 같은 단계 행들
+        doc = ('<DOCUMENT><BODY><P>(단위: 원)</P><TABLE ACLASS="FINANCE"><THEAD><TR><TH>과 목</TH><TH>제 5(당) 기</TH></TR></THEAD><TBODY>'
+               '<TR><TE ALEVEL="0">Ⅰ.매출액</TE><TE>500</TE></TR>'
+               '<TR><TE ALEVEL="1">제품매출원가</TE><TE>300</TE></TR>'
+               '<TR><TE ALEVEL="2">1.기초제품재고액</TE><TE>100</TE></TR>'
+               '<TR><TE ALEVEL="2">2.당기제품제조원가</TE><TE>250</TE></TR>'
+               '<TR><TE ALEVEL="2">계</TE><TE>350</TE></TR>'
+               '<TR><TE ALEVEL="2">3.기말제품재고액</TE><TE>(50)</TE></TR></TBODY></TABLE></BODY></DOCUMENT>')
+        t = build_filing_tables("X", [("x.xml", doc.encode())], {})[0]
+        self.assertEqual([r["kind"] for r in t["rows"]][4], "total")
+        self.assertTrue(t["checks"]["sum_ok"])
+        self.assertFalse(build_filing_tables("X", [("x.xml", doc.replace("<TE>350</TE>", "<TE>360</TE>").encode())], {})[0]["checks"]["sum_ok"])
+
+    def test_level_run_does_not_break_blank_parent_sections(self):  # 회귀: 「〈단기금융상품〉」 빈 머리 행 사이 합계
+        doc = ("<DOCUMENT><BODY><P>(단위: 천원)</P><TABLE BORDER=\"1\"><THEAD><TR><TH>구분</TH><TH>당기말</TH></TR></THEAD><TBODY>"
+               "<TR><TD>법정적립금 :</TD><TD></TD></TR><TR><TD>  이익준비금</TD><TD>135</TD></TR>"
+               "<TR><TD>임의적립금 :</TD><TD></TD></TR><TR><TD>  사업확정적립금</TD><TD>300</TD></TR>"
+               "<TR><TD>  합 계</TD><TD>435</TD></TR></TBODY></TABLE></BODY></DOCUMENT>")
+        self.assertTrue(build_filing_tables("X", [("x.xml", doc.encode())], {})[0]["checks"]["sum_ok"])
+
+    def _sum_doc(self, rows):
+        body = "".join(f"<TR><TD>{a}</TD><TD>{b}</TD></TR>" for a, b in rows)
+        doc = ("<DOCUMENT><BODY><P>(단위: 천원)</P><TABLE BORDER=\"1\"><THEAD><TR><TH>구분</TH><TH>당기말</TH></TR></THEAD>"
+               f"<TBODY>{body}</TBODY></TABLE></BODY></DOCUMENT>")
+        return build_filing_tables("X", [("x.xml", doc.encode())], {})[0]["checks"]["sum_ok"]
+
+    def test_running_total_after_adjustment(self):  # 「계 / 차감:유동성대체 / 계」
+        self.assertTrue(self._sum_doc([("시설자금", "11,377"), ("일반자금", "156"), ("계", "11,533"),
+                                       ("차감:유동성대체", "(9,740)"), ("계", "1,793")]))
+        self.assertFalse(self._sum_doc([("시설자금", "11,377"), ("일반자금", "156"), ("계", "11,533"),
+                                        ("차감:유동성대체", "(9,740)"), ("계", "1,800")]))
+
+    def test_consecutive_totals_by_currency_not_judged_by_carry(self):  # 「합계 KRW / 합계 USD」 연달은 합계
+        self.assertTrue(self._sum_doc([("기업은행", "500"), ("국민은행", "500"), ("합 계", "1,000"), ("합 계", "300")]))
+
+    def test_subtotal_of_children_after_blank_parent(self):  # 「급여비용: (빈 칸) / 근무원가 / 이자비용 / 소계」
+        self.assertTrue(self._sum_doc([("기초 부채", "7,233"), ("급여비용:", ""), ("  근무원가", "943"),
+                                       ("  이자비용", "229"), ("  재측정요소", "(4,509)"), ("소계", "(3,337)")]))
+
+    def test_subtotal_spanning_two_groups_still_ok(self):  # 소계가 앞 묶음까지 더한 원문 — 묶음 안·밖 어느 쪽이든 맞으면 통과
+        doc = ("<DOCUMENT><BODY><P>(단위: 천원)</P><TABLE BORDER=\"1\"><THEAD><TR><TH COLSPAN=\"2\">구분</TH><TH>당기말</TH></TR></THEAD><TBODY>"
+               "<TR><TD ROWSPAN=\"1\">채무상품</TD><TD>A</TD><TD>10</TD></TR>"
+               "<TR><TD ROWSPAN=\"3\">지분상품</TD><TD>B</TD><TD>20</TD></TR><TR><TD>C</TD><TD>30</TD></TR><TR><TD>소계</TD><TD>60</TD></TR>"
+               "</TBODY></TABLE></BODY></DOCUMENT>")
+        self.assertTrue(build_filing_tables("X", [("x.xml", doc.encode())], {})[0]["checks"]["sum_ok"])
+
     def test_read_failed_keeps_raw_text(self):
         t = build_filing_tables("X", [("x.xml", RAGGED_DOC.encode())], {})[0]
         self.assertEqual(t["status"], "read_failed"); self.assertIn("raw_text", t)

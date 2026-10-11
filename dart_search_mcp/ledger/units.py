@@ -8,11 +8,13 @@ from .periods import ColumnInfo
 
 Kind = Literal["krw", "foreign", "shares", "percent", "count", "unknown"]
 
-_UNIT_RE = re.compile(r"\(\s*단\s*위\s*[:：]?\s*([^)]*)\)")
+# 「(단위: 천원)」, 앞말이 붙은 「(원화단위: 천원)」, 여는 괄호가 빠진 「단위:천원)」(쌍점 필수)
+_UNIT_RE = re.compile(r"\([^()]{0,6}?단\s*위\s*[:：]?\s*([^)]*)\)|단\s*위\s*[:：]\s*([^)\n]*)\)?")
 _PAREN_RE = re.compile(r"\(([^()]*)\)\s*$")
 _KRW_RE = re.compile(r"(십억|백만|천|억)?\s*원")
 _FOREIGN_RE = re.compile(r"(천|백만)?\s*(USD|EUR|JPY|CNY|외화)", re.I)
-_COUNT_RE = re.compile(r"^(명|개|건|매)$")
+_COUNT_WORD = r"(?:명|개|건|매|시간|일|회|개월|년)"
+_COUNT_RE = re.compile(rf"^{_COUNT_WORD}(?:,{_COUNT_WORD})*$")
 _KRW_MULT = {None: 1, "천": 1_000, "백만": 1_000_000, "십억": 1_000_000_000, "억": 100_000_000}
 _FOREIGN_MULT = {None: 1, "천": 1_000, "백만": 1_000_000}
 
@@ -56,7 +58,7 @@ def table_unit(context: str, header_text: str, doc_default: Unit | None) -> tupl
     """표 직전 문구(context)·머리글 문구에서 마지막 「(단위: …)」를 읽는다. (단위, unit_found)."""
     for text in (context, header_text):
         for m in reversed(list(_UNIT_RE.finditer(text or ""))):
-            u = _parse(m.group(1), m.group(0))
+            u = _parse(m.group(1) if m.group(1) is not None else m.group(2), m.group(0))
             if u is not None:
                 return u, True
     return (doc_default or UNKNOWN), False

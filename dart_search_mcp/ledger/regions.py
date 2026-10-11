@@ -14,6 +14,7 @@ import re
 from dataclasses import dataclass
 
 from . import _dart_agent
+from .grid import clean_text
 
 TABLE_RE = re.compile(r"<TABLE(?=[\s>])([^>]*)>(.*?)</TABLE>", re.S | re.I)
 P_RE = re.compile(r"<P\b[^>]*>(.*?)</P>", re.S | re.I)
@@ -47,6 +48,7 @@ class Spot:
     title_p: str | None
     context: str
     footnotes: list[dict]
+    lead: str = ""  # 바로 붙은 테두리 없는 앞 표(단위·제목 표)가 넘겨준 그 앞 문맥
 
 
 @dataclass
@@ -57,7 +59,7 @@ class FileScan:
 
 
 def plain(s: str) -> str:
-    return _dart_agent.fs_table().clean_text(s)
+    return clean_text(s)
 
 
 def _squash(s: str) -> str:
@@ -165,11 +167,15 @@ def _title_and_context(text: str, gap_start: int, start: int, prev_xml: str | No
     ctx = paras[-CONTEXT_PARAS:]
     gap_plain = plain(text[gap_start:start])
     # 바로 붙은 테두리 없는 제목 표(「재무상태표 / 제 n 기 … / (단위: 원)」)는 문맥에 넣는다
-    if prev_xml is not None and not gap_plain and _BORDER0_RE.search(prev_xml[:300]):
+    if _borderless_adjacent(prev_xml, gap_plain):
         ctx = [plain(prev_xml)] + ctx
     elif not paras and gap_plain:
         ctx = [gap_plain[-500:]]
-    return title, " ".join(ctx)
+    return title, "\n".join(ctx)  # 줄 = 문단(마지막 줄이 표 단위 기간 표지일 수 있다)
+
+
+def _borderless_adjacent(prev_xml: str | None, gap_plain: str) -> bool:
+    return prev_xml is not None and not gap_plain and bool(_BORDER0_RE.search(prev_xml[:300]))
 
 
 def scan_file(text: str) -> FileScan:
@@ -206,9 +212,15 @@ def scan_file(text: str) -> FileScan:
         elif _in(auditor, pos):
             region["kind"] = "auditor_report"
         gap_start = tables[i - 1].end() if i else 0
-        title, context = _title_and_context(text, gap_start, pos, tables[i - 1].group(0) if i else None)
+        prev_xml = tables[i - 1].group(0) if i else None
+        title, context = _title_and_context(text, gap_start, pos, prev_xml)
+        lead = ""
+        if i and _borderless_adjacent(prev_xml, plain(text[gap_start:pos])):
+            prev = spots[i - 1]  # 단위·제목 표 앞 문장이 이 표의 제목·문맥이다
+            lead = "\n".join(x for x in (prev.lead, prev.context) if x)
+            title = title or prev.title_p
         spots.append(Spot(i, pos, m.end(), m.group(0), page(pos), region, title, context,
-                          _footnotes(text, m.end())))
+                          _footnotes(text, m.end()), lead))
 
     paragraphs = []
     for m in P_RE.finditer(text):

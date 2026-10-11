@@ -41,6 +41,7 @@ class _RawCell:
     rowspan: int
     colspan: int
     is_header: bool
+    is_te: bool = False
 
 
 def _span(pattern: re.Pattern[str], attrs: str) -> int:
@@ -48,8 +49,15 @@ def _span(pattern: re.Pattern[str], attrs: str) -> int:
     return int(m.group(1)) if m else 1
 
 
+_PSEUDO_TAG_RE = re.compile(r"<\s*([가-힣][^<>]{0,30}?)\s*>")
+
+
+def clean_text(s: str) -> str:
+    """fs_table.clean_text 앞에 한글 꺾쇠 표지(원문 「<당기>」「<금융자산>」 — 태그가 아니라 글)를 〈…〉로 지킨다."""
+    return _dart_agent.fs_table().clean_text(_PSEUDO_TAG_RE.sub(r"〈\1〉", s or ""))
+
+
 def _raw_rows(xml: str) -> list[list[_RawCell]]:
-    clean_text = _dart_agent.fs_table().clean_text
     rows: list[list[_RawCell]] = []
     for tr in _TR_RE.finditer(xml):
         cells = [
@@ -58,6 +66,7 @@ def _raw_rows(xml: str) -> list[list[_RawCell]]:
                 _span(_ROWSPAN_RE, m.group(2)),
                 _span(_COLSPAN_RE, m.group(2)),
                 m.group(1).upper() == "TH",
+                m.group(1).upper() == "TE",
             )
             for m in _CELL_RE.finditer(tr.group(1))
         ]
@@ -117,6 +126,18 @@ def _header_rows(grid_rows: list[list[Cell]], thead_rows: int) -> int:
     return min(count, len(grid_rows) - 1)  # 본문 행이 최소 하나는 남아야 한다
 
 
+def _finance_td_header_rows(raw: list[list[_RawCell]], grid_rows: list[list[Cell]]) -> int:
+    """THEAD 없는 FINANCE 표에서 TE 칸이 하나도 없고 금액도 없는 앞 행들(감사참여자 표처럼 머리글은 TD, 숫자는 TE).
+    본문 재무제표(모든 행이 TE)는 0 그대로다."""
+    parse_amount = _dart_agent.fs_table().parse_amount
+    count = 0
+    for r, row in enumerate(raw[:MAX_HEADER_ROWS]):
+        if any(c.is_te for c in row) or any(parse_amount(c.text) is not None for c in grid_rows[r]):
+            break
+        count += 1
+    return min(count, len(grid_rows) - 1)
+
+
 def parse_table(table_xml: str) -> Grid | None:
     """표 XML → Grid. 열 수를 맞출 수 없으면 None."""
     raw = _raw_rows(table_xml)
@@ -129,7 +150,7 @@ def parse_table(table_xml: str) -> Grid | None:
     if expanded is None or _ragged(raw, expanded):
         return None
     if fmt == "FINANCE":
-        header_rows = 0
+        header_rows = 0 if _THEAD_RE.search(table_xml) else _finance_td_header_rows(raw, expanded)
     else:
         thead_rows = 0
         for m in _THEAD_RE.finditer(table_xml):

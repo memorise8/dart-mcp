@@ -13,11 +13,11 @@ from pathlib import Path
 
 from . import _dart_agent
 from .grid import _CELL_RE, _THEAD_RE, _TR_RE, Grid, parse_table
-from .periods import classify_columns
+from .periods import classify_columns, marker_only
 from .regions import Spot, plain, scan_file
 from .units import Unit, column_units, own_column_units, same_unit, table_unit, value_krw
 
-PARSER_VERSION = "ledger-t1"
+PARSER_VERSION = "ledger-t2"
 
 _SCOPE_RE = re.compile(r"_(\d{5})\.xml$", re.I)
 _TOTAL_RE = re.compile(r"^(합\s*계|총\s*계|계)$")
@@ -164,6 +164,7 @@ def _sum_ok(rows: list[dict], value_cols: list[int]) -> bool | None:
     """total·subtotal 행 = 바로 위 같은 단계 item 합(열별). 소계 뒤 합계는 소계들 + 마지막 소계 뒤 item 합."""
     results: list[bool] = []
     seg_start = sub_start = 0
+    prev_total: dict | None = None
     for i, row in enumerate(rows):
         if row["kind"] == "item":
             continue
@@ -175,18 +176,59 @@ def _sum_ok(rows: list[dict], value_cols: list[int]) -> bool | None:
             last = max((k for k, r in enumerate(seg) if r["kind"] == "subtotal"), default=-1)
             items = seg[last + 1:]
         items = [r for r in items if r["kind"] == "item"]
+        # 해석 셋 중 하나라도 맞으면 통과: 구간 전체 / ROWSPAN 묶음 안(「투입시간 / 합계」) /
+        # 합계 행과 같은 단계로 바로 위에 이어진 행들(손익계산서 「계」 ALEVEL 2)
+        # 바로 앞 빈 머리 행(「급여비용:」) 아래 행들 / 앞 합계 + 그 뒤 조정 행(「계 / 차감:유동성대체 / 계」)
+        readings = [(subs, items), (_same_group(row, subs), _same_group(row, items)), (subs, _level_run(row, items)),
+                    ([], _after_blank_parent(items, value_cols))]
+        carry = [prev_total] if prev_total is not None and row["kind"] == "total" and not subs and items else []
         for c in value_cols:
             total = _cell_value(row, c)
             if total is None:
                 continue
-            parts = [_cell_value(r, c) for r in subs if _cell_value(r, c) is not None]
-            parts += _top_values([(r["level"], _cell_value(r, c)) for r in items])
-            if parts:
-                results.append(abs(sum(parts) - total) <= SUM_TOLERANCE)
+            sums = []
+            for r_subs, r_items in readings + ([(carry, items)] if carry else []):
+                parts = [_cell_value(r, c) for r in r_subs if _cell_value(r, c) is not None]
+                parts += _top_values([(r["level"], _cell_value(r, c)) for r in r_items])
+                if parts:
+                    sums.append(sum(parts))
+            if sums:
+                results.append(any(abs(x - total) <= SUM_TOLERANCE for x in sums))
         sub_start = i + 1
         if row["kind"] == "total":
             seg_start = i + 1
+            prev_total = row
     return all(results) if results else None
+
+
+def _after_blank_parent(items: list[dict], value_cols: list[int]) -> list[dict]:
+    """마지막 빈 머리 행(값 칸이 모두 빈 item) 뒤 행들. 빈 머리 행이 없거나 맨 끝이면 []."""
+    blank = [k for k, r in enumerate(items) if all(_cell_value(r, c) is None for c in value_cols)]
+    if not blank or blank[-1] == len(items) - 1:
+        return []
+    return items[blank[-1] + 1:]
+
+
+def _level_run(total: dict, items: list[dict]) -> list[dict]:
+    """합계 행이 item들보다 깊은 단계면(손익계산서 「계」 ALEVEL 2) 바로 위로 이어진 그 단계 이상 행들만."""
+    if not items or total["level"] <= min(r["level"] for r in items):
+        return items
+    run: list[dict] = []
+    for r in reversed(items):
+        if r["level"] < total["level"]:
+            break
+        run.append(r)
+    return list(reversed(run)) or items
+
+
+def _same_group(total: dict, rows: list[dict]) -> list[dict]:
+    """합계 행이 ROWSPAN 묶음 안에 있으면(label_path 「투입시간 / 합계」) 같은 묶음(첫 레이블이 같은) 행만.
+    같은 묶음 행이 없으면 그대로."""
+    path = total.get("label_path") or []
+    if len(path) < 2:
+        return rows
+    mine = [r for r in rows if (r.get("label_path") or [None])[0] == path[0]]
+    return mine or rows
 
 
 def _top_values(items: list[tuple[int, object]]) -> list:
@@ -263,7 +305,10 @@ def _title_fallback(grid: Grid) -> str | None:
     return None
 
 
-def _table_record(spot: Spot, base: dict, doc_unit: Unit | None, period_end: str | None) -> tuple[dict, Unit | None]:
+def _table_record(spot: Spot, base: dict, doc_unit: Unit | None, period_end: str | None,
+                  pair_unit: Unit | None = None) -> tuple[dict, Unit | None]:
+    """pair_unit: 같은 주석의 바로 앞 표가 찾은 단위. 이 표 앞 글이 비었거나 「〈전기〉」 표지뿐이면(당기·전기로 나뉜
+    한 공시 표) 그 단위를 이어받는다."""
     rec = dict(base)
     rec.update(page=spot.page, region=spot.region, title=spot.title_p, footnotes=spot.footnotes)
     grid = parse_table(spot.xml)
@@ -276,9 +321,13 @@ def _table_record(spot: Spot, base: dict, doc_unit: Unit | None, period_end: str
     if not rec["title"]:
         rec["title"] = _title_fallback(grid)
     # FINANCE 기수 순서는 THEAD(「제 26(당) 기 / 제 25(전) 기」)에서, 없으면 표 앞 제목 표에서 읽는다
-    context = (header_text or spot.context) if grid.fmt == "FINANCE" else spot.context
+    # NORMAL 표는 단위 표가 넘겨준 앞 문맥(lead)을 앞에 붙인다(마지막 줄 = 표 바로 앞 표지)
+    near = "\n".join(x for x in (spot.lead, spot.context) if x)
+    context = (header_text or spot.context) if grid.fmt == "FINANCE" and grid.header_rows == 0 else near
     cols = classify_columns(grid, period_end, context)
     t_unit, t_found = table_unit(spot.context, header_text, doc_unit)
+    if not t_found and pair_unit is not None and marker_only(near):
+        t_unit, t_found = pair_unit, True
     c_units = column_units(cols, t_unit)
     value_cols = [c.col for c in cols if c.role == "value"]
     own_units = own_column_units(cols)
@@ -361,11 +410,17 @@ def _filing_parts(rcept_no: str, files: list[tuple[str, bytes]], manifest: dict)
         scope = _fs_scope(name, text)
         acode = _acode(name)
         doc_unit: Unit | None = None
+        prev: tuple[dict, Unit | None] | None = None  # (앞 표 region, 앞 표가 찾은 단위)
         for spot in scan.spots:
+            pair_unit = None
+            # 같은 주석 안(소제목 ①·② 는 당기·전기 나눔일 수 있어 보지 않는다 — 앞 글이 표지뿐인지는 _table_record가 본다)
+            if prev is not None and spot.region["kind"] == "note" and prev[0]["kind"] == "note" \
+                    and prev[0]["note_no"] == spot.region["note_no"]:
+                pair_unit = prev[1]
             base = {"table_id": f"{rcept_no}:{acode}:t{spot.index + 1:03d}", "rcept_no": rcept_no,
                     "amends_rcept_no": amends, "file": name, "fs_scope": scope}
             try:
-                rec, found_unit = _table_record(spot, base, doc_unit, period_end)
+                rec, found_unit = _table_record(spot, base, doc_unit, period_end, pair_unit)
             except Exception as exc:  # 표 하나 때문에 공시 전체를 잃지 않는다
                 rec = dict(base, page=spot.page, region=spot.region, title=spot.title_p, footnotes=spot.footnotes,
                            unit=None, columns=[], rows=[], status="read_failed", issues=[f"error:{type(exc).__name__}"],
@@ -375,6 +430,7 @@ def _filing_parts(rcept_no: str, files: list[tuple[str, bytes]], manifest: dict)
             if doc_unit is None and found_unit is not None and spot.region["kind"].startswith("statement_"):
                 doc_unit = found_unit  # 공시 기본 단위 = 본문 재무제표에서 처음 찾은 단위
             tables.append(rec)
+            prev = (spot.region, found_unit)
         paragraphs.extend((name, pg, t) for pg, t in scan.paragraphs)
     return amends, _iso(period_end), paragraphs, tables
 
