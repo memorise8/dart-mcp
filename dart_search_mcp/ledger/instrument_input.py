@@ -93,7 +93,8 @@ def _footnotes(t: dict) -> list[tuple[str, str, str]]:
     return out
 
 
-def _render_table(t: dict, cells: dict) -> tuple[str, list[tuple[str, str]]]:
+def _render_table(t: dict, cells: dict) -> tuple[list[str], list[tuple[str, str, str]]]:
+    """(본문 줄, [(각주 id, 표시 줄, 각주 글)]) — 각주 줄은 build_input 이 상한 안에 든 것만 붙인다."""
     tid = t["table_id"]
     region = t.get("region") or {}
     unit = t.get("unit") or {}
@@ -126,10 +127,8 @@ def _render_table(t: dict, cells: dict) -> tuple[str, list[tuple[str, str]]]:
                 "label": r.get("label"), "label_path": list(path),
             }
         lines.append(" | ".join(parts))
-    notes = _footnotes(t)
-    for fid, mark, text in notes:
-        lines.append(f"{fid} {mark} {text}".replace("  ", " "))
-    return "\n".join(lines), [(fid, text) for fid, _m, text in notes]
+    notes = [(fid, f"{fid} {mark} {text}".replace("  ", " "), text) for fid, mark, text in _footnotes(t)]
+    return lines, notes
 
 
 def _has_cells(t: dict) -> bool:
@@ -173,16 +172,48 @@ def _select_sentences(paragraphs: list[dict], budget: int) -> list[tuple[str, st
     return [(sid, text) for _t, _i, sid, text in keep]
 
 
-def build_input(rcept_no: str, tables: list[dict], paragraphs: list[dict]) -> dict:
-    """LLM 입력 묶음. cells 의 value 는 원래 단위 값이다(원 환산 아님)."""
+_SCOPE_SUFFIX = {"00760": "separate", "00761": "consolidated"}
+_FILE_CODE_RE = re.compile(r"_(\d{5})\.xml$", re.I)
+
+
+def input_scopes(tables: list[dict]) -> list[str]:
+    """입력에 넣을 표가 있는 fs_scope 목록(정렬). 비면 입력 묶음에 표가 0개다."""
+    return sorted({t.get("fs_scope") or "" for t in tables if _table_tier(t) is not None})
+
+
+def _paragraph_scope(p: dict, file_scope: dict[str, str]) -> str | None:
+    name = p.get("file") or ""
+    if name in file_scope:
+        return file_scope[name]
+    m = _FILE_CODE_RE.search(name)
+    return _SCOPE_SUFFIX.get(m.group(1)) if m else None
+
+
+def build_input(rcept_no: str, tables: list[dict], paragraphs: list[dict], fs_scope: str | None = None) -> dict:
+    """LLM 입력 묶음. cells 의 value 는 원래 단위 값이다(원 환산 아님).
+
+    fs_scope 를 주면 그 범위(별도·연결) 표만 넣고, 문장도 그 범위 파일(범위를 모르는 파일은 포함)만 넣는다.
+    각주는 문장 상한(MAX_SENTENCES) 안에서 먼저 채우고, 상한 밖 각주는 tables_text 에도 쓰지 않는다.
+    """
+    if fs_scope is not None:
+        file_scope = {t["file"]: t.get("fs_scope") for t in tables if t.get("file")}
+        tables = [t for t in tables if (t.get("fs_scope") or "") == fs_scope]
+        paragraphs = [p for p in paragraphs if _paragraph_scope(p, file_scope) in (None, fs_scope)]
     cells: dict[str, dict] = {}
+    rendered = [_render_table(t, cells) for t in _select_tables(tables)]
+    kept = set(list(dict.fromkeys(fid for _lines, notes in rendered for fid, _l, _t in notes))[:MAX_SENTENCES])
     blocks: list[str] = []
     footnotes: list[tuple[str, str]] = []
-    for t in _select_tables(tables):
-        text, notes = _render_table(t, cells)
-        blocks.append(text)
-        footnotes.extend(notes)
-    footnotes = footnotes[:MAX_SENTENCES]
+    for lines, notes in rendered:
+        lines = list(lines)
+        for fid, line, text in notes:
+            if fid in kept:
+                lines.append(line)
+                footnotes.append((fid, text))
+        blocks.append("\n".join(lines))
     sentences = dict(_select_sentences(paragraphs, MAX_SENTENCES - len(footnotes)))
     sentences.update(footnotes)
-    return {"rcept_no": rcept_no, "cells": cells, "tables_text": "\n\n".join(blocks), "sentences": sentences}
+    out = {"rcept_no": rcept_no, "cells": cells, "tables_text": "\n\n".join(blocks), "sentences": sentences}
+    if fs_scope is not None:
+        out["fs_scope"] = fs_scope
+    return out

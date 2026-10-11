@@ -4,11 +4,16 @@
    값이 있는데 evidence 키가 없는 필드도 같다.
 2. 금액 필드(balance.*.*, separated_amount.*)는 근거 칸 하나의 value(원래 단위)와 같아야 한다.
    unit_kind 가 같고 허용 오차 1. 아니면 null, `amount_mismatch:<field>`.
-3. option_class = derivative_liability 는 「파생」·「전환권(부채)」가 든 칸 행 이름이나 문장이 근거에 있어야 한다.
-   근거 칸이 부채요소(HOST) 행뿐이면 `host_only`, 그 밖은 `no_derivative_ref` 로 unconfirmed.
-   balance.*.derivative_liability 금액의 근거 칸이 HOST 행이면 `host_only:<field>` 로 null.
+3. option_class = derivative_liability 는 파생상품부채 칸(행 이름에 「파생」·「전환권(부채)」, 부채 쪽)이나
+   부정하지 않는 「파생…부채」 문장이 근거에 있어야 한다. 「파생상품자산」 칸, 「…파생상품부채로 분류하지 않…」
+   문장은 근거가 아니다. 근거 칸이 부채요소(HOST) 행뿐이면 `host_only`, 그 밖은 `no_derivative_ref` 로 unconfirmed.
+   balance.*.derivative_liability·derivative_asset 금액은 같은 쪽(부채·자산) 파생상품 칸과 맞아야 한다.
+   맞은 칸이 HOST 행이면 `host_only:<field>`, 그 밖(합계·자본요소 등)은 `not_derivative:<field>` 로 null.
 4. kind 가 CB|BW|EB|RCPS 가 아니면 기록을 버린다(None, [`bad_kind:<kind>`]).
 5. series_key 가 비면 instrument 의 「제 n 회」로 `<kind>-<n>`, 없으면 `<kind>-?<seq>`.
+6. 확인된 금액 필드는 `matched[field] = 칸 id`, `matched_multiplier[field] = 그 칸 배수`(원 환산용)를 남기고,
+   그 필드의 evidence 는 그 칸 하나만 둔다. null 이 된 필드의 evidence 는 빈 목록이다.
+7. option_class·embedded_separation 이 null·없음이면 사유 없이 unconfirmed.
 """
 from __future__ import annotations
 
@@ -24,6 +29,9 @@ AMOUNT_TOLERANCE = 1
 
 _HOST_RE = re.compile(r"^전환사채$|사채할인발행차금|전환권조정|상환할증금")
 _DERIV_RE = re.compile(r"파생|전환권\s*\(?\s*부채")
+_DERIV_LIAB_SENT_RE = re.compile(r"파생[^.,。]{0,30}?부채|전환권\s*\(?\s*부채")
+_NEGATION_RE = re.compile(r"^[^.,。]{0,25}?(않|아니|없)")
+_DERIV_AMOUNT_KEYS = {"derivative_liability": "liability", "derivative_asset": "asset"}
 _SERIES_RE = re.compile(r"제\s*(\d+)\s*회")
 _ENUMS = {"option_class": OPTION_CLASSES, "embedded_separation": EMBEDDED_SEPARATIONS}
 
@@ -36,8 +44,26 @@ def _is_host_cell(cell: dict) -> bool:
     return bool(_HOST_RE.search(_norm_label(cell.get("label"))))
 
 
-def _is_deriv_cell(cell: dict) -> bool:
-    return any(_DERIV_RE.search(p or "") for p in (cell.get("label_path") or [cell.get("label") or ""]))
+def _deriv_side(cell: dict) -> str | None:
+    """파생상품 칸이면 "liability"·"asset", 쪽을 모르거나 파생상품 칸이 아니면 None."""
+    parts = [p or "" for p in (cell.get("label_path") or [cell.get("label") or ""])]
+    deriv = [p for p in parts if _DERIV_RE.search(p)]
+    if not deriv:
+        return None
+    for group in (deriv, parts):
+        text = " ".join(group)
+        liab, asset = "부채" in text, "자산" in text
+        if liab != asset:
+            return "liability" if liab else "asset"
+    return None
+
+
+def _positive_deriv_liability_sentence(text: str) -> bool:
+    for m in _DERIV_LIAB_SENT_RE.finditer(text or ""):
+        if "자산" in m.group(0) or _NEGATION_RE.search(text[m.end():]):
+            continue
+        return True
+    return False
 
 
 def _amount_fields(rec: dict) -> list[tuple[str, dict, str]]:
@@ -93,7 +119,9 @@ def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = N
 
     # 값 이름이 틀린 필드
     for field, allowed in _ENUMS.items():
-        if field in rec and rec[field] not in allowed:
+        if rec.get(field) is None:
+            rec[field] = UNCONFIRMED
+        elif rec[field] not in allowed:
             rec[field] = UNCONFIRMED
             reasons.append(f"bad_value:{field}")
     for period in ("current", "prior"):
@@ -101,7 +129,9 @@ def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = N
         if isinstance(mv, list):
             rec["movement"][period] = [m for m in mv if m in MOVEMENTS]
 
-    # 규칙 1·2·3 — 금액 필드
+    # 규칙 1·2·3·6 — 금액 필드
+    matched: dict[str, str] = {}
+    matched_mult: dict[str, object] = {}
     for field, holder, key in _amount_fields(rec):
         value = holder[key]
         if value is None:
@@ -109,25 +139,33 @@ def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = N
         ids = evidence.get(field) or []
         if not ids:
             holder[key] = None
+            evidence[field] = []
             reasons.append(f"missing_ref:{field}")
             continue
         amount = _num(value)
-        match = None
+        hits = []
         for i in ids:
             c = cells.get(i)
             if c is None or c.get("unit_kind") != want_unit:
                 continue
             cv = _num(c.get("value"))
             if amount is not None and cv is not None and abs(cv - amount) <= AMOUNT_TOLERANCE:
-                match = c
-                break
-        if match is None:
+                hits.append(i)
+        side = _DERIV_AMOUNT_KEYS.get(key)
+        good = [i for i in hits if side is None or _deriv_side(cells[i]) == side]
+        if not good:
             holder[key] = None
-            reasons.append(f"amount_mismatch:{field}")
+            evidence[field] = []
+            if not hits:
+                reasons.append(f"amount_mismatch:{field}")
+            elif all(_is_host_cell(cells[i]) for i in hits):
+                reasons.append(f"host_only:{field}")
+            else:
+                reasons.append(f"not_derivative:{field}")
             continue
-        if key == "derivative_liability" and _is_host_cell(match) and not _is_deriv_cell(match):
-            holder[key] = None
-            reasons.append(f"host_only:{field}")
+        matched[field] = good[0]
+        matched_mult[field] = cells[good[0]].get("multiplier")
+        evidence[field] = [good[0]]
 
     # 규칙 1 — 분류 필드
     for field in _ENUMS:
@@ -141,8 +179,8 @@ def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = N
     if rec.get("option_class") == "derivative_liability":
         ids = evidence.get("option_class") or []
         ev_cells = [cells[i] for i in ids if i in cells]
-        has_deriv = any(_is_deriv_cell(c) for c in ev_cells) or any(
-            _DERIV_RE.search(sentences[i]) for i in ids if i in sentences)
+        has_deriv = any(_deriv_side(c) == "liability" for c in ev_cells) or any(
+            _positive_deriv_liability_sentence(sentences[i]) for i in ids if i in sentences)
         if not has_deriv:
             rec["option_class"] = UNCONFIRMED
             only_host = bool(ev_cells) and all(_is_host_cell(c) for c in ev_cells)
@@ -150,6 +188,8 @@ def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = N
 
     # 확인된 근거만 남긴다(비어 버린 필드는 빈 목록)
     rec["evidence"] = evidence
+    rec["matched"] = matched
+    rec["matched_multiplier"] = matched_mult
 
     # 규칙 5
     if not (rec.get("series_key") or "").strip():
