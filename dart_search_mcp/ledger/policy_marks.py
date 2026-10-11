@@ -19,12 +19,13 @@ _YEARS_RE = re.compile(r"\d+\s*년")
 
 
 @lru_cache(maxsize=4)
-def _load_exceptions(path: str) -> tuple[tuple[str, str, re.Pattern], ...]:
+def _load_exceptions(path: str) -> tuple[tuple[str, str, re.Pattern, bool], ...]:
     raw = json.loads(Path(path).read_text(encoding="utf-8"))["exception_patterns"]
-    return tuple((name, d["topic"], re.compile(d["pattern"])) for name, d in raw.items())
+    return tuple((name, d["topic"], re.compile(d["pattern"]), bool(d.get("requires_company")))
+                 for name, d in raw.items())
 
 
-def load_exception_patterns(path: Path | None = None) -> tuple[tuple[str, str, re.Pattern], ...]:
+def load_exception_patterns(path: Path | None = None) -> tuple[tuple[str, str, re.Pattern, bool], ...]:
     return _load_exceptions(str(path or RULES_PATH))
 
 
@@ -50,11 +51,15 @@ def _row(rcept_no, topic, kind, sid, text, exc):
 
 
 def _mark_sentence(rcept_no, sid, text, in_block, is_footnote, topics, exceptions, out):
+    from dart_search_mcp.policy_sentences import KIND_COMPANY, classify_sentence
     base = _kind_of(text, in_block, is_footnote)
+    # 회사 주어(현재형 포함) — 「내재파생상품은 … 분리하여 …」 같은 기준서 문장과 구분한다.
+    company_subject = classify_sentence(text)[0] == KIND_COMPANY
     for code, td in topics.items():
         if not td.keyword_re.search(text):
             continue
-        exc = next((n for n, t, p in exceptions if t == code and p.search(text)), None)
+        exc = next((n for n, t, p, rc in exceptions
+                    if t == code and p.search(text) and (not rc or company_subject or is_footnote)), None)
         kind = base
         if exc and kind != "company_statement":
             kind = "exception"
@@ -81,7 +86,7 @@ def mark_policies(rcept_no: str, paragraphs: list[dict], tables: list[dict], *,
         _mark_sentence(rcept_no, p["id"], p["text"], in_block, False, topics, exceptions, out)
 
     seen: set[str] = set()
-    dev_topic = next((t for n, t, _p in exceptions if n == "dev_amortization"), "DEV_COST_CAPITALIZATION")
+    dev_topic = next((t for n, t, _p, _rc in exceptions if n == "dev_amortization"), "DEV_COST_CAPITALIZATION")
     for t in tables:
         tid = t.get("table_id", "")
         for k, fn in enumerate(t.get("footnotes") or [], start=1):

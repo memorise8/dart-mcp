@@ -50,6 +50,18 @@ class PolicyMarksTest(unittest.TestCase):
         (r,) = find(rows, "EMBEDDED_DERIVATIVE_SEPARATION")
         self.assertEqual((r["kind"], r["exception"]), ("company_statement", "explicit_separation"))
 
+    def test_standard_separation_sentence_is_plain_policy(self):
+        s = "내재파생상품은 주계약으로부터 분리하여 파생상품으로 회계처리합니다."
+        rows = mark_policies("R7", paras(s), [])
+        (r,) = find(rows, "EMBEDDED_DERIVATIVE_SEPARATION")
+        self.assertEqual((r["kind"], r["exception"]), ("policy", None))
+
+    def test_company_present_tense_separation_is_exception(self):
+        s = "당사는 전환사채의 전환권을 내재파생상품으로 분리하여 공정가치로 평가합니다."
+        rows = mark_policies("R8", paras(s), [])
+        (r,) = find(rows, "EMBEDDED_DERIVATIVE_SEPARATION")
+        self.assertEqual(r["exception"], "explicit_separation")
+
     def test_company_past_tense_in_body(self):
         rows = mark_policies("R4", paras("당사는 단기리스에 대하여 인식 면제를 적용하였습니다."), [])
         (r,) = find(rows, "LEASE_EXEMPTION")

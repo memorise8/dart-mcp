@@ -6,6 +6,7 @@
     },
     "explicit_separation": {
       "topic": "EMBEDDED_DERIVATIVE_SEPARATION",
+      "requires_company": true,
       "pattern": "(주계약|사채|우선주)[^.]{0,40}분리하여[^.]{0,40}(파생상품|공정가치)"
     }
   }

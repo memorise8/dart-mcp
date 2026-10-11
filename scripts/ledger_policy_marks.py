@@ -6,6 +6,7 @@
 출력(이미 있으면 멈춘다 — 기존 파일을 덮지 않는다):
   - policy_marks.jsonl         표시 한 줄에 하나
   - policy_marks.summary.json  공시 수, 주제×종류 수, 예외 종류별 수
+  - policy_marks.failed.txt    처리에 실패한 접수번호(없으면 빈 파일)
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 DATA = ROOT.parent / "dart-search-mcp" / "dart_collected"
-OUTPUTS = ("policy_marks.jsonl", "policy_marks.summary.json")
+OUTPUTS = ("policy_marks.jsonl", "policy_marks.summary.json", "policy_marks.failed.txt")
 
 
 def process(job: tuple[str, str]) -> dict:
@@ -68,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     filings_with: Counter = Counter()
     errors: Counter = Counter()
     failed = 0
+    failed_rcepts: list[str] = []
     t0 = time.time()
     path = args.out_dir / OUTPUTS[0]
     tmp = path.with_suffix(".jsonl.tmp")
@@ -75,6 +77,7 @@ def main(argv: list[str] | None = None) -> int:
         for i, res in enumerate(pool.imap_unordered(process, [(r, str(args.tables)) for r in rcepts], chunksize=8), 1):
             if res["error"]:
                 failed += 1
+                failed_rcepts.append(res["rcept_no"])
                 errors[res["error"].split(":")[0]] += 1
                 continue
             seen = set()
@@ -99,7 +102,14 @@ def main(argv: list[str] | None = None) -> int:
         "filings_with_topic_kind": dict(sorted(filings_with.items())),
         "marks_by_exception": dict(sorted(by_exception.items())),
     }
-    (args.out_dir / OUTPUTS[1]).write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    failed_path = args.out_dir / OUTPUTS[2]
+    ftmp = failed_path.with_suffix(".txt.tmp")
+    ftmp.write_text("".join(r + "\n" for r in sorted(failed_rcepts)), encoding="utf-8")
+    ftmp.replace(failed_path)
+    spath = args.out_dir / OUTPUTS[1]
+    stmp = spath.with_suffix(".json.tmp")
+    stmp.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    stmp.replace(spath)
     print(json.dumps({k: summary[k] for k in ("filings", "filings_missing", "filings_failed")}, ensure_ascii=False))
     print(json.dumps(summary["marks_by_topic_kind"], ensure_ascii=False))
     print(json.dumps(summary["marks_by_exception"], ensure_ascii=False))
