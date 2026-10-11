@@ -2185,7 +2185,10 @@ class T9bFixRound1Test(unittest.TestCase):
         c = _pcell("전환사채 매도청구권", path=["㈜에이비씨", "전환사채 매도청구권"], tt=tt, nt="파생상품", value=300)
         out, reasons = validate(_rec_emb("separated", ["A:r1:c1"], series_key=""), _inp9b({"A:r1:c1": c}))
         self.assertEqual(reasons, ["no_separation_ref"])
+        # fix round 3(R17): 자산 칸만으로는 확인하지 않는다 — 같은 종류의 분리 문장이 입력에 있어야 한다
         out, reasons = validate(_rec_emb("separated", ["A:r1:c1"], series_key=""), _inp9b({"A:r1:c1": ok}))
+        self.assertEqual(reasons, ["no_separation_ref"])
+        out, reasons = validate(_rec_emb("separated", ["A:r1:c1"], series_key=""), _inp9b({"A:r1:c1": ok}, {"s1": S391}))
         self.assertEqual(out["embedded_separation"], "separated")
 
     def test_targets_cleared_when_unconfirmed(self):
@@ -2239,20 +2242,21 @@ class T9bFixRound2Test(unittest.TestCase):
         from dart_search_mcp.ledger.instrument_validate import _separation_cell
         base = dict(label="전환사채 매도청구권", label_path=["전환사채 매도청구권"])
         ok = _pcell("전환사채 매도청구권", tt="당기말 현재 파생상품자산의 내역", nt="파생상품", value=300)
-        self.assertTrue(_separation_cell("A:r1:c1", ok, "CB", None, set()))
+        self.assertTrue(_separation_cell("A:r1:c1", ok, "CB", None, set(), sep_sentence=True))
+        self.assertFalse(_separation_cell("A:r1:c1", ok, "CB", None, set()))  # R17: 문장 없이 자산 칸만으로는 아님
         for tt, nt in (("당기말 현재 당사가 보유하고 있는 파생상품자산의 내역", "파생상품"),
                        ("당기말 현재 파생상품자산의 내역", "보유한 금융상품"),
                        ("취득한 전환사채 관련 파생상품자산의 내역", "파생상품"),
                        ("파생상품자산(투자 전환사채)의 내역", "파생상품")):
             c = dict(ok, table_title=tt, note_title=nt, **base)
-            self.assertFalse(_separation_cell("A:r1:c1", c, "CB", None, set()), (tt, nt))
+            self.assertFalse(_separation_cell("A:r1:c1", c, "CB", None, set(), sep_sentence=True), (tt, nt))
         for label in ("B사 전환사채 매도청구권", "에이비씨사의 전환사채 콜옵션", "Kxx사 상환전환우선주 전환권"):
             c = dict(ok, label=label, label_path=[label])
             kind = "RCPS" if "우선주" in label else "CB"
-            self.assertFalse(_separation_cell("A:r1:c1", c, kind, None, set()), label)
+            self.assertFalse(_separation_cell("A:r1:c1", c, kind, None, set(), sep_sentence=True), label)
         for label in ("당사 전환사채 매도청구권", "회사 전환사채 매도청구권", "연결회사의 전환사채 매도청구권"):
             c = dict(ok, label=label, label_path=[label])
-            self.assertTrue(_separation_cell("A:r1:c1", c, "CB", None, set()), label)
+            self.assertTrue(_separation_cell("A:r1:c1", c, "CB", None, set(), sep_sentence=True), label)
         # 「투자자의 조기상환청구권」(부채 쪽)은 막지 않는다
         liab = _pcell("전환사채 투자자의 조기상환청구권", tt="당기말 현재 파생상품부채의 내역", nt="파생상품", value=300)
         self.assertTrue(_separation_cell("L:r1:c1", liab, "CB", None, set()))
@@ -2273,6 +2277,61 @@ class T9bFixRound2Test(unittest.TestCase):
     def test_prompt_rule8_holder(self):
         user = build_messages(_inp())[1]["content"]
         for phrase in ("보유하고 있는", "B사 전환사채", "당사·회사"):
+            self.assertIn(phrase, user)
+
+
+class T9bFixRound3Test(unittest.TestCase):
+    """fix round 3(R17): 자산 칸은 같은 종류의 분리 문장(자기 회사, 부정·조건 아님)이 입력에 있을 때만 separated 를 확인한다.
+    상품 이름 뒤 변동 낱말 행(「전환사채 상환」·「전환사채 전환」)은 잔액 칸이 아니다 — 20260318000556:00760:t040:r4:c2."""
+
+    TT = "당기말 현재 파생상품자산의 내역은 다음과 같습니다."
+
+    def test_asset_cell_needs_sentence(self):
+        cell = {"A:r1:c1": _pcell("신주인수권부사채 수의상환권", tt=self.TT, nt="파생상품", value=300)}
+        out, reasons = validate(_rec_emb("separated", ["A:r1:c1"], kind="BW", series_key=""), _inp9b(cell))
+        self.assertEqual(reasons, ["no_separation_ref"])
+        sep = "회사는 신주인수권부사채에 내재된 수의상환권을 주계약에서 분리하여 파생상품자산으로 인식하였습니다."
+        out, reasons = validate(_rec_emb("separated", ["A:r1:c1"], kind="BW", series_key=""), _inp9b(cell, {"s9": sep}))
+        self.assertEqual(out["embedded_separation"], "separated")
+        self.assertEqual(reasons, [])
+        bad = {"n": "신주인수권부사채의 수의상환권은 주계약과 분리하지 않았습니다.",                      # 부정
+               "c": "신주인수권부사채의 내재파생상품이 분리요건을 충족하는 경우 분리하여 파생상품으로 인식합니다.",  # 조건
+               "h": "취득한 신주인수권부사채의 신주인수권은 분리하여 파생상품으로 인식하였습니다.",          # 보유자
+               "k": "전환사채의 조기상환청구권은 주계약에서 분리하여 파생상품부채로 인식하였습니다."}          # 다른 종류
+        for sid, t in bad.items():
+            out, reasons = validate(_rec_emb("separated", ["A:r1:c1"], kind="BW", series_key=""),
+                                    _inp9b(cell, {sid: t}))
+            self.assertEqual(reasons, ["no_separation_ref"], sid)
+
+    def test_liability_cell_still_alone(self):
+        cell = {"D:r1:c1": _pcell("제4회 전환사채 조기상환청구권", tt="당기말 현재 파생상품부채의 내역", nt="파생상품", value=300)}
+        out, reasons = validate(_rec_emb("separated", ["D:r1:c1"]), _inp9b(cell))
+        self.assertEqual(out["embedded_separation"], "separated")
+
+    def test_movement_rows_after_kind(self):
+        from dart_search_mcp.ledger.instrument_validate import _deriv_side, _non_balance_cell
+        cid = "20260318000556:00760:t040:r4:c2"
+        c = _rcell(-538564, "전환사채 상환", col="파생상품자산", period="prior_period", nt="공정가치", n_value_cols=3,
+                   multiplier=1000, tt="전기 당기손익-공정가치 측정 금융자산 파생상품자산 파생상품부채")
+        self.assertIsNone(_deriv_side(c))
+        self.assertTrue(_non_balance_cell(c))
+        out, reasons = validate(_rec_emb("separated", [cid], series_key=""), _inp9b({cid: c}, {}))
+        self.assertEqual(reasons, ["no_separation_ref"])
+        for label in ("전환사채 상환", "전환사채 전환", "제3회 전환사채의 행사", "상환전환우선주 발행", "신주인수권부사채 증가",
+                      "교환사채 감소", "전환사채 취득", "전환사채 처분", "전환사채 대체"):
+            self.assertTrue(_non_balance_cell(_pcell(label, tt="파생상품부채의 변동")), label)
+            self.assertIsNone(_deriv_side(_pcell(label, col="파생상품부채", tt="파생상품부채의 변동")), label)
+        for label in ("전환사채 전환권", "전환사채 조기상환청구권", "전환사채 상환할증금", "상환전환우선주부채", "전환상환우선주 전환권",
+                      "전환사채 미상환잔액", "전환사채 행사가격", "제2회 전환사채 조기상환권", "사채할인발행차금"):
+            self.assertFalse(_non_balance_cell(_pcell(label, tt="당기말 현재 전환사채의 내역")), label)
+        # 금액 필드도 거부
+        mv = _pcell("전환사채 상환", path=["전환사채 상환"], tt="전환사채의 변동", value=500)
+        out, reasons = validate(_rec5("face", "current_end", 500, ["M:r1:c1"]), _inp9b({"M:r1:c1": mv}))
+        self.assertEqual(reasons, ["not_balance:balance.current_end.face"])
+
+    def test_prompt_r17(self):
+        user = build_messages(_inp())[1]["content"]
+        for phrase in ("자산 칸만으로는", "「전환사채 상환」"):
             self.assertIn(phrase, user)
 
 

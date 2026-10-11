@@ -157,6 +157,13 @@ def _maturity_bucket_cell(cell: dict) -> bool:
     return any(_MATURITY_BUCKET_RE.search(seg) for seg in _col_segments(cell))
 
 
+# 상품 이름 뒤에 변동 낱말이 오는 행(fix round 3): 「전환사채 상환」·「전환사채 전환」·「상환전환우선주 발행」은 변동 행이다.
+# 옵션·구성 낱말(전환권·조기상환청구권·상환할증금·행사가격·발행가액·미상환잔액 …)은 아니다.
+_KIND_MOVEMENT_RE = re.compile(r"(?:전환사채|신주인수권부사채|교환사채|우선주)[^/]*?(?<!미)(?<!조기)"
+                               r"(?:상환|전환|행사|발행|증가|감소|취득|처분|대체)"
+                               r"(?!권|청구|할증|가격|가액|금액|차금|우선주|사채|잔액|조건|일|예정|기간|비율)")
+
+
 def _non_balance_cell(cell: dict) -> bool:
     """잔액 표가 아닌 표의 칸인가(만기분석·유동성위험·신용위험·이연법인세·상계·담보 제목, 현금유입·유출·거래상대방 머리글,
     만기 구간·계약상 현금흐름 열). 표 전체를 보는 규칙(만기 구간 열이 있는 표의 합계 열)은 _non_balance_ids."""
@@ -165,6 +172,8 @@ def _non_balance_cell(cell: dict) -> bool:
         return True
     if _maturity_bucket_cell(cell):
         return True
+    if any(_KIND_MOVEMENT_RE.search(_norm_label(p)) for p in [*(cell.get("label_path") or []), cell.get("label") or ""]):
+        return True  # 「전환사채 상환」 변동 행
     col = re.sub(r"\s+", "", cell.get("col_header") or "")
     labels = [_norm_label(p) for p in (cell.get("label_path") or [])] + [_norm_label(cell.get("label"))]
     if _NON_BALANCE_COL_RE.search(col) or any(_NON_BALANCE_ROW_RE.search(t) for t in labels):
@@ -667,18 +676,20 @@ _SELF_COMPANY = {"당사", "회사", "동사", "연결회사", "지배회사", "
 _COMPANY_LAYER_RE = re.compile(r"\(주\)|㈜|주식회사|유한회사|합자회사|조합|투자|펀드|(?<![A-Za-z])(?:Inc|Ltd|Co|Corp|LLC)(?![A-Za-z])")
 
 
-def _separation_cell(cid: str, cell: dict, kind: str, series: str | None, nb: set) -> bool:
+def _separation_cell(cid: str, cell: dict, kind: str, series: str | None, nb: set, *, sep_sentence: bool = False) -> bool:
     """이 상품의 분리 파생상품 금액 칸(잔액 표, 0 아님, 종류·회차가 맞고 상품 종류 낱말로 그 상품에 묶임).
     기본은 부채 쪽 칸만이다(fix round 1). 자산 쪽 칸은 행 이름·열 머리글 자체가 기록 종류를 말하고, 제3자·권자(보유자)
     낱말과 회사·투자 이름 층(label_path)이 없을 때만 — 제3자 지정 콜, 보유한 신주인수권, 남의 지분 콜은 분리가 아니다.
     fix round 2: 상품 앞의 투자 대상 이름(「B사 전환사채」, 당사·회사 제외)이나 표 제목(앞 문장 포함)·주석 제목의 보유자
-    낱말(보유하고 있는·보유한·취득한·투자)이 있어도 자산 칸은 아니다."""
+    낱말(보유하고 있는·보유한·취득한·투자)이 있어도 자산 칸은 아니다.
+    fix round 3(R17): 자산 칸은 입력에 같은 종류(회차)의 분리 문장(자기 회사·부정·조건 아님, sep_sentence)이 있을 때만이다.
+    자산 칸만으로는 확인하지 않는다(제3자 지정 콜과 발행자 콜을 이름으로 가릴 수 없다)."""
     if cid in nb or not _num(cell.get("value")) or not _series_fits(cell, series, kind) or not _cell_tied(cell, kind):
         return False
     side = _deriv_side(cell)
     if side == "liability":
         return True
-    if side != "asset":
+    if side != "asset" or not sep_sentence:
         return False
     texts = [re.sub(r"\s+", "", t) for t in _row_col_texts(cell)]
     own = set().union(*(_text_kinds(t) for t in texts))
@@ -720,15 +731,15 @@ def _separation_supported(claim: str, ids: list[str], rec: dict, cells: dict, se
     sent = [sentences[i] for i in ids if i in sentences and _sentence_fits(sentences[i], kind, series)]
     ev_cells = [(i, cells[i]) for i in ids if i in cells]
     kinds = [_separation_kind(t) for t in sent]
+    # 입력 어딘가에 이 종류(회차)의 분리 문장이 있는가 — 자산 칸은 이것이 있을 때만 근거가 된다(R17)
+    any_sep = any(_separation_kind(t) == "sep" and _sentence_fits(t, kind, series) for t in sentences.values())
     if claim == "separated":
         if "not" in kinds:
             return False
-        return "sep" in kinds or any(_separation_cell(i, c, kind, series, nb) for i, c in ev_cells)
+        return "sep" in kinds or any(_separation_cell(i, c, kind, series, nb, sep_sentence=any_sep) for i, c in ev_cells)
     if has_deriv_amount or "sep" in kinds:
         return False
-    if any(_separation_cell(i, c, kind, series, nb) for i, c in cells.items()):
-        return False
-    if any(_separation_kind(t) == "sep" and _sentence_fits(t, kind, series) for t in sentences.values()):
+    if any_sep or any(_separation_cell(i, c, kind, series, nb) for i, c in cells.items()):
         return False
     fvpl = any(_fvpl_designation(t) for t in sent) or any(
         _measured_cell(i, c, kind, series, nb, _FVPL_LIAB_RE) for i, c in ev_cells)
