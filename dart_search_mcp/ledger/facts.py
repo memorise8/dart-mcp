@@ -81,6 +81,7 @@ class Concept:
     table_exclude_patterns: tuple = ()  # table_total: 표 제목·소제목에 있으면 안 됨
     row_exclude_patterns: tuple = ()  # table_total: 표의 어느 행 이름에도 있으면 안 됨(합계가 다른 것을 포함)
     column_exclude_patterns: tuple = ()  # table_total: 열 머리글 어느 단계에도 있으면 안 됨
+    section_patterns: tuple = ()  # table_total: 값 빈 구획 머리 행은 모두 이 중 하나에 맞아야 함(지분·중립 머리)
     replaces: tuple = ()  # table_total: 같은 칸에 이 개념만 걸려 있으면 대신한다
     topic: str = ""
     version: str = ""
@@ -113,6 +114,7 @@ def load_concepts(path: Path | None = None) -> list[Concept]:
                            table_exclude_patterns=tuple(c.get("table_exclude_patterns") or ()),
                            row_exclude_patterns=tuple(c.get("row_exclude_patterns") or ()),
                            column_exclude_patterns=tuple(c.get("column_exclude_patterns") or ()),
+                           section_patterns=tuple(c.get("section_patterns") or ()),
                            replaces=tuple(c.get("replaces") or ()),
                            topic=c.get("topic", ""),
                            version=version))
@@ -444,6 +446,10 @@ def _table_total(c: Concept, order: int, table: dict, cols: dict, has_end: bool,
         names = [norm_label(r.get("label")), *(norm_label(p) for p in r.get("label_path") or [])]
         if any(rx.search(n) for rx in c.rx("row_exclude_patterns") for n in names if n):
             return
+    sec_rx = c.rx("section_patterns")
+    if sec_rx and any(_is_blank_header(r) and not any(rx.search(norm_label(r.get("label"))) for rx in sec_rx)
+                      for r in rows):
+        return  # 뒤쪽 구획(「수익증권」「기타」)이 지분이 아니면 합계가 다른 것을 담는다 — 첫 소제목만 보면 안 된다
     if any(x[2].id == c.id for cs in out.values() for x in cs):
         return  # 행 이름으로 이미 걸렸다(「기타포괄손익-공정가치측정 지분상품」 행 + 합계) — 겹쳐 내지 않는다
     totals = [i for i, r in enumerate(rows) if r.get("kind") == "total"]

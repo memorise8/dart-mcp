@@ -850,6 +850,52 @@ class T6bTest(unittest.TestCase):
         got = self._equity(rows, periods=("current_end", "current_end"), headers=[["당기말", "취득원가"], ["당기말", "장부금액"]])
         self.assertEqual([(f["column"], f["amount"]) for f in got], [("장부금액", 130)])
 
+    def test_later_non_equity_section_no_fact(self):
+        # 20260414002701 t059 모양: 첫 소제목 「비상장주식」 뒤에 「수익증권」 구획 — 전기 합계 12,175,691 에 수익증권 10,002,600 포함
+        title = "9. 기타포괄손익-공정가치 측정 금융자산 9.1 기타포괄손익-공정가치 측정 금융자산의 내역은 다음과 같습니다."
+        rows = [("비상장주식", [None, None]), (["비상장주식", "㈜레저플러스"], [2000000, 2000000], 3),
+                (["비상장주식", "전문건설공제조합"], [173091, 173091], 3), ("수익증권", [None, None]),
+                (["수익증권", "파인앤파트너스 일반사모부동산 제5호 투자유한회사"], [0, 10002600], 3), ("합계", [2173091, 12175691])]
+        self.assertEqual(self._equity(rows, title=title), [])
+        # 20260318001659 t099 모양: 뒤쪽 「매각예정자산」 구획
+        rows = [("상장주식", [None, None]), ("㈜A", [10, 20]), ("비상장주식", [5, 5]), ("매각예정자산", [None, None]),
+                ("비상장주식(주2)", [0, 7]), ("합 계", [15, 32])]
+        self.assertEqual(self._equity(rows, title="기타포괄손익-공정가치 측정 금융자산 내역"), [])
+        # 뒤쪽 구획이 지분도 중립도 아니면(「기타」) 사실 없음
+        rows = [("상장주식", [None, None]), ("㈜A", [10, 20]), ("기타", [None, None]), ("B", [1, 1]), ("합계", [11, 21])]
+        self.assertEqual(self._equity(rows, title="기타포괄손익-공정가치 측정 금융자산 내역"), [])
+        # 지분 구획 둘(상장·비상장)과 중립 머리(비유동항목)는 그대로 사실
+        rows = [("비유동항목", [None, None]), ("상장주식", [None, None]), ("㈜A", [10, 20]), ("비상장주식", [None, None]),
+                ("㈜B", [1, 1]), ("합계", [11, 21])]
+        got = self._equity(rows, title="기타포괄손익-공정가치 측정 지분상품")
+        self.assertEqual({(f["period"], f["amount"]) for f in got}, {("current_end", 11), ("prior_end", 21)})
+
+    def test_neutral_section_headers_keep_fact(self):
+        # 20260318000626 t075 「비유동금융자산」, 20260312000856 t053 「(국내법인)」「(해외법인)」 구획 머리는 중립
+        for heads in (["비유동금융자산"], ["(국내법인)", "(해외법인)"], ["기타비유동금융자산"]):
+            rows = []
+            for h in heads:
+                rows += [(h, [None, None]), (f"{h} 소속 ㈜A", [10, 8])]
+            rows.append(("합계", [10 * len(heads), 8 * len(heads)]))
+            got = self._equity(rows, title="기타포괄손익-공정가치 측정 금융자산 중 비상장주식")
+            self.assertEqual({f["amount"] for f in got}, {10 * len(heads), 8 * len(heads)}, heads)
+
+    def test_non_equity_item_words_no_fact(self):
+        for word in ("수익증권", "국채", "금융채", "특수채", "CP", "기업어음", "신탁수익권", "파생상품"):
+            rows = [("㈜A 주식", [10, 8]), (word, [5, 5]), ("합계", [15, 13])]
+            self.assertEqual(self._equity(rows), [], word)
+
+    def test_cp_inside_company_name_keeps_fact(self):
+        # 20260414002601 t062: 투자처 「TPC POWER」 의 CP 는 기업어음이 아니다
+        got = self._equity([("TPC POWER", [10, 8]), ("㈜B", [5, 5]), ("합계", [15, 13])])
+        self.assertEqual({f["amount"] for f in got}, {15, 13})
+
+    def test_face_net_asset_capital_columns_no_fact(self):
+        rows = [("㈜A", [10, 8]), ("㈜B", [5, 5]), ("합계", [15, 13])]
+        for head in ("액면금액", "순자산", "자본금"):
+            got = self._equity(rows, periods=("current_end", "current_end"), headers=[["당기말", head], [head, "당기말"]])
+            self.assertEqual(got, [], head)
+
     def test_multi_row_without_total_no_fact(self):
         rows = [("A사", [100, 90]), ("B사", [50, 40]), ("C사", [5, 4])]
         self.assertEqual(self._equity(rows), [])
