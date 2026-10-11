@@ -41,22 +41,57 @@ def _flow_period(context: str) -> str:
     return ""
 
 
-def _word_period(text: str, context: str) -> str:
-    t = _squash(text)
-    if any(w in t for w in ("당기말", "당분기말", "(당)기말")):
-        return "current_end"
-    if any(w in t for w in ("전기말", "(전)기말")):
-        return "prior_end"
-    if "기초" in t:
+_PAREN_RE = re.compile(r"\((?![당전]\))[^)]*\)")
+_END_RE = re.compile(r"^(?:제\d+)?\(?([당전])\)?(?:분)?기말$")
+_TERM_ONLY_RE = re.compile(r"^(?:제\d+)?\(?([당전])\)?(?:분)?기(?:중)?$")
+_FLOW_RE = re.compile("^(?:" + "|".join(_FLOW) + ")$")
+
+
+def _kind(text: str) -> str:
+    """머리글 글자 전체가 기간 낱말일 때만 종류를 돌려준다(부분 일치 금지: 당기순이익·기초자산 등)."""
+    t = _PAREN_RE.sub("", _squash(text))
+    t = re.sub(r"(?:잔액|액)$", "", t)
+    m = _END_RE.match(t)
+    if m:
+        return "current_end" if m.group(1) == "당" else "prior_end"
+    m = _TERM_ONLY_RE.match(t)
+    if m:
+        return "current_term" if m.group(1) == "당" else "prior_term"
+    if t == "기초":
         return "opening"
-    if "당기" in t or "(당)기" in t:
-        return "current_period"
-    if "전기" in t or "(전)기" in t:
-        return "prior_period"
-    if "기말" in t:
-        return {"current": "current_end", "prior": "prior_end"}.get(_flow_period(context), "unknown")
-    if any(w in t for w in _FLOW):
-        return {"current": "current_period", "prior": "prior_period"}.get(_flow_period(context), "unknown")
+    if t == "기말":
+        return "close"
+    if _FLOW_RE.match(t):
+        return "flow"
+    return ""
+
+
+def _path_period(path: list[str], context: str) -> str:
+    """머리글 경로를 아래에서 위로 보며 판별. 기말·증가 같은 낱말은 위쪽 당기/전기와 합친다."""
+    ctx = _flow_period(context)
+    for i in range(len(path) - 1, -1, -1):
+        k = _kind(path[i])
+        if k in ("current_end", "prior_end", "opening"):
+            return k
+        if k in ("close", "flow"):
+            side = ""
+            for up in reversed(path[:i]):
+                uk = _kind(up)
+                if uk in ("current_term", "prior_term"):
+                    side = "current" if uk == "current_term" else "prior"
+                    break
+                if uk in ("current_end", "prior_end"):
+                    break
+            side = side or ctx
+            if not side:
+                return "unknown"
+            if k == "close":
+                return "current_end" if side == "current" else "prior_end"
+            return "current_period" if side == "current" else "prior_period"
+        if k == "current_term":
+            return "current_period"
+        if k == "prior_term":
+            return "prior_period"
     return "unknown"
 
 
@@ -95,10 +130,6 @@ def _context_period(context: str) -> str:
         if w in c:
             found.add(p)
             c = c.replace(w, "")
-    if "당기중" in c:
-        found.add("current_period")
-    if "전기중" in c:
-        found.add("prior_period")
     return found.pop() if len(found) == 1 else "unknown"
 
 
@@ -143,11 +174,7 @@ def classify_columns(grid: Grid, period_end: str | None, context: str) -> list[C
             out.append(ColumnInfo(c, path, "label", "unknown", None))
             continue
         date = next((d for d in map(_find_date, reversed(path)) if d), None)
-        period = "unknown"
-        for text in reversed(path):  # 가장 아래 머리글부터
-            period = _word_period(text, context)
-            if period != "unknown":
-                break
+        period = _path_period(path, context)
         if period == "unknown":
             period = _date_period(date, period_end)
         if period == "unknown" and k < len(order):

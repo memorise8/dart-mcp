@@ -47,6 +47,22 @@ class PeriodTest(unittest.TestCase):
         g = parse_table("<TABLE><TBODY><TR><TD>구분</TD><TD>제 5 기</TD><TD>제 4 기</TD></TR><TR><TD>a</TD><TD>1,000</TD><TD>2,000</TD></TR></TBODY></TABLE>")
         self.assertEqual(g.header_rows, 1)
 
+    def _one(self, head, context=""):
+        g = parse_table(f"<TABLE><THEAD><TR><TH>구분</TH><TH>{head}</TH></TR></THEAD><TBODY><TR><TD>a</TD><TD>1</TD></TR></TBODY></TABLE>")
+        return classify_columns(g, "2025-12-31", context)[1].period
+
+    def test_non_period_headers_stay_unknown(self):
+        for head in ("당기손익-공정가치측정금융자산", "당기순이익", "기초자산", "전기요금"):
+            self.assertEqual(self._one(head), "unknown", head)
+        self.assertEqual(self._one("상각후원가", "당기 중 변동"), "unknown")
+
+    def test_parent_child_combine(self):
+        g = parse_table("<TABLE><THEAD><TR><TH ROWSPAN=\"2\">구분</TH><TH COLSPAN=\"2\">당기</TH><TH COLSPAN=\"2\">전기</TH></TR>"
+                        "<TR><TH>기초</TH><TH>기말</TH><TH>기초</TH><TH>기말</TH></TR></THEAD>"
+                        "<TBODY><TR><TD>a</TD><TD>1</TD><TD>2</TD><TD>3</TD><TD>4</TD></TR></TBODY></TABLE>")
+        self.assertEqual([c.period for c in classify_columns(g, None, "")][1:],
+                         ["opening", "current_end", "opening", "prior_end"])
+
 
 if __name__ == "__main__":
     unittest.main()
