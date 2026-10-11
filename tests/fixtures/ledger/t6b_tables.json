@@ -1,0 +1,826 @@
+{
+ "20260319001100:00760:t073": {
+  "table_id": "20260319001100:00760:t073",
+  "rcept_no": "20260319001100",
+  "amends_rcept_no": null,
+  "file": "20260319001100_00760.xml",
+  "fs_scope": "separate",
+  "page": 23,
+  "region": {
+   "kind": "note",
+   "note_no": "9",
+   "note_title": "기타포괄손익-공정가치측정금융자산",
+   "sub_path": [
+    "(1)"
+   ]
+  },
+  "title": "(1) 기타포괄손익-공정가치 측정 지분상품",
+  "footnotes": [],
+  "unit": {
+   "raw": "(단위:천원)",
+   "kind": "krw",
+   "multiplier": 1000,
+   "currency": "KRW"
+  },
+  "columns": [
+   {
+    "col": 0,
+    "header_path": [
+     "구분"
+    ],
+    "role": "label"
+   },
+   {
+    "col": 1,
+    "header_path": [
+     "당기말"
+    ],
+    "role": "value",
+    "period": "current_end",
+    "date": null
+   },
+   {
+    "col": 2,
+    "header_path": [
+     "전기말"
+    ],
+    "role": "value",
+    "period": "prior_end",
+    "date": null
+   }
+  ],
+  "rows": [
+   {
+    "row": 1,
+    "label": "시장성없는 지분증권",
+    "label_path": [
+     "시장성없는 지분증권"
+    ],
+    "level": 0,
+    "acode": null,
+    "kind": "item",
+    "cells": [
+     {
+      "col": 1,
+      "raw": "",
+      "value": null,
+      "value_krw": null,
+      "unit_override": null
+     },
+     {
+      "col": 2,
+      "raw": "",
+      "value": null,
+      "value_krw": null,
+      "unit_override": null
+     }
+    ]
+   },
+   {
+    "row": 2,
+    "label": "전문건설공제조합",
+    "label_path": [
+     "전문건설공제조합"
+    ],
+    "level": 2,
+    "acode": null,
+    "kind": "item",
+    "cells": [
+     {
+      "col": 1,
+      "raw": "52,321",
+      "value": 52321,
+      "value_krw": 52321000,
+      "unit_override": null
+     },
+     {
+      "col": 2,
+      "raw": "52,125",
+      "value": 52125,
+      "value_krw": 52125000,
+      "unit_override": null
+     }
+    ]
+   },
+   {
+    "row": 3,
+    "label": "기계설비건설공제조합",
+    "label_path": [
+     "기계설비건설공제조합"
+    ],
+    "level": 2,
+    "acode": null,
+    "kind": "item",
+    "cells": [
+     {
+      "col": 1,
+      "raw": "59,563",
+      "value": 59563,
+      "value_krw": 59563000,
+      "unit_override": null
+     },
+     {
+      "col": 2,
+      "raw": "58,968",
+      "value": 58968,
+      "value_krw": 58968000,
+      "unit_override": null
+     }
+    ]
+   },
+   {
+    "row": 4,
+    "label": "로이투자파트너스 주식회사",
+    "label_path": [
+     "로이투자파트너스 주식회사"
+    ],
+    "level": 2,
+    "acode": null,
+    "kind": "item",
+    "cells": [
+     {
+      "col": 1,
+      "raw": "1,495,612",
+      "value": 1495612,
+      "value_krw": 1495612000,
+      "unit_override": null
+     },
+     {
+      "col": 2,
+      "raw": "1,500,000",
+      "value": 1500000,
+      "value_krw": 1500000000,
+      "unit_override": null
+     }
+    ]
+   },
+   {
+    "row": 5,
+    "label": "계",
+    "label_path": [
+     "계"
+    ],
+    "level": 0,
+    "acode": null,
+    "kind": "total",
+    "cells": [
+     {
+      "col": 1,
+      "raw": "1,607,496",
+      "value": 1607496,
+      "value_krw": 1607496000,
+      "unit_override": null
+     },
+     {
+      "col": 2,
+      "raw": "1,611,093",
+      "value": 1611093,
+      "value_krw": 1611093000,
+      "unit_override": null
+     }
+    ]
+   }
+  ],
+  "checks": {
+   "period_found": true,
+   "unit_found": true,
+   "sum_ok": true,
+   "identity_ok": null
+  },
+  "issues": [],
+  "status": "verified",
+  "parser_version": "ledger-t3"
+ },
+ "20260319001078:00760:t043": {
+  "table_id": "20260319001078:00760:t043",
+  "rcept_no": "20260319001078",
+  "amends_rcept_no": null,
+  "file": "20260319001078_00760.xml",
+  "fs_scope": "separate",
+  "page": 20,
+  "region": {
+   "kind": "note",
+   "note_no": "10",
+   "note_title": "기타포괄손익-공정가치측정금융자산",
+   "sub_path": [
+    "(2)"
+   ]
+  },
+  "title": "(2) 당기 및 전기말 현재 기타포괄손익-공정가치측정금융자산의 내역은 다음과 같습니다.",
+  "footnotes": [
+   {
+    "mark": "(*)",
+    "text": "소유주식수 및 출자 지분율은 수량 또는 지분율이 미미하므로 표기하지 않았습니다."
+   }
+  ],
+  "unit": {
+   "raw": "(단위 : 원)",
+   "kind": "krw",
+   "multiplier": 1,
+   "currency": "KRW"
+  },
+  "columns": [
+   {
+    "col": 0,
+    "header_path": [
+     "(단위 : 원)",
+     "구 분"
+    ],
+    "role": "label"
+   },
+   {
+    "col": 1,
+    "header_path": [
+     "(단위 : 원)",
+     "주식수"
+    ],
+    "role": "label"
+   },
+   {
+    "col": 2,
+    "header_path": [
+     "(단위 : 원)",
+     "지분율"
+    ],
+    "role": "label"
+   },
+   {
+    "col": 3,
+    "header_path": [
+     "(단위 : 원)",
+     "취득원가"
+    ],
+    "role": "value",
+    "period": "unknown",
+    "date": null
+   },
+   {
+    "col": 4,
+    "header_path": [
+     "(단위 : 원)",
+     "공정가치"
+    ],
+    "role": "value",
+    "period": "unknown",
+    "date": null
+   },
+   {
+    "col": 5,
+    "header_path": [
+     "(단위 : 원)",
+     "당기"
+    ],
+    "role": "value",
+    "period": "current_period",
+    "date": null
+   },
+   {
+    "col": 6,
+    "header_path": [
+     "(단위 : 원)",
+     "전기"
+    ],
+    "role": "value",
+    "period": "prior_period",
+    "date": null
+   }
+  ],
+  "rows": [
+   {
+    "row": 2,
+    "label": "상장지분상품",
+    "label_path": [
+     "상장지분상품"
+    ],
+    "level": 0,
+    "acode": null,
+    "kind": "item",
+    "cells": []
+   },
+   {
+    "row": 3,
+    "label": "해태제과식품(주)",
+    "label_path": [
+     "해태제과식품(주)",
+     "(*)"
+    ],
+    "level": 0,
+    "acode": null,
+    "kind": "item",
+    "cells": [
+     {
+      "col": 3,
+      "raw": "938,271,605",
+      "value": 938271605,
+      "value_krw": 938271605,
+      "unit_override": null
+     },
+     {
+      "col": 4,
+      "raw": "509,200,000",
+      "value": 509200000,
+      "value_krw": 509200000,
+      "unit_override": null
+     },
+     {
+      "col": 5,
+      "raw": "509,200,000",
+      "value": 509200000,
+      "value_krw": 509200000,
+      "unit_override": null
+     },
+     {
+      "col": 6,
+      "raw": "456,000,000",
+      "value": 456000000,
+      "value_krw": 456000000,
+      "unit_override": null
+     }
+    ]
+   },
+   {
+    "row": 4,
+    "label": "합 계",
+    "label_path": [
+     "합 계"
+    ],
+    "level": 0,
+    "acode": null,
+    "kind": "total",
+    "cells": [
+     {
+      "col": 3,
+      "raw": "938,271,605",
+      "value": 938271605,
+      "value_krw": 938271605,
+      "unit_override": null
+     },
+     {
+      "col": 4,
+      "raw": "509,200,000",
+      "value": 509200000,
+      "value_krw": 509200000,
+      "unit_override": null
+     },
+     {
+      "col": 5,
+      "raw": "509,200,000",
+      "value": 509200000,
+      "value_krw": 509200000,
+      "unit_override": null
+     },
+     {
+      "col": 6,
+      "raw": "456,000,000",
+      "value": 456000000,
+      "value_krw": 456000000,
+      "unit_override": null
+     }
+    ]
+   }
+  ],
+  "checks": {
+   "period_found": true,
+   "unit_found": true,
+   "sum_ok": true,
+   "identity_ok": null
+  },
+  "issues": [],
+  "status": "verified",
+  "parser_version": "ledger-t3"
+ },
+ "20260319000795:00760:t058": {
+  "table_id": "20260319000795:00760:t058",
+  "rcept_no": "20260319000795",
+  "amends_rcept_no": null,
+  "file": "20260319000795_00760.xml",
+  "fs_scope": "separate",
+  "page": 46,
+  "region": {
+   "kind": "note",
+   "note_no": "13",
+   "note_title": "무형자산",
+   "sub_path": [
+    "(2)"
+   ]
+  },
+  "title": "(2) 무형자산의 변동내용은 다음과 같습니다. 〈당기〉",
+  "footnotes": [
+   {
+    "mark": "(*1)",
+    "text": "무형자산상각비는 전액 판매비와관리비에 포함되었습니다.(*2) 기타 증감액은 전기에 인식한 현금창출단위의 총 손상차손을 각 구성 자산(유형자산 및 무형자산)의 장부금액에 비례하여 재배분(대체)한 금액입니다. 동 조정으로 인하여 전기에 인식한 총 손상차손 누계액 및 당사 순자산 총액에 미치는 영향은없습니다.(*3) 당기말 현재 산업재산권 중 특허권 제10-1658942호를 기술신용보증기금의 보증서 발급과 관련하여 담보로 제공하고 있습니다."
+   }
+  ],
+  "unit": {
+   "raw": "(단위 : 천원)",
+   "kind": "krw",
+   "multiplier": 1000,
+   "currency": "KRW"
+  },
+  "columns": [
+   {
+    "col": 0,
+    "header_path": [
+     "(단위 : 천원)",
+     "구분"
+    ],
+    "role": "label"
+   },
+   {
+    "col": 1,
+    "header_path": [
+     "(단위 : 천원)",
+     "기초"
+    ],
+    "role": "value",
+    "period": "opening",
+    "date": null
+   },
+   {
+    "col": 2,
+    "header_path": [
+     "(단위 : 천원)",
+     "개별취득"
+    ],
+    "role": "value",
+    "period": "current_period",
+    "date": null
+   },
+   {
+    "col": 3,
+    "header_path": [
+     "(단위 : 천원)",
+     "내부창출취득"
+    ],
+    "role": "value",
+    "period": "current_period",
+    "date": null
+   },
+   {
+    "col": 4,
+    "header_path": [
+     "(단위 : 천원)",
+     "상각비(*1)"
+    ],
+    "role": "value",
+    "period": "current_period",
+    "date": null
+   },
+   {
+    "col": 5,
+    "header_path": [
+     "(단위 : 천원)",
+     "기타(*2)"
+    ],
+    "role": "value",
+    "period": "current_period",
+    "date": null
+   },
+   {
+    "col": 6,
+    "header_path": [
+     "(단위 : 천원)",
+     "기말(*3)"
+    ],
+    "role": "value",
+    "period": "current_end",
+    "date": null
+   }
+  ],
+  "rows": [
+   {
+    "row": 2,
+    "label": "산업재산권",
+    "label_path": [
+     "산업재산권"
+    ],
+    "level": 0,
+    "acode": null,
+    "kind": "item",
+    "cells": [
+     {
+      "col": 1,
+      "raw": "196,999",
+      "value": 196999,
+      "value_krw": 196999000,
+      "unit_override": null
+     },
+     {
+      "col": 2,
+      "raw": "98,261",
+      "value": 98261,
+      "value_krw": 98261000,
+      "unit_override": null
+     },
+     {
+      "col": 3,
+      "raw": "-",
+      "value": 0,
+      "value_krw": 0,
+      "unit_override": null
+     },
+     {
+      "col": 4,
+      "raw": "(71,863)",
+      "value": -71863,
+      "value_krw": -71863000,
+      "unit_override": null
+     },
+     {
+      "col": 5,
+      "raw": "(54,239)",
+      "value": -54239,
+      "value_krw": -54239000,
+      "unit_override": null
+     },
+     {
+      "col": 6,
+      "raw": "169,158",
+      "value": 169158,
+      "value_krw": 169158000,
+      "unit_override": null
+     }
+    ]
+   },
+   {
+    "row": 3,
+    "label": "개발비",
+    "label_path": [
+     "개발비"
+    ],
+    "level": 0,
+    "acode": null,
+    "kind": "item",
+    "cells": [
+     {
+      "col": 1,
+      "raw": "1,309,706",
+      "value": 1309706,
+      "value_krw": 1309706000,
+      "unit_override": null
+     },
+     {
+      "col": 2,
+      "raw": "-",
+      "value": 0,
+      "value_krw": 0,
+      "unit_override": null
+     },
+     {
+      "col": 3,
+      "raw": "181,190",
+      "value": 181190,
+      "value_krw": 181190000,
+      "unit_override": null
+     },
+     {
+      "col": 4,
+      "raw": "(240,159)",
+      "value": -240159,
+      "value_krw": -240159000,
+      "unit_override": null
+     },
+     {
+      "col": 5,
+      "raw": "(360,665)",
+      "value": -360665,
+      "value_krw": -360665000,
+      "unit_override": null
+     },
+     {
+      "col": 6,
+      "raw": "890,072",
+      "value": 890072,
+      "value_krw": 890072000,
+      "unit_override": null
+     }
+    ]
+   },
+   {
+    "row": 4,
+    "label": "사용수익기부자산",
+    "label_path": [
+     "사용수익기부자산"
+    ],
+    "level": 0,
+    "acode": null,
+    "kind": "item",
+    "cells": [
+     {
+      "col": 1,
+      "raw": "60,653",
+      "value": 60653,
+      "value_krw": 60653000,
+      "unit_override": null
+     },
+     {
+      "col": 2,
+      "raw": "-",
+      "value": 0,
+      "value_krw": 0,
+      "unit_override": null
+     },
+     {
+      "col": 3,
+      "raw": "-",
+      "value": 0,
+      "value_krw": 0,
+      "unit_override": null
+     },
+     {
+      "col": 4,
+      "raw": "(6,283)",
+      "value": -6283,
+      "value_krw": -6283000,
+      "unit_override": null
+     },
+     {
+      "col": 5,
+      "raw": "(16,703)",
+      "value": -16703,
+      "value_krw": -16703000,
+      "unit_override": null
+     },
+     {
+      "col": 6,
+      "raw": "37,667",
+      "value": 37667,
+      "value_krw": 37667000,
+      "unit_override": null
+     }
+    ]
+   },
+   {
+    "row": 5,
+    "label": "소프트웨어",
+    "label_path": [
+     "소프트웨어"
+    ],
+    "level": 0,
+    "acode": null,
+    "kind": "item",
+    "cells": [
+     {
+      "col": 1,
+      "raw": "90,065",
+      "value": 90065,
+      "value_krw": 90065000,
+      "unit_override": null
+     },
+     {
+      "col": 2,
+      "raw": "2,351",
+      "value": 2351,
+      "value_krw": 2351000,
+      "unit_override": null
+     },
+     {
+      "col": 3,
+      "raw": "-",
+      "value": 0,
+      "value_krw": 0,
+      "unit_override": null
+     },
+     {
+      "col": 4,
+      "raw": "(16,925)",
+      "value": -16925,
+      "value_krw": -16925000,
+      "unit_override": null
+     },
+     {
+      "col": 5,
+      "raw": "(44,322)",
+      "value": -44322,
+      "value_krw": -44322000,
+      "unit_override": null
+     },
+     {
+      "col": 6,
+      "raw": "31,169",
+      "value": 31169,
+      "value_krw": 31169000,
+      "unit_override": null
+     }
+    ]
+   },
+   {
+    "row": 6,
+    "label": "건설중인자산",
+    "label_path": [
+     "건설중인자산"
+    ],
+    "level": 0,
+    "acode": null,
+    "kind": "item",
+    "cells": [
+     {
+      "col": 1,
+      "raw": "-",
+      "value": 0,
+      "value_krw": 0,
+      "unit_override": null
+     },
+     {
+      "col": 2,
+      "raw": "143,697",
+      "value": 143697,
+      "value_krw": 143697000,
+      "unit_override": null
+     },
+     {
+      "col": 3,
+      "raw": "-",
+      "value": 0,
+      "value_krw": 0,
+      "unit_override": null
+     },
+     {
+      "col": 4,
+      "raw": "-",
+      "value": 0,
+      "value_krw": 0,
+      "unit_override": null
+     },
+     {
+      "col": 5,
+      "raw": "-",
+      "value": 0,
+      "value_krw": 0,
+      "unit_override": null
+     },
+     {
+      "col": 6,
+      "raw": "143,697",
+      "value": 143697,
+      "value_krw": 143697000,
+      "unit_override": null
+     }
+    ]
+   },
+   {
+    "row": 7,
+    "label": "합계",
+    "label_path": [
+     "합계"
+    ],
+    "level": 0,
+    "acode": null,
+    "kind": "total",
+    "cells": [
+     {
+      "col": 1,
+      "raw": "1,657,423",
+      "value": 1657423,
+      "value_krw": 1657423000,
+      "unit_override": null
+     },
+     {
+      "col": 2,
+      "raw": "244,309",
+      "value": 244309,
+      "value_krw": 244309000,
+      "unit_override": null
+     },
+     {
+      "col": 3,
+      "raw": "181,190",
+      "value": 181190,
+      "value_krw": 181190000,
+      "unit_override": null
+     },
+     {
+      "col": 4,
+      "raw": "(335,230)",
+      "value": -335230,
+      "value_krw": -335230000,
+      "unit_override": null
+     },
+     {
+      "col": 5,
+      "raw": "(475,929)",
+      "value": -475929,
+      "value_krw": -475929000,
+      "unit_override": null
+     },
+     {
+      "col": 6,
+      "raw": "1,271,763",
+      "value": 1271763,
+      "value_krw": 1271763000,
+      "unit_override": null
+     }
+    ]
+   }
+  ],
+  "checks": {
+   "period_found": true,
+   "unit_found": true,
+   "sum_ok": true,
+   "identity_ok": null
+  },
+  "issues": [],
+  "status": "verified",
+  "parser_version": "ledger-t3"
+ }
+}

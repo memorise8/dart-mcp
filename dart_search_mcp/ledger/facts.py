@@ -15,6 +15,9 @@
   (balance 는 흐름 머리글 열이면 버린다).
 단위: shares·percent·count 칸은 금액 개념에 쓰지 않는다. krw 만 amount_krw 가 있다.
 같은 기간 값 열이 여럿이면(공정가치 서열 표의 수준 1·2·3·합계) 합계·장부금액 열이 있으면 그 열만 쓴다.
+mode "table_total"(c6, T6b): 행 이름이 아니라 표 제목(+ 바로 아래 소제목 행)으로 개념을 정하고, 그 표의 합계 행
+  하나(합계 행이 없으면 금액 행이 하나뿐인 표의 그 행)를 쓴다. 더하지 않는다. 열은 잔액 열(장부금액·공정가치·기간
+  낱말)만, 취득원가·평가손익·지분율 등은 안 쓴다. 같은 표에 행 이름으로 이미 그 개념이 걸렸으면 쓰지 않는다.
 """
 from __future__ import annotations
 
@@ -36,7 +39,7 @@ _MARK_RE = re.compile(r"(\(\*\d*\)|\*\d*\)?|주\d+\))\s*$")
 _WS_RE = re.compile(r"\s+")
 _AMOUNT_UNITS = {"krw", "foreign", "unknown"}
 _PREFERRED_COL_RE = re.compile(r"^(?:합계|총계|계|(?:기말)?순?장부(?:금|가)액|기말(?:잔액|금액)?|당기말(?:잔액)?)$")
-_FLOW_HEADER_RE = re.compile(r"취득|증가|감소|증감|변동|상각|처분|대체|손상|환입|발생|상환|전환|행사|기초|발행|최초|인식시")
+_FLOW_HEADER_RE = re.compile(r"취득|증가|감소|증감|변동|상각|처분|대체|손상|환입|발생|상환|전환|행사|기초|발행|최초|인식시|창출|자본화")
 # 금액이 아닌 숫자 열(공정가치 서열 「수준」, 주당 가격, 비율·이자율, 만기 연도) — 단위가 원으로 잡혀도 금액 개념에 안 쓴다
 _NON_AMOUNT_HEADER_RE = re.compile(r"^(수준|Level|서열)$|주당|가격|단가|전환가액|행사가액|비율|이자율|할인율|만기일|^만기$|연도|^기간$|잔존기간|상환기간|주식수|%")
 # target(내재파생 분리 대상): 구체적인 옵션 낱말이 상품 이름 속 「전환」「상환」보다 앞선다.
@@ -73,6 +76,12 @@ class Concept:
     own_label_only: bool = False
     title_region: bool = False
     table_context: bool = False  # 참이면 context_patterns 를 같은 표의 다른 행 이름에도 맞춘다
+    mode: str = ""  # "table_total": 표 제목 + 합계 행(행 이름 매칭을 쓰지 않음)
+    table_patterns: tuple = ()  # table_total: 표 제목 + 첫 소제목 행 글에 모두 있어야 하는 패턴
+    table_exclude_patterns: tuple = ()  # table_total: 표 제목·소제목에 있으면 안 됨
+    row_exclude_patterns: tuple = ()  # table_total: 표의 어느 행 이름에도 있으면 안 됨(합계가 다른 것을 포함)
+    column_exclude_patterns: tuple = ()  # table_total: 열 머리글 어느 단계에도 있으면 안 됨
+    replaces: tuple = ()  # table_total: 같은 칸에 이 개념만 걸려 있으면 대신한다
     topic: str = ""
     version: str = ""
     _rx: dict = field(default_factory=dict, compare=False, hash=False, repr=False)
@@ -100,6 +109,11 @@ def load_concepts(path: Path | None = None) -> list[Concept]:
                            context_exclude_patterns=tuple(c.get("context_exclude_patterns") or ()),
                            own_label_only=bool(c.get("own_label_only")), title_region=bool(c.get("title_region")),
                            table_context=bool(c.get("table_context")),
+                           mode=c.get("mode", ""), table_patterns=tuple(c.get("table_patterns") or ()),
+                           table_exclude_patterns=tuple(c.get("table_exclude_patterns") or ()),
+                           row_exclude_patterns=tuple(c.get("row_exclude_patterns") or ()),
+                           column_exclude_patterns=tuple(c.get("column_exclude_patterns") or ()),
+                           replaces=tuple(c.get("replaces") or ()),
                            topic=c.get("topic", ""),
                            version=version))
     return out
@@ -368,7 +382,7 @@ def _candidates(table: dict, concepts: list[Concept]):
         row_period = _row_period(row)
         for order, c in enumerate(concepts):
             ok, _unknown = regions[order]
-            if not ok:
+            if not ok or c.mode:
                 continue
             level = _label_level(c, label, path_parents, joined)
             if level is None:
@@ -406,7 +420,77 @@ def _candidates(table: dict, concepts: list[Concept]):
                 picked = _prefer_total_columns(picked)
             for cell, col, period, inferred in picked:
                 out.setdefault((i, cell["col"]), []).append((level, order, c, period, inferred, row, cell, col))
+    for order, c in enumerate(concepts):
+        if c.mode == "table_total" and regions[order][0]:
+            _table_total(c, order, table, cols, has_end, has_period, out)
     return out
+
+
+_TOTAL_LABEL_RE = re.compile(r"^(합계|총계|계|총합계)$")
+_TERM_KINDS = {"current_end", "prior_end", "current_term", "prior_term", "close"}
+
+
+def _table_total(c: Concept, order: int, table: dict, cols: dict, has_end: bool, has_period: bool, out: dict) -> None:
+    """mode table_total: 표 제목(+ 첫 소제목 행)이 개념을 정하는 표의 합계 행(또는 한 행짜리 표의 그 행)."""
+    rows = table.get("rows") or []
+    title = _WS_RE.sub("", table.get("title") or "")
+    sub = norm_label(rows[0].get("label")) if rows and _is_blank_header(rows[0]) else ""
+    text = title + " " + sub
+    if not all(rx.search(text) for rx in c.rx("table_patterns")):
+        return
+    if any(rx.search(t) for rx in c.rx("table_exclude_patterns") for t in (title, sub) if t):
+        return
+    for r in rows:
+        names = [norm_label(r.get("label")), *(norm_label(p) for p in r.get("label_path") or [])]
+        if any(rx.search(n) for rx in c.rx("row_exclude_patterns") for n in names if n):
+            return
+    if any(x[2].id == c.id for cs in out.values() for x in cs):
+        return  # 행 이름으로 이미 걸렸다(「기타포괄손익-공정가치측정 지분상품」 행 + 합계) — 겹쳐 내지 않는다
+    totals = [i for i, r in enumerate(rows) if r.get("kind") == "total"]
+    if totals:
+        if len(totals) != 1 or not _TOTAL_LABEL_RE.match(norm_label(rows[totals[0]].get("label"))):
+            return
+        idx, basis = totals[0], "table_total"
+    else:
+        if any(r.get("kind") == "subtotal" for r in rows):
+            return
+        items = [i for i, r in enumerate(rows) if _is_amount_row(table, r)]
+        if len(items) != 1:
+            return  # 합계 없는 여러 행 표는 더하지 않는다
+        idx, basis = items[0], "table_single_row"
+    row = rows[idx]
+    row_period = _row_period(row)
+    picked = []
+    for cell in row.get("cells") or []:
+        col = cols.get(cell["col"])
+        if col is None or cell.get("value") is None or _cell_unit(table, cell).get("kind") not in _AMOUNT_UNITS:
+            continue
+        last = _header_last(col)
+        if _NON_AMOUNT_HEADER_RE.search(last):
+            continue
+        parts = [_WS_RE.sub("", h or "") for h in col.get("header_path") or []]
+        if any(rx.search(h) for rx in c.rx("column_exclude_patterns") for h in parts if h):
+            continue
+        if not (any(rx.search(last) for rx in c.rx("column_patterns")) or _period_word(last) in _TERM_KINDS):
+            continue
+        period, inferred = _cell_period(c, col, has_end, has_period, False, row_period)
+        if period is None:
+            continue
+        picked.append((cell, col, period, inferred))
+    if any(p[2] != "unknown" for p in picked):
+        picked = [p for p in picked if p[2] != "unknown"]  # 기간 열이 있으면 기간 모르는 공정가치 열은 안 쓴다
+    by_period: dict = {}
+    for p in picked:
+        by_period.setdefault(p[2], []).append(p)
+    for group in by_period.values():
+        if len(group) > 1:
+            group = ([p for p in group if re.search(r"장부", _header_last(p[1]))]
+                     or [p for p in group if re.search(r"공정가치", _header_last(p[1]))] or group)
+        for cell, col, period, inferred in group:
+            key = (idx, cell["col"])
+            if any(x[2].id not in c.replaces for x in out.get(key, [])):
+                continue  # 행 이름으로 걸린 다른 개념이 앞선다
+            out[key] = [(0, order, c, period, inferred, row, cell, col, basis)]
 
 
 def _prefer_total_columns(picked: list) -> list:
@@ -437,7 +521,8 @@ def extract_facts(tables: list[dict], concepts: list[Concept], *, stats: Counter
         conflict_rows: set[int] = set()
         for (i, _col), cs in sorted(cands.items()):
             cs.sort(key=lambda x: (x[0], x[1]))
-            level, _order, c, period, inferred, row, cell, col = cs[0]
+            level, _order, c, period, inferred, row, cell, col = cs[0][:8]
+            basis_kind = cs[0][8] if len(cs[0]) > 8 else None
             rivals = sorted({x[2].id for x in cs[1:] if x[0] == level and x[2].id != c.id})
             if rivals and stats is not None:
                 if i not in conflict_rows:
@@ -468,6 +553,8 @@ def extract_facts(tables: list[dict], concepts: list[Concept], *, stats: Counter
                 fact["currency"] = unit.get("currency")
             if inferred:
                 fact["period_inferred"] = True
+            if basis_kind:
+                fact["match_basis"] = basis_kind
             _ok, unknown, title_only = _region_match(c, table)
             if unknown:
                 fact["region_unknown"] = True

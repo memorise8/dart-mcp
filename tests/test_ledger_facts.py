@@ -720,8 +720,8 @@ class FixRound2Test(unittest.TestCase):
     def facts(self, *tables):
         return extract_facts(list(tables), self.concepts)
 
-    def test_version_c5(self):
-        self.assertEqual(self.concepts[0].version, "c5")
+    def test_version_c5_or_later(self):
+        self.assertRegex(self.concepts[0].version, r"^c([5-9]|\d\d)$")
 
     def test_fvpl_equity(self):
         # T10: FVOCI 「지정 안 함」 판정용 당기손익-공정가치 지분상품 개념(c5)
@@ -767,6 +767,140 @@ class FixRound2Test(unittest.TestCase):
         t["rows"][1]["level"] = 1
         (f, _) = _by(self.facts(t), "EMB_DERIV_LIABILITY")
         self.assertEqual((f["target"], f["target_basis"]), ("other", "default"))
+
+
+_T6B = json.loads((Path(__file__).parent / "fixtures" / "ledger" / "t6b_tables.json").read_text(encoding="utf-8"))
+
+
+def _real(tid):
+    return json.loads(json.dumps(_T6B[tid]))  # 1층 표 기록 그대로(dart_collected/tables 에서 옮김), 테스트마다 사본
+
+
+class T6bTest(unittest.TestCase):
+    """T6b: FVOCI_EQUITY 표 제목 합계 행, DEV_COST_ADDITION 내부창출 열(c6)."""
+
+    def setUp(self):
+        self.concepts = load_concepts()
+
+    def facts(self, *tables, stats=None):
+        return extract_facts(list(tables), self.concepts, stats=stats)
+
+    def test_version_c6(self):
+        self.assertEqual(self.concepts[0].version, "c6")
+
+    # ---- 1. FVOCI_EQUITY 표 제목 + 합계 행 ----
+    def test_real_title_equity_total_row(self):
+        # 20260319001100 t073 「(1) 기타포괄손익-공정가치 측정 지분상품」: 행 = 투자처 이름, 「계」 행
+        got = _by(self.facts(_real("20260319001100:00760:t073")), "FVOCI_EQUITY")
+        self.assertEqual({(f["period"], f["amount"], f["amount_krw"]) for f in got},
+                         {("current_end", 1607496, 1607496000), ("prior_end", 1611093, 1611093000)})
+        self.assertTrue(all(f["label"] == "계" and f["match_basis"] == "table_total" for f in got))
+
+    def test_real_subheading_equity_total_row(self):
+        # 20260319001078 t043: 제목은 「기타포괄손익-공정가치측정금융자산」, 바로 아래 소제목 행 「상장지분상품」.
+        # 열 = 취득원가(안 씀) / 공정가치(기간 모름 — 기간 열이 있으므로 안 씀) / 당기 / 전기
+        got = _by(self.facts(_real("20260319001078:00760:t043")), "FVOCI_EQUITY")
+        self.assertEqual({(f["period"], f["amount_krw"]) for f in got},
+                         {("current_end", 509200000), ("prior_end", 456000000)})
+        self.assertTrue(all(f["period_inferred"] for f in got))
+        self.assertNotIn(938271605, {f["amount"] for f in got})
+
+    def _equity(self, rows, title="(1) 기타포괄손익-공정가치 측정 지분상품", **kw):
+        kw.setdefault("note_title", "기타포괄손익-공정가치측정금융자산")
+        kw.setdefault("headers", ["당기말", "전기말"])
+        return _by(self.facts(_table(rows, title=title, **kw)), "FVOCI_EQUITY")
+
+    def test_hand_title_equity_total(self):
+        got = self._equity([("상장주식", [10, 8]), ("비상장주식", [5, 5]), ("합 계", [15, 13])])
+        self.assertEqual({(f["period"], f["amount"]) for f in got}, {("current_end", 15), ("prior_end", 13)})
+
+    def test_debt_title_no_fact(self):
+        rows = [("국공채", [10, 8]), ("회사채", [5, 5]), ("합계", [15, 13])]
+        self.assertEqual(self._equity(rows, title="(2) 기타포괄손익-공정가치 측정 채무상품"), [])
+        rows = [("A사 주식", [10, 8]), ("B사 주식", [5, 5]), ("합계", [15, 13])]
+        self.assertEqual(self._equity(rows, title="기타포괄손익-공정가치 측정 지분상품 및 채무상품"), [])
+        self.assertEqual(self._equity(rows, title="당기손익-공정가치 및 기타포괄손익-공정가치 측정 지분상품"), [])
+
+    def test_debt_row_in_equity_titled_table_no_fact(self):
+        # 20260311004362 t082 모양: 제목은 지분증권 지정, 행에 「채무증권」 → 합계가 채무를 포함
+        rows = [("시장성 없는 지분증권", [10, 8]), ("채무증권", [5, 5]), ("합 계", [15, 13])]
+        self.assertEqual(self._equity(rows, title="장기로 보유할 지분증권을 기타포괄손익-공정가치 측정 항목으로 지정하였습니다."), [])
+
+    def test_fvpl_section_row_no_fact(self):
+        # 20260311004398 t112 모양: 소제목은 FVOCI 이지만 같은 표에 당기손익-공정가치 구획
+        rows = [("기타포괄손익-공정가치측정금융상품:", [None, None]), ("A사", [10, 8]), ("당기손익-공정가치측정금융상품:", [None, None]),
+                ("B사", [5, 5]), ("합 계", [15, 13])]
+        self.assertEqual(self._equity(rows, title="(2) 시장성 없는 지분증권"), [])
+
+    def test_dividend_or_gain_title_no_fact(self):
+        # 20260331004180 t089 모양: 배당금수익 표(흐름)
+        rows = [("주식", [19, 19]), ("기타유가증권", [281, 2910]), ("합계", [300, 2929])]
+        self.assertEqual(self._equity(rows, title="(5) 기타포괄손익-공정가치측정 항목으로 지정한 지분상품으로부터 인식한 배당금수익",
+                                      periods=("current_period", "prior_period"), headers=["당기", "전기"]), [])
+        self.assertEqual(self._equity(rows, title="기타포괄손익-공정가치 측정 지분상품 평가손익"), [])
+
+    def test_acquisition_cost_column_no_fact(self):
+        rows = [("A사", [100, 90]), ("B사", [50, 40]), ("합계", [150, 130])]
+        got = self._equity(rows, periods=("current_end", "current_end"), headers=[["당기말", "취득원가"], ["당기말", "평가손익"]])
+        self.assertEqual(got, [])
+        # 위 단계가 취득원가인 기간 열(「취득원가 / 당기말」)도 안 쓴다
+        got = self._equity(rows, headers=[["취득원가", "당기말"], ["취득원가", "전기말"]])
+        self.assertEqual(got, [])
+        # 취득원가·장부금액이 함께면 장부금액만
+        got = self._equity(rows, periods=("current_end", "current_end"), headers=[["당기말", "취득원가"], ["당기말", "장부금액"]])
+        self.assertEqual([(f["column"], f["amount"]) for f in got], [("장부금액", 130)])
+
+    def test_multi_row_without_total_no_fact(self):
+        rows = [("A사", [100, 90]), ("B사", [50, 40]), ("C사", [5, 4])]
+        self.assertEqual(self._equity(rows), [])
+
+    def test_single_row_table(self):
+        # 20260331000648 t055 모양: 소제목 「지분증권」 + 투자처 한 행, 합계 없음
+        got = self._equity([("지분증권", [None, None]), ("ALTAVA GROUP", [381588, 425025])],
+                           title="(1) 기타포괄손익-공정가치측정금융자산의 상세 내역")
+        self.assertEqual({(f["period"], f["amount"], f["match_basis"]) for f in got},
+                         {("current_end", 381588, "table_single_row"), ("prior_end", 425025, "table_single_row")})
+
+    def test_title_needs_both_fvoci_and_equity(self):
+        rows = [("A사", [100, 90]), ("B사", [50, 40]), ("합계", [150, 130])]
+        self.assertEqual(self._equity(rows, title="(1) 기타포괄손익-공정가치측정금융자산의 내역"), [])
+        self.assertEqual(self._equity(rows, title="(1) 지분상품의 내역", note_title="장기투자증권"), [])
+
+    def test_fair_value_hierarchy_title_no_fact(self):
+        rows = [("A사", [10, 8]), ("B사", [3, 2]), ("합계", [13, 10])]
+        self.assertEqual(self._equity(rows, title="기타포괄손익-공정가치 측정 지분상품의 공정가치 서열체계",
+                                      note_title="공정가치"), [])
+
+    def test_row_matched_equity_table_not_duplicated(self):
+        rows = [("기타포괄손익-공정가치측정 지분상품", [10, 8]), ("합계", [10, 8])]
+        got = self._equity(rows)
+        self.assertEqual({f["label"] for f in got}, {"기타포괄손익-공정가치측정 지분상품"})
+
+    def test_fa_total_row_in_equity_titled_table_becomes_equity(self):
+        t = _table([("기타포괄손익-공정가치측정금융자산", [10, 8])], title="(1) 기타포괄손익-공정가치 측정 지분상품",
+                   note_title="금융자산", headers=["당기말", "전기말"])
+        got = self.facts(t)
+        self.assertEqual({f["concept"] for f in got}, {"FVOCI_EQUITY"})
+
+    # ---- 2. DEV_COST_ADDITION 내부창출 열 ----
+    def test_real_internal_generation_column(self):
+        # 20260319000795 t058: 개발비 행 × 「내부창출취득」 181,190(천원)
+        got = _by(self.facts(_real("20260319000795:00760:t058")), "DEV_COST_ADDITION")
+        self.assertIn(("내부창출취득", 181190, "current_period"), {(f["column"], f["amount"], f["period"]) for f in got})
+        self.assertNotIn("상각비(*1)", {f["column"] for f in got})
+
+    def test_addition_column_words(self):
+        heads = ["내부창출", "자본화", "개발비대체", "대체(증가)", "대체", "대체(감소)", "감소", "처분", "손상"]
+        t = _table([("개발비", [1, 2, 3, 4, -5, -6, -7, -8, -9])], note_title="무형자산", title="무형자산의 변동",
+                   periods=("current_period",) * len(heads), headers=heads)
+        got = {f["column"]: f["amount"] for f in _by(self.facts(t), "DEV_COST_ADDITION")}
+        self.assertEqual(got, {"내부창출": 1, "자본화": 2, "개발비대체": 3, "대체(증가)": 4})
+
+    def test_addition_row_words(self):
+        t = _table([("내부창출", [5]), ("대체", [-3])], note_title="무형자산", title="무형자산의 변동",
+                   periods=("current_period",), headers=["개발비"])
+        got = {f["label"]: f["amount"] for f in _by(self.facts(t), "DEV_COST_ADDITION")}
+        self.assertEqual(got, {"내부창출": 5})
 
 
 class RunnerTest(unittest.TestCase):
