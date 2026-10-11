@@ -80,6 +80,20 @@ def _pos(facts: list[dict], *concepts: str) -> list[dict]:
     return [f for c in concepts for f in _usable(facts, c) if _num(f.get("amount")) > 0]
 
 
+def _pos_abs(facts: list[dict], *concepts: str) -> list[dict]:
+    """부호와 무관하게 금액이 있는 사실 — 괄호(음수)로 표시한 부채 금액(EMB_DERIV_*)용."""
+    return [f for c in concepts for f in _usable(facts, c) if abs(_num(f.get("amount"))) > 0]
+
+
+def _first_with(recs: list[dict], *fields: str) -> tuple[dict, str]:
+    """잔액이 0 이 아닌 첫 기록과 그 칸(없으면 첫 기록과 첫 칸)."""
+    for r in recs:
+        for fld in fields:
+            if _record_side(r, fld):
+                return r, fld
+    return recs[0], fields[0]
+
+
 def _nonzero(facts: list[dict], *concepts: str) -> list[dict]:
     return [f for c in concepts for f in _usable(facts, c) if _num(f.get("amount")) != 0]
 
@@ -185,8 +199,9 @@ def _topic_marks(marks: list[dict], topic: str) -> list[dict]:
 
 
 class Ctx:
-    def __init__(self, facts, marks, meta, rules):
+    def __init__(self, facts, marks, meta, rules, fs_scope=None):
         self.facts, self.marks, self.meta, self.rules = facts, marks, meta, rules
+        self.fs_scope = fs_scope
         self.tables = meta.get("tables") or {}
         self.reasons = rules["reasons"]
         self.rx = rules["rx"]
@@ -269,9 +284,9 @@ def _conv_run(ctx: Ctx, ins: list[dict]) -> dict | None:
     missing = [f for f in (fli if not li else []) + (feq if not eq else [])]
     if missing:
         return _review(f"사채 기록은 {value}인데 다른 분류 금액이 있음: {evidence_line(_pick(missing), ctx.tables)}")
-    picks = [(eq[0], "equity_component")] if eq else []
+    picks = [_first_with(eq, "equity_component")] if eq else []
     if li:
-        picks.append((li[0], "derivative_liability"))
+        picks.append(_first_with(li, "derivative_liability"))
     return _from_records(value, picks, ctx.tables)
 
 
@@ -280,7 +295,7 @@ def _emb_run(ctx: Ctx, ins: list[dict]) -> dict | None:
     rules = ctx.rules
     sep = [i for i in ins if i.get("embedded_separation") == "separated"]
     nots = [i for i in ins if i.get("embedded_separation") in ("not_separated", "whole_fvpl")]
-    emb = _pos(ctx.facts, "EMB_DERIV_LIABILITY", "EMB_DERIV_ASSET")
+    emb = _pos_abs(ctx.facts, "EMB_DERIV_LIABILITY", "EMB_DERIV_ASSET")
     strong = [f for f in emb if f.get("target") in rules["emb_strong_targets"]
               and f.get("target_basis") in rules["emb_strong_bases"]]
     weak = [f for f in emb if f not in strong]
@@ -293,11 +308,10 @@ def _emb_run(ctx: Ctx, ins: list[dict]) -> dict | None:
             return _review(f"사채 기록은 {nots[0].get('embedded_separation')}인데 분리 금액이 있음: "
                            f"{evidence_line(_pick(strong), ctx.tables)}")
         if sep:
-            field = next((k for k in ("derivative_liability", "derivative_asset")
-                          if _record_side(sep[0], k)), "derivative_liability")
-            if _record_side(sep[0], field):
-                return _from_records("SEPARATED", [(sep[0], field)], ctx.tables)
-            line, refs, head = _record_line(sep[0], field, None, ctx.tables, "embedded_separation")
+            rec, field = _first_with(sep, "derivative_liability", "derivative_asset")
+            if _record_side(rec, field):
+                return _from_records("SEPARATED", [(rec, field)], ctx.tables)
+            line, refs, head = _record_line(rec, field, None, ctx.tables, "embedded_separation")
             return _res("SEPARATED", evidence=line.replace(f"{_FIELD_LABEL[field]} 분류", "주계약과 분리"),
                         refs=refs, kind="instrument_record", heading=head)
         return _from_facts("SEPARATED", strong, ctx.tables)
@@ -343,7 +357,8 @@ def _consensus(ctx: Ctx, topic: str, runs: tuple, fn) -> dict | None:
     ra, rb = fn(ctx, a or []), fn(ctx, b or [])
     va, vb = (ra or {}).get("value"), (rb or {}).get("value")
     if va == vb:
-        return ra
+        # 값이 같아도 한 실행이 확인 필요면 확인 필요가 이긴다
+        return rb if (rb or {}).get("held_reason") == "needs_review" else ra
     if {va, vb} == {None, UND}:  # 한 실행은 행 없음, 다른 실행은 판단불가 — 둘 다 확정 값이 없다
         return ra or rb
     desc = lambda r: "행 없음" if r is None else (r["value"] + (f"/{r['held_reason']}" if r["held_reason"] else ""))  # noqa: E731
@@ -488,13 +503,17 @@ def _ip(ctx: Ctx) -> dict | None:
 
 def _ppa(ctx: Ctx) -> dict | None:
     topic = "PPA_MEASUREMENT_PERIOD"
+    # v1 행은 범위(별도·연결)가 없다 — 실행기가 정한 한 범위(연결이 있으면 연결)에만 낸다
+    if ctx.meta.get("ppa_scope") and ctx.meta["ppa_scope"] != ctx.fs_scope:
+        return None
     v1 = ctx.meta.get("v1_ppa")
     if not v1:
         return ctx.und(topic, None)
     value = v1.get("value") or UND
     bc = _usable(ctx.facts, "BC_CONSIDERATION") + _usable(ctx.facts, "BC_NET_ASSETS_FV") + \
         _usable(ctx.facts, "BC_RELATED_COST")
-    if value in ("PROVISIONAL", "FINAL") and not bc:
+    # 사업결합 표 확인은 공시 단위다(연결에만 있는 공시가 많다)
+    if value in ("PROVISIONAL", "FINAL") and not bc and not ctx.meta.get("bc_filing"):
         return _review(f"옛 판정 {value}이나 {ctx.reasons['ppa_no_bc_table']}")
     res = _res(value, held=v1.get("held_reason") or "", evidence=v1.get("evidence") or "",
                kind=v1.get("sentence_kind"), heading=v1.get("evidence_heading_path") or "")
@@ -525,6 +544,13 @@ def _bc_cost(ctx: Ctx) -> dict | None:
 
 # ---------------------------------------------------------------- 1층 표에서 읽는 meta
 
+_TOKEN_NOISE_RE = re.compile(r"\s+|\([^)]*\)|\*\d*|^[\d.가-하]{0,3}[.)]")
+
+
+def _header_token(text: str) -> str:
+    return _TOKEN_NOISE_RE.sub("", text or "")
+
+
 def _table_head(t: dict) -> str:
     region = t.get("region") or {}
     return " ".join([region.get("note_title") or "", t.get("title") or ""])
@@ -539,7 +565,8 @@ def scope_meta(tables: list[dict], fs_scope: str, *, rules_path: Path | None = N
     """
     rules = load_rules(rules_path)
     mv, cat = rules["movement_table"], rules["category_table"]
-    mv_note, mv_words = re.compile(mv["note"]), [re.compile(w) for w in mv["words"]]
+    mv_note = re.compile(mv["note"])
+    mv_tokens = [re.compile(w) for w in mv["tokens"]]
     cat_note, cat_head, cat_row = re.compile(cat["note"]), re.compile(cat["head"]), re.compile(cat["row"])
     topic_notes = {t: re.compile(p) for t, p in rules["topic_notes"].items()}
     out = {"tables": {}, "movement_table": False, "category_table": False, "read_failed_topics": set()}
@@ -556,9 +583,12 @@ def scope_meta(tables: list[dict], fs_scope: str, *, rules_path: Path | None = N
             out["read_failed_topics"].update(k for k, rx in topic_notes.items() if rx.search(head))
             continue
         labels = [r.get("label") or "" for r in t.get("rows") or []]
-        text = " ".join(labels + [" ".join(c.get("header_path") or []) for c in t.get("columns") or []])
-        if mv_note.search(note) and sum(1 for w in mv_words if w.search(text)) >= mv["min_words"]:
-            out["movement_table"] = True
+        if mv_note.search(note):
+            # 머리글 낱말 통째로 맞춘다(「당기말」의 「기말」, 「상각누계액」의 「상각」 같은 부분 일치는 안 됨)
+            tokens = {_header_token(x) for x in labels} | \
+                {_header_token(h) for c in t.get("columns") or [] for h in c.get("header_path") or []}
+            if all(any(rx.match(tok) for tok in tokens) for rx in mv_tokens):
+                out["movement_table"] = True
         if cat_note.search(head) and (cat_head.search(t.get("title") or "") or any(cat_row.search(lb) for lb in labels)):
             out["category_table"] = True
     return out
@@ -592,7 +622,7 @@ def judge_filing(rcept_no: str, fs_scope: str, facts: list[dict], instruments, m
     meta = meta or {}
     rules = load_rules(rules_path)
     facts = [f for f in facts if (f.get("fs_scope") or fs_scope) == fs_scope]
-    ctx = Ctx(facts, list(marks or []), meta, rules)
+    ctx = Ctx(facts, list(marks or []), meta, rules, fs_scope)
     runs = _runs(instruments)
     judged = {
         "CONVERSION_OPTION_CLASS": _consensus(ctx, "CONVERSION_OPTION_CLASS", runs, _conv_run),

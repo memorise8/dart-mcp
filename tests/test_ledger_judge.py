@@ -102,6 +102,16 @@ class ConversionTest(unittest.TestCase):
         r = judge([F("CONV_OPTION_EQUITY", 10)], [I()])["CONVERSION_OPTION_CLASS"]
         self.assertEqual((r["value"], r["held_reason"]), ("UNDETERMINED", "no_facts"))
 
+    def test_evidence_from_first_record_with_balance(self):
+        ins = [I("equity", name="제1회 전환사채"), I("equity", prior={"equity_component": 5}, name="제2회 전환사채")]
+        r = judge([], ins)["CONVERSION_OPTION_CLASS"]
+        self.assertTrue(r["evidence"].startswith("제2회 전환사채 자본요소 5"))
+        self.assertEqual(r["basis_period"], "prior")
+        ins = [I(sep="separated", name="제1회"), I(sep="separated", cur={"derivative_liability": 9}, name="제2회")]
+        r = judge([], ins)["EMBEDDED_DERIVATIVE_SEPARATION"]
+        self.assertTrue(r["evidence"].startswith("제2회 파생상품부채 9"))
+        self.assertEqual(r["basis_period"], "current")
+
     def test_conv_record_vs_fact_conflict_needs_review(self):
         r = judge([F("CONV_OPTION_LIABILITY", 40, label="전환권파생상품부채")],
                   [I("equity", cur={"equity_component": 5})])["CONVERSION_OPTION_CLASS"]
@@ -137,6 +147,19 @@ class ConsensusTest(unittest.TestCase):
         r = self.run2([], [I()])["CONVERSION_OPTION_CLASS"]
         self.assertEqual(r["held_reason"], "no_facts")
 
+    def test_same_value_needs_review_in_either_run_wins(self):
+        f = F("EMB_DERIV_LIABILITY", 7, label="파생상품부채(조기상환청구권)", target="redemption", basis="label")
+        r = judge([f], {"run1": [I(sep="unconfirmed")], "run2": [I(sep="not_separated")]})
+        r = r["EMBEDDED_DERIVATIVE_SEPARATION"]
+        # 1차 SEPARATED(사실) vs 2차 needs_review 는 값이 달라 확인 필요다. 같은 UNDETERMINED 끼리는 needs_review 가 이긴다.
+        self.assertEqual(r["held_reason"], "needs_review")
+        r = judge([F("HOST_LIABILITY", 9), F("CONV_OPTION_LIABILITY", 4)],
+                  {"run1": [I()], "run2": [I("equity", cur={"equity_component": 5})]})["CONVERSION_OPTION_CLASS"]
+        self.assertEqual(r["held_reason"], "needs_review")
+        w = F("EMB_DERIV_LIABILITY", 7, target="other", basis="default")
+        r = judge([w], {"run1": [I(sep="unconfirmed")], "run2": [I(sep="not_separated")]})
+        self.assertEqual(r["EMBEDDED_DERIVATIVE_SEPARATION"]["held_reason"], "needs_review")
+
     def test_both_missing_uses_facts(self):
         r = self.run2(None, None, facts=[F("CONV_OPTION_EQUITY", 5)])
         self.assertEqual(r["CONVERSION_OPTION_CLASS"]["value"], "EQUITY")
@@ -159,6 +182,10 @@ class EmbeddedTest(unittest.TestCase):
 
     def test_strong_fact_separated(self):
         f = F("EMB_DERIV_LIABILITY", 7, label="파생상품부채(전환권)", target="conversion", basis="label")
+        self.assertEqual(judge([f])["EMBEDDED_DERIVATIVE_SEPARATION"]["value"], "SEPARATED")
+
+    def test_bracketed_negative_emb_fact_counts(self):
+        f = F("EMB_DERIV_LIABILITY", -7, label="파생상품부채(전환권)", target="conversion", basis="label")
         self.assertEqual(judge([f])["EMBEDDED_DERIVATIVE_SEPARATION"]["value"], "SEPARATED")
 
     def test_weak_fact_alone_never_separated(self):
@@ -343,6 +370,15 @@ class BusinessCombinationTest(unittest.TestCase):
         r = judge([], v1_ppa=v1u)["PPA_MEASUREMENT_PERIOD"]
         self.assertEqual(r["held_reason"], "conditional")
 
+    def test_ppa_bc_check_is_filing_level_and_one_scope(self):
+        v1 = {"value": "FINAL", "evidence": "확정", "held_reason": ""}
+        # 사업결합 표가 연결에만 있어도 별도 범위에서 확인 필요가 되면 안 된다(공시 단위 확인)
+        r = judge([], v1_ppa=v1, bc_filing=True)["PPA_MEASUREMENT_PERIOD"]
+        self.assertEqual(r["value"], "FINAL")
+        # v1 행은 범위가 없어 한 범위에만 낸다
+        self.assertNotIn("PPA_MEASUREMENT_PERIOD", judge([], v1_ppa=v1, bc_filing=True, ppa_scope="consolidated"))
+        self.assertIn("PPA_MEASUREMENT_PERIOD", judge([], v1_ppa=v1, bc_filing=True, ppa_scope="separate"))
+
     def test_bc_cost_class(self):
         f = F("BC_RELATED_COST", 30, "current_period", label="사업결합 관련 원가(판매비와관리비)")
         self.assertEqual(judge([f])["BUSINESS_COMBINATION_COST_CLASS"]["value"], "OPERATING")
@@ -439,6 +475,25 @@ class ScopeMetaTest(unittest.TestCase):
         self.assertEqual(m["read_failed_topics"], {"LEASE_EXEMPTION"})
         self.assertEqual(m["tables"]["R:00760:t001"],
                          {"note_no": "9", "note_title": "무형자산", "kind": "note", "multiplier": 1000})
+        # 구성표(당기말 > 취득원가·상각누계액·장부금액)는 변동표가 아니다
+        comp = [T("R:00760:t010", "무형자산", ["개발비", "소프트웨어", "합계"],
+                  headers=["당기말", "취득원가", "상각누계액", "장부금액"])]
+        self.assertFalse(scope_meta(comp, "separate")["movement_table"])
+        comp2 = [T("R:00760:t011", "무형자산", ["전기말 장부금액", "당기말 장부금액"], headers=["개발비"])]
+        self.assertFalse(scope_meta(comp2, "separate")["movement_table"])
+        mv = [T("R:00760:t012", "무형자산", ["개발비", "합계"],
+                headers=["기초", "취득(*1)", "상각", "기말"])]
+        self.assertTrue(scope_meta(mv, "separate")["movement_table"])
+        mv2 = [T("R:00760:t013", "무형자산", ["기초금액", "대체", "무형자산상각비", "기말금액"], headers=["개발비"])]
+        self.assertTrue(scope_meta(mv2, "separate")["movement_table"])
+        mv3 = [T("R:00760:t014", "무형자산", ["개발비"],
+                 headers=["기초장부금액", "취득(자본적지출포함)액", "상각비", "기말 장부금액"])]
+        self.assertTrue(scope_meta(mv3, "separate")["movement_table"])
+        mv4 = [T("R:00760:t015", "무형자산", ["당기초", "개별취득", "상각", "당기말"], headers=["개발비", "합계"])]
+        self.assertTrue(scope_meta(mv4, "separate")["movement_table"])
+        # 기초·증가만 있고 기말 낱말이 없으면 변동표로 보지 않는다(기초·기말·증가 모두 필요)
+        mv5 = [T("R:00760:t016", "무형자산", ["개발비"], headers=["기초", "취득", "상각"])]
+        self.assertFalse(scope_meta(mv5, "separate")["movement_table"])
         c = scope_meta(tables, "consolidated")
         self.assertFalse(c["movement_table"])
         self.assertFalse(c["category_table"])
@@ -461,7 +516,8 @@ class CliTest(unittest.TestCase):
             d = Path(d)
             led = d / "ledger"
             led.mkdir()
-            facts = [F("CONV_OPTION_EQUITY", 5), F("FVOCI_EQUITY", 7, "prior_end")]
+            cbc = dict(F("BC_CONSIDERATION", 100, "current_period"), fs_scope="consolidated")
+            facts = [F("CONV_OPTION_EQUITY", 5), F("FVOCI_EQUITY", 7, "prior_end"), cbc]
             (led / "facts.jsonl").write_text("".join(json.dumps(f, ensure_ascii=False) + "\n" for f in facts))
             (led / "policy_marks.jsonl").write_text(json.dumps(M("LEASE_EXEMPTION"), ensure_ascii=False) + "\n")
             (d / "audit.jsonl").write_text(json.dumps({"rcept_no": R, "corp_code": "00999999", "fiscal_year": 2025}) + "\n")
@@ -482,19 +538,22 @@ class CliTest(unittest.TestCase):
                        str(d / "run1.jsonl"), "--instruments2", str(d / "run2.jsonl"), "--v1-stance",
                        str(d / "v1.jsonl"), "--tables", str(d / "no-tables"), "--out", str(out), "--workers", "1"])
             self.assertEqual(rc, 0)
-            rows = {r["topic"]: r for r in map(json.loads, out.read_text().splitlines())}
+            all_rows = [json.loads(x) for x in out.read_text().splitlines()]
+            ppa = [r for r in all_rows if r["topic"] == "PPA_MEASUREMENT_PERIOD"]
+            # 연결에만 사업결합 표가 있어도 확인 필요가 아니고, PPA 행은 연결 범위 하나만
+            self.assertEqual([(r["fs_scope"], r["value"]) for r in ppa], [("consolidated", "PROVISIONAL")])
+            rows = {r["topic"]: r for r in all_rows if r["fs_scope"] == "separate"}
+            rows["PPA_MEASUREMENT_PERIOD"] = ppa[0]
             self.assertEqual(rows["CONVERSION_OPTION_CLASS"]["held_reason"], "needs_review")
             self.assertEqual(rows["FVOCI_DESIGNATION"]["value"], "DESIGNATED")
             self.assertEqual(rows["FVOCI_DESIGNATION"]["corp_code"], "00999999")
             self.assertEqual(rows["LEASE_EXEMPTION"]["held_reason"], "policy_only")
-            self.assertEqual((rows["PPA_MEASUREMENT_PERIOD"]["value"], rows["PPA_MEASUREMENT_PERIOD"]["held_reason"]),
-                             ("UNDETERMINED", "needs_review"))
             recs = [json.loads(x) for x in (out.parent / "records.v2.jsonl").read_text().splitlines()]
-            self.assertEqual(len(recs), len(rows))
+            self.assertEqual(len(recs), len(all_rows))
             fv = next(r for r in recs if r["topic"] == "FVOCI_DESIGNATION")
             self.assertEqual([f["concept"] for f in fv["facts"]], ["FVOCI_EQUITY"])
             summary = json.loads((out.parent / "topic_stance.v2.summary.json").read_text())
-            self.assertEqual(summary["rows"], len(rows))
+            self.assertEqual(summary["rows"], len(all_rows))
             self.assertEqual(summary["instruments"]["run2"]["dropped_model"], 1)
             # 덮지 않는다
             self.assertEqual(main(["--ledger", str(led), "--facts-audit", str(d / "audit.jsonl"), "--instruments",

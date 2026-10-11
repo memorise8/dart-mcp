@@ -89,10 +89,17 @@ def process(job: dict) -> dict:
                 err = f"{type(exc).__name__}: {exc}"[:200]
     scopes = set(job["scopes"]) | {t.get("fs_scope") for t in tables if t.get("fs_scope")}
     scopes = sorted(scopes) or ["separate"]
+    # PPA: v1 행은 범위가 없어 한 범위(연결이 있으면 연결)에만 내고, 사업결합 표 확인은 공시 단위로 한다
+    bc_concepts = ("BC_CONSIDERATION", "BC_NET_ASSETS_FV", "BC_RELATED_COST")
+    filing_meta = {"ppa_scope": "consolidated" if "consolidated" in scopes else scopes[0],
+                   "bc_filing": any(f.get("concept") in bc_concepts and
+                                    f.get("period") in ("current_end", "current_period", "prior_end", "prior_period")
+                                    for f in job["facts"])}
     rows, records = [], []
     for scope in scopes:
         facts = [f for f in job["facts"] if (f.get("fs_scope") or "separate") == scope]
         meta = dict(job["meta"])
+        meta.update(filing_meta)
         if tables:
             meta.update(scope_meta(tables, scope))
         runs = {"run1": job["run1"].get(scope), "run2": job["run2"].get(scope)}
