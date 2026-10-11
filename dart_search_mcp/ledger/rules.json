@@ -1,0 +1,12 @@
+{
+  "exception_patterns": {
+    "dev_amortization": {
+      "topic": "DEV_COST_CAPITALIZATION",
+      "pattern": "개발비[^.]{0,40}\\d+\\s*년[^.]{0,20}상각"
+    },
+    "explicit_separation": {
+      "topic": "EMBEDDED_DERIVATIVE_SEPARATION",
+      "pattern": "(주계약|사채|우선주)[^.]{0,40}분리하여[^.]{0,40}(파생상품|공정가치)"
+    }
+  }
+}
