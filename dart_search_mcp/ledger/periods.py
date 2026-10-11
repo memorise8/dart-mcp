@@ -150,21 +150,43 @@ def _statement_order(context: str) -> list[str]:
     return [o for o in order if o]
 
 
+_DASHES = {"-", "—", "－", "–"}
+
+
 def _is_value_col(grid: Grid, c: int) -> bool:
     if c == 0:
         return False
-    parse_amount = _dart_agent.fs_table().parse_amount
+    fs = _dart_agent.fs_table()
     body = grid.rows[grid.header_rows:]
-    hits = sum(1 for r in body if parse_amount(r[c].text) is not None)
+    # 「-」(0)도 금액 칸으로 센다: 잔액이 전부 없는 열(예: FVOCI 지분상품 「-」)도 값 열이다
+    hits = sum(1 for r in body if fs.parse_amount(r[c].text) is not None or fs.squash(r[c].text) in _DASHES)
     if grid.fmt == "FINANCE":  # 빈 구분 칸이 끼어 있어 한 줄이라도 금액이 있으면 값 열
         return hits > 0
     return bool(body) and hits * 2 >= len(body)
+
+
+def _finance_groups(grid: Grid, is_value: list[bool]) -> dict[int, int]:
+    """FINANCE 표의 THEAD(TH만인 첫 행)가 「제 n(당) 기」를 COLSPAN으로 두 칸 이상 덮으면,
+    값 열을 머리글 칸 단위로 묶는다(열 → 묶음 순번). THEAD가 없으면 빈 dict(열마다 따로)."""
+    if not grid.rows or not all(c.is_header for c in grid.rows[0]):
+        return {}
+    out: dict[int, int] = {}
+    seen: list[tuple[int, int]] = []
+    for c in range(grid.n_cols):
+        if not is_value[c]:
+            continue
+        origin = grid.rows[0][c].origin
+        if origin not in seen:
+            seen.append(origin)
+        out[c] = seen.index(origin)
+    return out
 
 
 def classify_columns(grid: Grid, period_end: str | None, context: str) -> list[ColumnInfo]:
     paths = header_paths(grid)
     is_value = [_is_value_col(grid, c) for c in range(grid.n_cols)]
     order = _statement_order(context) if grid.fmt == "FINANCE" and grid.header_rows == 0 else []
+    groups = _finance_groups(grid, is_value) if order else {}
     ctx_period = _context_period(context)
     out: list[ColumnInfo] = []
     k = 0
@@ -177,8 +199,9 @@ def classify_columns(grid: Grid, period_end: str | None, context: str) -> list[C
         period = _path_period(path, context)
         if period == "unknown":
             period = _date_period(date, period_end)
-        if period == "unknown" and k < len(order):
-            period = "current_end" if order[k] == "current" else "prior_end"
+        g = groups.get(c, k)
+        if period == "unknown" and g < len(order):
+            period = "current_end" if order[g] == "current" else "prior_end"
         if period == "unknown" and not order:
             period = ctx_period
         k += 1

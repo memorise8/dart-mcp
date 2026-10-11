@@ -44,6 +44,20 @@ class PeriodTest(unittest.TestCase):
         cols = classify_columns(g, None, "")
         self.assertEqual([c.period for c in cols if c.role == "value"], ["unknown", "unknown"])
 
+    def test_finance_thead_colspan_groups(self):  # T4: 「제 26(당) 기」가 두 칸(소계·합계)을 덮는 FINANCE 본표
+        g = parse_table(
+            '<TABLE ACLASS="FINANCE"><THEAD><TR><TH>과 목</TH><TH COLSPAN="2">제 26(당) 기</TH><TH COLSPAN="2">제 25(전) 기</TH></TR></THEAD>'
+            '<TBODY><TR><TE ALEVEL="1">현금</TE><TE>10</TE><TE></TE><TE>8</TE><TE></TE></TR>'
+            '<TR><TE ALEVEL="0">자산총계</TE><TE></TE><TE>30</TE><TE></TE><TE>20</TE></TR></TBODY></TABLE>')
+        cols = classify_columns(g, None, "제 26(당) 기 제 25(전) 기")
+        self.assertEqual([c.period for c in cols][1:], ["current_end", "current_end", "prior_end", "prior_end"])
+
+    def test_all_dash_column_is_value(self):  # T4: 잔액 없는 열(전부 「-」)도 값 열 — 「0」이라는 사실이다
+        g = parse_table('<TABLE><THEAD><TR><TH>구분</TH><TH>당기말</TH><TH>전기말</TH></TR></THEAD>'
+                        '<TBODY><TR><TD>FVOCI</TD><TD>-</TD><TD>1,000</TD></TR><TR><TD>합계</TD><TD>-</TD><TD>1,000</TD></TR></TBODY></TABLE>')
+        cols = classify_columns(g, None, "")
+        self.assertEqual([(c.role, c.period) for c in cols][1:], [("value", "current_end"), ("value", "prior_end")])
+
     def test_theadless_term_header_row_is_header(self):  # T1 회귀: 「제 5 기」는 금액이 아니다
         g = parse_table("<TABLE><TBODY><TR><TD>구분</TD><TD>제 5 기</TD><TD>제 4 기</TD></TR><TR><TD>a</TD><TD>1,000</TD><TD>2,000</TD></TR></TBODY></TABLE>")
         self.assertEqual(g.header_rows, 1)

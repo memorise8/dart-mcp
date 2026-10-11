@@ -1,0 +1,348 @@
+"""1층 표 장부 — 공시 하나 → 표 기록 목록(스펙 §4.4)과 공시 파일(머리 + 문장 + 표), gz 쓰기·읽기.
+
+표 하나의 상태(§4.5): 격자를 못 맞추면 read_failed(raw_text만), 검사(기간·단위·합계·등식) 중 하나라도
+실패하면 needs_review, 아니면 verified. 해당 없는 검사는 None 이고 상태에 영향을 주지 않는다.
+"""
+from __future__ import annotations
+
+import gzip
+import json
+import re
+from dataclasses import asdict
+from pathlib import Path
+
+from . import _dart_agent
+from .grid import _CELL_RE, _THEAD_RE, _TR_RE, Grid, parse_table
+from .periods import classify_columns
+from .regions import Spot, plain, scan_file
+from .units import Unit, column_units, table_unit, value_krw
+
+PARSER_VERSION = "ledger-t1"
+
+_SCOPE_RE = re.compile(r"_(\d{5})\.xml$", re.I)
+_TOTAL_RE = re.compile(r"^(합\s*계|총\s*계|계)$")
+_SUBTOTAL_RE = re.compile(r"소\s*계")
+_MARK_TAIL_RE = re.compile(r"\s*(?:\(\*\d*\)|\*\d*\)?)\s*$")
+_ACODE_RE = re.compile(r'ACODE\s*=\s*"?(\d+)"?', re.I)
+_ALEVEL_RE = re.compile(r'ALEVEL\s*=\s*"?(\d+)"?', re.I)
+_INDENT_RE = re.compile(r"^(?:[ \t　 ]|&nbsp;|&#160;)*")
+_INDENT_UNIT_RE = re.compile(r"[ \t　 ]|&nbsp;|&#160;")
+_DASHES = {"-", "—", "－", "–"}
+SUM_TOLERANCE = 1.0  # 원래 단위 1
+
+
+# ---------- 공시 단위 ----------
+def _acode(name: str) -> str:
+    m = _SCOPE_RE.search(name)
+    return m.group(1) if m else "main"
+
+
+def _fs_scope(name: str, text: str) -> str:
+    """_00760 별도, _00761 연결, 접미사 없으면 본문 앞 2,000자에 「연결재무제표」가 있으면 연결."""
+    code = _acode(name)
+    if code == "00760":
+        return "separate"
+    if code == "00761":
+        return "consolidated"
+    i = text.find("<BODY")
+    head = _dart_agent.fs_table().squash(plain(text[i if i >= 0 else 0:])[:2000])
+    return "consolidated" if "연결재무제표" in head else "separate"
+
+
+def _amends(manifest: dict) -> str | None:
+    """[기재정정] 공시이고 원공시 접수번호를 알 때만."""
+    names = [manifest.get("report_name") or manifest.get("report_nm") or ""]
+    names += [f.get("document_name", "") for f in manifest.get("files", []) if isinstance(f, dict)]
+    if not any("[기재정정]" in (n or "") for n in names):
+        return None
+    orig = manifest.get("orig_rcept_no") or manifest.get("amends_rcept_no")
+    return str(orig) if orig else None
+
+
+def _iso(yyyymmdd: str | None) -> str | None:
+    if not yyyymmdd or len(yyyymmdd) != 8:
+        return None
+    return f"{yyyymmdd[:4]}-{yyyymmdd[4:6]}-{yyyymmdd[6:]}"
+
+
+# ---------- 행 ----------
+def _row_meta(table_xml: str) -> list[tuple[int, str | None, int | None]]:
+    """grid 행 순서대로 (들여쓰기, ACODE, ALEVEL). grid._raw_rows 와 같은 행 거르기를 쓴다."""
+    out = []
+    for tr in _TR_RE.finditer(table_xml):
+        cells = list(_CELL_RE.finditer(tr.group(1)))
+        if not cells:
+            continue
+        attrs, inner = cells[0].group(2), cells[0].group(3)
+        a = _ACODE_RE.search(attrs)
+        lv = _ALEVEL_RE.search(attrs)
+        indent = len(_INDENT_UNIT_RE.findall(_INDENT_RE.match(inner).group(0)))
+        out.append((indent, a.group(1) if a else None, int(lv.group(1)) if lv else None))
+    return out
+
+
+def _row_kind(label: str) -> str:
+    core = _MARK_TAIL_RE.sub("", label).strip()
+    if _TOTAL_RE.match(core):
+        return "total"
+    if _SUBTOTAL_RE.search(core):
+        return "subtotal"
+    return "item"
+
+
+def _value(raw: str) -> int | float | None:
+    fs = _dart_agent.fs_table()
+    if fs.squash(raw) in _DASHES:
+        return 0
+    v = fs.parse_amount(raw)
+    if v is None:
+        return None
+    return int(v) if float(v).is_integer() else v
+
+
+def _unit_dict(u: Unit) -> dict:
+    return asdict(u)
+
+
+# ---------- 검사 ----------
+def _sum_ok(rows: list[dict], value_cols: list[int]) -> bool | None:
+    """total·subtotal 행 = 바로 위 같은 단계 item 합(열별). 소계 뒤 합계는 소계들 + 마지막 소계 뒤 item 합."""
+    results: list[bool] = []
+    seg_start = sub_start = 0
+    for i, row in enumerate(rows):
+        if row["kind"] == "item":
+            continue
+        if row["kind"] == "subtotal":
+            subs, items = [], rows[sub_start:i]
+        else:
+            seg = rows[seg_start:i]
+            subs = [r for r in seg if r["kind"] == "subtotal"]
+            last = max((k for k, r in enumerate(seg) if r["kind"] == "subtotal"), default=-1)
+            items = seg[last + 1:]
+        items = [r for r in items if r["kind"] == "item"]
+        for c in value_cols:
+            total = _cell_value(row, c)
+            if total is None:
+                continue
+            parts = [_cell_value(r, c) for r in subs if _cell_value(r, c) is not None]
+            parts += _top_values([(r["level"], _cell_value(r, c)) for r in items])
+            if parts:
+                results.append(abs(sum(parts) - total) <= SUM_TOLERANCE)
+        sub_start = i + 1
+        if row["kind"] == "total":
+            seg_start = i + 1
+    return all(results) if results else None
+
+
+def _top_values(items: list[tuple[int, object]]) -> list:
+    """가장 얕은 단계 item 값들. 값이 빈 상위 행은 그 아래(더 깊은 단계) 행들로 대신한다."""
+    if not items:
+        return []
+    top = min(lv for lv, _ in items)
+    out: list = []
+    i = 0
+    while i < len(items):
+        lv, v = items[i]
+        j = i + 1
+        while j < len(items) and items[j][0] > top:
+            j += 1
+        if lv == top:
+            out += [v] if v is not None else _top_values(items[i + 1:j])
+        else:  # 첫 상위 행보다 앞선 깊은 행들
+            out += _top_values(items[i:j])
+        i = j
+    return out
+
+
+def _cell_value(row: dict, col: int):
+    for c in row["cells"]:
+        if c["col"] == col:
+            return c["value"]
+    return None
+
+
+def _identity_ok(rows: list[dict], columns: list[dict]) -> bool | None:
+    """재무상태표: 자산 = 부채 + 자본(fs_table.check_identities, 원래 단위로 허용 오차 1)."""
+    fs = _dart_agent.fs_table()
+    cur = [c["col"] for c in columns if c.get("period") == "current_end"]
+    prev = [c["col"] for c in columns if c.get("period") == "prior_end"]
+    if not cur:
+        return None
+
+    def pick(row: dict, cols: list[int]):
+        for col in reversed(cols):  # fs_table._pick_amount 처럼 오른쪽부터
+            for c in row["cells"]:
+                if c["col"] == col and c["value"] is not None and fs.parse_amount(c["raw"]) is not None:
+                    return c["raw"], float(c["value"])
+        return "", None
+
+    fs_rows = []
+    for i, r in enumerate(rows):
+        label = fs.squash(r["label"])
+        craw, cnum = pick(r, cur)
+        praw, pnum = pick(r, prev)
+        fs_rows.append(fs.Row(i, label, fs.normalize_account_name(label), r["acode"], r["level"] if r["acode"] else None,
+                              craw, cnum, praw, pnum))
+    fs.canonicalize_totals(fs_rows)
+    return fs.check_identities(fs_rows, 1).identity_ok
+
+
+# ---------- 표 하나 ----------
+def _header_text(grid: Grid, table_xml: str) -> str:
+    texts = [c.text for row in grid.rows[:grid.header_rows] for c in row]
+    if grid.fmt == "FINANCE":  # FINANCE 는 header_rows=0 이라 THEAD 글을 따로 붙인다
+        texts += [plain(m.group(1)) for m in _THEAD_RE.finditer(table_xml)]
+    return " ".join(t for t in texts if t)
+
+
+def _title_fallback(grid: Grid) -> str | None:
+    n = grid.header_rows or 1
+    for row in grid.rows[:n]:
+        seen: list[str] = []
+        for c in row:
+            if c.text and c.text not in seen:
+                seen.append(c.text)
+        t = " ".join(seen)
+        if re.sub(r"\(\s*단\s*위[^)]*\)", "", t).strip():
+            return t[:200]
+    return None
+
+
+def _table_record(spot: Spot, base: dict, doc_unit: Unit | None, period_end: str | None) -> tuple[dict, Unit | None]:
+    rec = dict(base)
+    rec.update(page=spot.page, region=spot.region, title=spot.title_p, footnotes=spot.footnotes)
+    grid = parse_table(spot.xml)
+    if grid is None:
+        rec.update(unit=None, columns=[], rows=[], status="read_failed", issues=["grid_unresolved"],
+                   checks={"period_found": None, "unit_found": None, "sum_ok": None, "identity_ok": None},
+                   raw_text=plain(spot.xml), parser_version=PARSER_VERSION)
+        return rec, None
+    header_text = _header_text(grid, spot.xml)
+    if not rec["title"]:
+        rec["title"] = _title_fallback(grid)
+    # FINANCE 기수 순서는 THEAD(「제 26(당) 기 / 제 25(전) 기」)에서, 없으면 표 앞 제목 표에서 읽는다
+    context = (header_text or spot.context) if grid.fmt == "FINANCE" else spot.context
+    cols = classify_columns(grid, period_end, context)
+    t_unit, t_found = table_unit(spot.context, header_text, doc_unit)
+    c_units = column_units(cols, t_unit)
+    value_cols = [c.col for c in cols if c.role == "value"]
+    meta = _row_meta(spot.xml)
+    label_cols = [c.col for c in cols if c.role == "label"] or [0]
+
+    rows = []
+    for r in range(grid.header_rows, len(grid.rows)):
+        row = grid.rows[r]
+        if all(c.is_header for c in row):
+            continue
+        label = next((row[c].text for c in label_cols if row[c].text), "")
+        cells = []
+        for c in value_cols:
+            cell = row[c]
+            if cell.origin != (r, c):  # 병합 칸은 원래 자리에만 둔다
+                continue
+            v = _value(cell.text)
+            u = c_units[c]
+            cells.append({"col": c, "raw": cell.text, "value": v,
+                          "value_krw": value_krw(v, u) if v is not None else None,
+                          "unit_override": _unit_dict(u) if u != t_unit else None})
+        if not label and all(x["value"] is None for x in cells):
+            continue
+        indent, acode, alevel = meta[r] if r < len(meta) else (0, None, None)
+        rows.append({"row": r, "label": label, "level": alevel if alevel is not None else indent,
+                     "acode": acode, "kind": _row_kind(label), "cells": cells})
+
+    columns = []
+    for c in cols:
+        d = {"col": c.col, "header_path": c.header_path, "role": c.role}
+        if c.role == "value":
+            d.update(period=c.period, date=c.date)
+        columns.append(d)
+
+    has_values = bool(value_cols)
+    unit_found = (t_found or all(c_units[c] is not t_unit for c in value_cols)) if has_values else None
+    checks = {
+        "period_found": any(c.period != "unknown" for c in cols if c.role == "value") if has_values else None,
+        "unit_found": unit_found,
+        "sum_ok": _sum_ok(rows, value_cols),
+        "identity_ok": _identity_ok(rows, columns) if spot.region["kind"] == "statement_bs" else None,
+    }
+    issues = [name for name, key in (("period_unknown", "period_found"), ("unit_missing", "unit_found"),
+                                      ("sum_mismatch", "sum_ok"), ("identity_fail", "identity_ok"))
+              if checks[key] is False]
+    rec.update(unit=_unit_dict(t_unit), columns=columns, rows=rows, checks=checks, issues=issues,
+               status="needs_review" if issues else "verified", parser_version=PARSER_VERSION)
+    return rec, (t_unit if t_found else None)
+
+
+# ---------- 공시 ----------
+def _decode(raw: bytes) -> str:
+    return _dart_agent.note_section().decode_xml(raw)
+
+
+def _filing_parts(rcept_no: str, files: list[tuple[str, bytes]], manifest: dict):
+    amends = _amends(manifest or {})
+    tables: list[dict] = []
+    paragraphs: list[tuple[str, int, str]] = []
+    period_end: str | None = None
+    texts = [(name, _decode(raw)) for name, raw in files]
+    scans = []
+    for name, text in texts:
+        scan = scan_file(text)
+        scans.append((name, text, scan))
+        pe = _dart_agent.fs_table().read_period_end(scan.cover_text)
+        if pe and (period_end is None or pe > period_end):
+            period_end = pe
+    for name, text, scan in scans:
+        scope = _fs_scope(name, text)
+        acode = _acode(name)
+        doc_unit: Unit | None = None
+        for spot in scan.spots:
+            base = {"table_id": f"{rcept_no}:{acode}:t{spot.index + 1:03d}", "rcept_no": rcept_no,
+                    "amends_rcept_no": amends, "file": name, "fs_scope": scope}
+            try:
+                rec, found_unit = _table_record(spot, base, doc_unit, period_end)
+            except Exception as exc:  # 표 하나 때문에 공시 전체를 잃지 않는다
+                rec = dict(base, page=spot.page, region=spot.region, title=spot.title_p, footnotes=spot.footnotes,
+                           unit=None, columns=[], rows=[], status="read_failed", issues=[f"error:{type(exc).__name__}"],
+                           checks={"period_found": None, "unit_found": None, "sum_ok": None, "identity_ok": None},
+                           raw_text=plain(spot.xml), parser_version=PARSER_VERSION)
+                found_unit = None
+            if doc_unit is None and found_unit is not None and spot.region["kind"].startswith("statement_"):
+                doc_unit = found_unit  # 공시 기본 단위 = 본문 재무제표에서 처음 찾은 단위
+            tables.append(rec)
+        paragraphs.extend((name, pg, t) for pg, t in scan.paragraphs)
+    return amends, _iso(period_end), paragraphs, tables
+
+
+def build_filing_tables(rcept_no: str, files: list[tuple[str, bytes]], manifest: dict) -> list[dict]:
+    return _filing_parts(rcept_no, files, manifest)[3]
+
+
+def build_filing(rcept_no: str, files: list[tuple[str, bytes]], manifest: dict) -> dict:
+    from dart_search_mcp.policy_sentences import split_sentences
+
+    amends, period_end, paras, tables = _filing_parts(rcept_no, files, manifest)
+    sentences = []
+    for name, page, text in paras:
+        for s in split_sentences(text):
+            t = s.text.strip()
+            if t:
+                sentences.append({"id": f"s{len(sentences) + 1}", "file": name, "page": page, "text": t})
+    return {"rcept_no": rcept_no, "amends_rcept_no": amends, "period_end": period_end,
+            "parser_version": PARSER_VERSION, "paragraphs": sentences, "tables": tables}
+
+
+def write_filing(out_dir: Path, rcept_no: str, filing: dict) -> Path:
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{rcept_no}.json.gz"
+    tmp = path.with_suffix(".gz.tmp")
+    with gzip.open(tmp, "wt", encoding="utf-8") as fh:
+        json.dump(filing, fh, ensure_ascii=False, separators=(",", ":"))
+    tmp.replace(path)
+    return path
+
+
+def load_filing(path: Path) -> dict:
+    with gzip.open(path, "rt", encoding="utf-8") as fh:
+        return json.load(fh)
