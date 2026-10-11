@@ -18,7 +18,7 @@ from dart_search_mcp.ledger.instrument_input import (
 from dart_search_mcp.ledger import instruments as instruments_mod
 from dart_search_mcp.ledger.instruments import (
     OUTPUT_SCHEMA,
-    PROMPT_I3,
+    PROMPT_I4,
     PROMPT_VERSION,
     Cache,
     build_messages,
@@ -553,7 +553,7 @@ class ExtractInstrumentsTest(unittest.TestCase):
         inp["tables_text"] = "[T1] (separate) / 단위: (단위: 천원)\nr3 전환사채 | c1=1,000,000"
         msgs = build_messages(inp)
         self.assertEqual([m["role"] for m in msgs], ["system", "user"])
-        self.assertEqual(msgs[0]["content"], PROMPT_I3["system"])
+        self.assertEqual(msgs[0]["content"], PROMPT_I4["system"])
         for phrase in ("전환사채·신주인수권부사채·교환사채·상환전환우선주", "표 칸 id와 문장 id로만",
                        "null 또는 unconfirmed", "부채요소(주계약)와 전환권 파생상품부채는 다른 칸"):
             self.assertIn(phrase, msgs[0]["content"])
@@ -822,8 +822,8 @@ class ModelUsedTest(unittest.TestCase):
 
 class PromptExampleTest(unittest.TestCase):
     def test_example_has_no_synthetic_series_key(self):
-        self.assertNotIn("CB-?", PROMPT_I3["example"])
-        self.assertIn('"series_key": ""', PROMPT_I3["example"])
+        self.assertNotIn("CB-?", PROMPT_I4["example"])
+        self.assertIn('"series_key": ""', PROMPT_I4["example"])
         self.assertNotIn("CB-?", build_messages(_inp())[1]["content"])
 
 
@@ -1046,7 +1046,7 @@ class MeasuredDerivativeRowsTest(unittest.TestCase):
             rec["evidence"]["option_class"] = ids
             out, _ = validate(rec, inp)
             self.assertEqual(out["option_class"], want, ids)
-        rec = _record()
+        rec = _record(series_key="CB-7")  # 칸이 제7회 — 기록 회차가 같아야 한다(fix round 5 series_mismatch)
         rec["balance"]["current_end"]["derivative_liability"] = 100
         rec["evidence"]["balance.current_end.derivative_liability"] = ["T5:r2:c1"]
         out, _ = validate(rec, inp)
@@ -1125,7 +1125,9 @@ class HostSumTest(unittest.TestCase):
             rec = _host_record(value, ids)
             out, reasons = validate(rec, inp)
             self.assertIsNone(out["balance"]["prior_end"]["host_carrying"], ids)
-        out, reasons = validate(_host_record(900, ["S:r4:c1", "S:r3:c1"]), inp)   # 같은 회차 원금+조정은 된다
+        rec = _host_record(900, ["S:r4:c1", "S:r3:c1"])   # 같은 회차 원금+조정은 된다(기록 회차도 같아야 — fix round 5)
+        rec["series_key"] = "CB-1"
+        out, reasons = validate(rec, inp)
         self.assertEqual(out["balance"]["prior_end"]["host_carrying"], 900)
 
     def test_sum_only_for_host_carrying(self):
@@ -1194,6 +1196,12 @@ class TextTableCellsTest(unittest.TestCase):
         inp = build_input("R", [one], [])
         self.assertEqual(inp["cells"]["R:00760:t061:r3:v1"]["n_value_cols"], 1)
         rec["evidence"] = {"balance.current_end.face": ["R:00760:t061:r3:v1"]}
+        out, reasons = validate(rec, inp)
+        # fix round 5: 발행조건 표(제목이 당기말·현재를 말하지 않음)의 기간 없는 칸은 잔액이 아니다
+        self.assertIsNone(out["balance"]["current_end"]["face"])
+        self.assertIn("period_mismatch:balance.current_end.face", reasons)
+        one["title"] = "당기말 현재 전환사채의 내역은 다음과 같습니다."
+        inp = build_input("R", [one], [])
         out, reasons = validate(rec, inp)
         self.assertEqual(out["balance"]["current_end"]["face"], 35000000000)
         self.assertEqual(out["matched_multiplier"]["balance.current_end.face"], 1)
@@ -1414,18 +1422,18 @@ class PeriodCheckTest(unittest.TestCase):
             "B:r2:c1": _pcell("전환사채", col="장부금액", period="current_period"),
             "B:r3:c1": _pcell("기말", path=["기말"], col="당기", period="current_period"),
             "B:r3:c2": _pcell("기말", path=["기말"], col="전기", period="prior_period"),
-            "U:r1:c1": _pcell("전환사채", col="금액", period="unknown", n_value_cols=1),
+            "U:r1:c1": _pcell("전환사채", col="금액", period="unknown", n_value_cols=1, tt="당기말 현재 전환사채"),
             "U2:r1:c1": _pcell("전환사채", col="금액", period="unknown", n_value_cols=2),
             "N:r1:c1": _pcell("전환사채", col="금액", period=None, n_value_cols=2),
             "O:r1:c1": _pcell("전환사채", col="기초", period="opening"),
         }
         inp = {"rcept_no": "R", "cells": cells, "tables_text": "", "sentences": {}}
         ok = [("current_end", "A:r1:c1"), ("prior_end", "A:r1:c2"), ("current_end", "B:r2:c1"),
-              ("current_end", "B:r3:c1"), ("prior_end", "B:r3:c2"), ("current_end", "U:r1:c1"),
-              ("prior_end", "U:r1:c1")]
+              ("current_end", "B:r3:c1"), ("prior_end", "B:r3:c2"), ("current_end", "U:r1:c1")]
         bad = [("current_end", "A:r1:c2"), ("prior_end", "A:r1:c1"), ("current_end", "B:r1:c1"),
                ("prior_end", "B:r2:c1"), ("current_end", "U2:r1:c1"), ("current_end", "N:r1:c1"),
-               ("current_end", "O:r1:c1"), ("prior_end", "B:r3:c1")]
+               ("current_end", "O:r1:c1"), ("prior_end", "B:r3:c1"),
+               ("prior_end", "U:r1:c1")]  # fix round 5: 기간 모르는 칸은 current_end 에만
         for period, cid in ok:
             out, reasons = validate(self._rec(period, [cid]), inp)
             self.assertEqual(out["balance"][period]["face"], 100, (period, cid))
@@ -1439,9 +1447,9 @@ class PeriodCheckTest(unittest.TestCase):
         변동표·「당기 중」 표·제목에 「현재」가 없는 표는 아니다(20260403002050 t060, 20260319001100 t140, 20260319000958 t104)."""
         status = "10. 전환사채(1) 보고기간종료일 현재 전환사채의 내역은 다음과 같습니다(단위:원)."
         cells = {
-            "S:r1:c3": _pcell("권면금액", path=["제1회 무보증 사모 전환사채", "권면금액"], col="당 기",
+            "S:r1:c3": _pcell("권면금액", path=["제3회 무보증 사모 전환사채", "권면금액"], col="당 기",
                               period="current_period", tt=status),
-            "S:r1:c4": _pcell("권면금액", path=["제1회 무보증 사모 전환사채", "권면금액"], col="전 기",
+            "S:r1:c4": _pcell("권면금액", path=["제3회 무보증 사모 전환사채", "권면금액"], col="전 기",
                               period="prior_period", tt=status),
             "F:r1:c3": _pcell("발행", col="당기", period="current_period",
                               tt="(4) 당기 중 전환사채 장부가액의 변동내역은 다음과 같습니다.(당기)"),
@@ -1511,7 +1519,7 @@ class NonBalanceCellsTest(unittest.TestCase):
 
 class PromptI3Test(unittest.TestCase):
     def test_i3_version_and_rules(self):
-        self.assertEqual(PROMPT_VERSION, "i3")
+        self.assertEqual(PROMPT_VERSION, "i4")  # i3 규칙 문구는 i4 에도 남는다
         user = build_messages(_inp())[1]["content"]
         for phrase in ("1499943000 이 아니다", '"s:494"', "<표 id>:r<행>:v<번호>", "[current_end]",
                        "null 이 아닌 필드는 모두 evidence", "「전환권가치」", "「전환사채 및 조기상환권」",
@@ -1525,11 +1533,239 @@ class PromptI3Test(unittest.TestCase):
 
     def test_prompt_examples_pass_validator(self):
         """프롬프트 예시 출력이 지금 검증기를 통과한다(예시가 거부되는 근거를 가르치지 않는다)."""
-        for inp, rec in instruments_mod._EXAMPLE_CASES_I3:
+        for inp, rec in instruments_mod._EXAMPLE_CASES_I4:
             out, reasons = validate(copy.deepcopy(rec), inp)
             self.assertEqual(reasons, [], rec.get("series_key"))
             for f, ids in rec["evidence"].items():
                 self.assertTrue(out["evidence"].get(f), f)
+
+
+
+# ---- fix round 5 (실제 공시 칸에서 만든 경우) ----
+def _rec5(key, period, value, ids, *, series_key="CB-3", kind="CB", option_class=None, oc_ids=None):
+    ev = {f"balance.{period}.{key}": ids}
+    if oc_ids:
+        ev["option_class"] = oc_ids
+    return {"instrument": "전환사채", "series_key": series_key, "kind": kind,
+            "balance": {period: {key: value}}, "option_class": option_class, "embedded_separation": None,
+            "evidence": ev}
+
+
+class BothSidesSpellingTest(unittest.TestCase):
+    """두 쪽을 다 말하는 제목·머리글·행 이름은 어떤 표기든 쪽을 모른다(ㆍ U+318D, ∙, 붙여 쓰기, 괄호)."""
+
+    def test_spellings_unknown(self):
+        from dart_search_mcp.ledger.instrument_validate import _deriv_title_side
+        for t in ("파생상품자산ㆍ부채", "파생상품자산∙부채", "파생상품자산부채", "파생금융자산(부채)", "파생상품부채(자산)",
+                  "파생상품 자산(부채)의 내역", "파생상품자산ㆍ파생상품부채", "파생상품부채/자산", "파생금융상품자산 ( 부채 )",
+                  "전기 당기손익공정가치측정금융자산 파생금융자산(부채)"):
+            self.assertIsNone(_deriv_title_side(t), t)
+        self.assertEqual(_deriv_title_side("파생상품부채(유동)"), "liability")
+        self.assertEqual(_deriv_title_side("파생상품자산(비유동)의 내역"), "asset")
+
+    def test_real_wrong_side_cell(self):
+        """20260318001372:00760:t058:r5:c2 「기말 잔액」 × 「파생금융자산(부채)」 (156,000) — 자산으로 받으면 안 된다."""
+        from dart_search_mcp.ledger.instrument_validate import _deriv_side
+        cell = _pcell("기말 잔액", col="파생금융자산(부채)", period="prior_period", value=-156000,
+                      tt="전기 당기손익공정가치측정금융자산 파생금융자산(부채)", nt="재무위험관리")
+        self.assertIsNone(_deriv_side(cell))
+        inp = {"rcept_no": "R", "cells": {"t058:r5:c2": cell}, "tables_text": "", "sentences": {}}
+        out, reasons = validate(_rec5("derivative_asset", "prior_end", -156000, ["t058:r5:c2"]), inp)
+        self.assertIsNone(out["balance"]["prior_end"]["derivative_asset"])
+        # 행 이름이 두 쪽을 말해도 모른다
+        for lab in ("파생상품자산(부채)", "파생상품자산ㆍ부채", "파생상품부채(자산)"):
+            self.assertIsNone(_deriv_side(_pcell(lab, tt="파생상품부채의 내역")), lab)
+
+
+class UnknownPeriodTest(unittest.TestCase):
+    """기간 모르는 칸은 값 열 하나인 잔액 표(제목·주석이 당기말·현재, 발행시·전환시·행사시·최초·평가 없음)에서
+    current_end 에만 맞는다. 20260323000654:00761 t052·t054·t055 r1:v1(가치평가 표 「가. 전환시」·「나. 발행시」)."""
+
+    T052 = ("② 가치평가기법과 직접적 또는 간접적으로 관측 가능한 유의적 투입변수당기말과 전기말 현재 수준 3의 공정가치 측정을 "
+            "위해 사용된 평가기법과 직접적 또는 간접적으로 관측가능한 유의적 투입변수는 다음과 같습니다.1) 당기가. 전환시")
+
+    def _cell(self, tt, value=100, n=1):
+        return _pcell("파생상품부채", col=None, period=None, value=value, tt=tt, nt="금융상품", n_value_cols=n)
+
+    def test_event_valuation_tables_rejected(self):
+        from dart_search_mcp.ledger.instrument_validate import _period_ok
+        for tt in (self.T052, "나. 발행시", "다. 전환시", "당기말 현재 행사시 파생상품부채", "최초 인식 당기말 현재",
+                   "당기말 현재 가치평가"):
+            c = self._cell(tt)
+            self.assertFalse(_period_ok(c, "current_end"), tt)
+            self.assertFalse(_period_ok(c, "prior_end"), tt)
+        cells = {"t052:r1:v1": self._cell(self.T052, 12921817627), "t054:r1:v1": self._cell("나. 발행시", 8130484175)}
+        inp = {"rcept_no": "R", "cells": cells, "tables_text": "", "sentences": {}}
+        for cid, v in (("t052:r1:v1", 12921817627), ("t054:r1:v1", 8130484175)):
+            for period in ("current_end", "prior_end"):
+                out, reasons = validate(_rec5("derivative_liability", period, v, [cid]), inp)
+                self.assertIsNone(out["balance"][period]["derivative_liability"], (cid, period))
+                self.assertIn(f"period_mismatch:balance.{period}.derivative_liability", reasons)
+
+    def test_single_column_balance_table_current_only(self):
+        from dart_search_mcp.ledger.instrument_validate import _period_ok
+        for tt in ("당기말 현재 파생상품부채의 내역은 다음과 같습니다.", "보고기간종료일 현재 파생상품부채"):
+            c = self._cell(tt)
+            self.assertTrue(_period_ok(c, "current_end"), tt)
+            self.assertFalse(_period_ok(c, "prior_end"), tt)
+        self.assertFalse(_period_ok(self._cell("파생상품부채의 내역"), "current_end"))      # 당기말·현재 없음
+        self.assertFalse(_period_ok(self._cell("당기말 현재 파생상품부채", n=2), "current_end"))  # 값 열 둘
+        # 주석 제목이 당기말·현재를 말해도 된다
+        c = _pcell("파생상품부채", col=None, period=None, tt="파생상품부채", nt="당기말 현재 파생상품", n_value_cols=1)
+        self.assertTrue(_period_ok(c, "current_end"))
+
+
+class NonDerivativeWordTest(unittest.TestCase):
+    """「비파생금융부채」는 파생상품부채가 아니다 — 20260317000731:00760:t183:r3:c1(31,921,365), 20260406000195:00760:t074:r4:c1."""
+
+    def test_non_derivative_rows(self):
+        from dart_search_mcp.ledger.instrument_validate import _deriv_side
+        cases = [
+            _pcell("비파생금융부채(*)", col="장부금액", value=31921365, multiplier=1, n_value_cols=5,
+                   tt="보고기간종료일 현재 금융부채의 잔존계약만기에 따른 만기분석은 다음과 같습니다.", nt="위험관리"),
+            _pcell("비파생금융부채(*)", col="장부금액", value=766894, multiplier=1, n_value_cols=5,
+                   tt="보고기간말 현재 금융부채의 잔존계약만기에 따른 만기 분석은 다음과 같습니다.", nt="위험관리"),
+            # 만기 제목이 아니어도 비파생은 파생이 아니다
+            _pcell("비파생금융부채", col="장부금액", tt="당기말 현재 금융부채의 내역", nt="금융상품"),
+            _pcell("기말", col="비파생금융부채", tt="당기말 현재 금융부채의 내역"),
+            _pcell("비파생상품부채", path=["금융부채", "비파생상품부채"], tt="파생상품부채의 내역"),
+        ]
+        for c in cases:
+            self.assertIsNone(_deriv_side(c), (c["label"], c["col_header"]))
+        cell = cases[2]
+        inp = {"rcept_no": "R", "cells": {"t183:r3:c1": cell}, "tables_text": "", "sentences": {}}
+        out, reasons = validate(_rec5("derivative_liability", "current_end", 100, ["t183:r3:c1"]), inp)
+        self.assertIsNone(out["balance"]["current_end"]["derivative_liability"])
+
+
+class SeriesMismatchTest(unittest.TestCase):
+    """금액 근거 칸(합 포함)의 회차가 기록 회차와 다르면 series_mismatch. 20260407003648:00761:t166 r3+r4 c3 = 5,989,580
+    (8회)을 CB-7 기록에 댄 경우."""
+
+    def _inp(self):
+        return HostSumSeriesPathTest()._inp()
+
+    def test_other_series_sum_rejected(self):
+        rec = _rec5("host_carrying", "prior_end", 5989580, ["S:r3:c3", "S:r4:c3"], series_key="CB-7")
+        out, reasons = validate(rec, self._inp())
+        self.assertIsNone(out["balance"]["prior_end"]["host_carrying"])
+        self.assertIn("series_mismatch:balance.prior_end.host_carrying", reasons)
+        rec = _rec5("host_carrying", "prior_end", 5989580, ["S:r3:c3", "S:r4:c3"], series_key="CB-8")
+        out, reasons = validate(rec, self._inp())
+        self.assertEqual(out["balance"]["prior_end"]["host_carrying"], 5989580)
+        self.assertEqual(reasons, [])
+
+    def test_other_series_single_cell_rejected(self):
+        rec = _rec5("face", "prior_end", 9500000, ["S:r3:c3"], series_key="CB-7")
+        out, reasons = validate(rec, self._inp())
+        self.assertIsNone(out["balance"]["prior_end"]["face"])
+        self.assertIn("series_mismatch:balance.prior_end.face", reasons)
+        # 기록 회차를 모르면 회차 붙은 칸은 맞지 않는다
+        rec = _rec5("face", "prior_end", 9500000, ["S:r3:c3"], series_key="")
+        out, reasons = validate(rec, self._inp())
+        self.assertIsNone(out["balance"]["prior_end"]["face"])
+        self.assertIn("series_mismatch:balance.prior_end.face", reasons)
+        # 회차 없는 칸은 회차 없는 기록·있는 기록 모두 받는다
+        rec = _rec5("host_carrying", "prior_end", -100, ["S:r9:c3"], series_key="CB-7")
+        out, reasons = validate(rec, self._inp())
+        self.assertEqual(out["balance"]["prior_end"]["host_carrying"], -100)
+
+    def test_derivative_row_other_series(self):
+        tt = "당기말 현재 파생상품부채의 내역은 다음과 같습니다."
+        cells = {"D:r1:c1": _pcell("제8회 전환사채 전환권", tt=tt, nt="파생상품")}
+        inp = {"rcept_no": "R", "cells": cells, "tables_text": "", "sentences": {}}
+        out, reasons = validate(_rec5("derivative_liability", "current_end", 100, ["D:r1:c1"], series_key="CB-7"), inp)
+        self.assertIsNone(out["balance"]["current_end"]["derivative_liability"])
+        self.assertIn("series_mismatch:balance.current_end.derivative_liability", reasons)
+        out, reasons = validate(_rec5("derivative_liability", "current_end", 100, ["D:r1:c1"], series_key="CB-8"), inp)
+        self.assertEqual(out["balance"]["current_end"]["derivative_liability"], 100)
+
+    def test_series_a(self):
+        cells = {"D:r1:c1": _pcell("파생상품부채", path=["Series A", "파생상품부채"], tt="당기말 현재 파생상품부채")}
+        inp = {"rcept_no": "R", "cells": cells, "tables_text": "", "sentences": {}}
+        out, reasons = validate(_rec5("derivative_liability", "current_end", 100, ["D:r1:c1"], series_key="RCPS-A",
+                                      kind="RCPS"), inp)
+        self.assertEqual(out["balance"]["current_end"]["derivative_liability"], 100)
+
+
+class NonBalanceTablesTest(unittest.TestCase):
+    """제목·주석 제목이 만기·유동성·신용위험·이연법인세·상계·담보를 말하거나, 머리글이 현금유입·현금유출·거래상대방
+    종류인 칸은 잔액이 아니다(「현재」가 제목에 있어도)."""
+
+    CASES = [
+        # 20260319001047:00760:t108 r8·r9 c6
+        _pcell("현금유입", path=["위험회피목적파생상품부채(주1)", "현금유입"], col="합 계/〈비파생금융상품〉",
+               period="current_period", value=3372116, n_value_cols=5, nt="유동성 위험",
+               tt="(3) 금융부채의 잔존계약만기 분석 당기말과 전기말 현재 금융부채의 잔존계약만기는 다음과 같습니다."),
+        _pcell("현금유출", path=["위험회피목적파생상품부채(주1)", "현금유출"], col="합 계/〈비파생금융상품〉",
+               period="current_period", value=3483486, n_value_cols=5, nt="유동성 위험",
+               tt="(3) 금융부채의 잔존계약만기 분석 당기말과 전기말 현재 금융부채의 잔존계약만기는 다음과 같습니다."),
+        # 20260319001047:00760:t100 신용건전성, t070 최대노출
+        _pcell("위험회피목적파생상품자산", col="합 계", period="current_period", value=22174, nt="보험위험",
+               tt="당기말과 전기말 현재 위험회피목적 파생상품자산의 신용건전성은 다음과 같습니다."),
+        _pcell("위험회피목적파생상품자산", col="최대노출", period="current_period", value=22174, nt="보험위험",
+               tt="2) 신용보강 후 최대노출정도당기말과 전기말 현재 신용위험 보강 후 최대노출정도는 다음과 같습니다."),
+        # 20260407002477:00760:t108:r19:c3 이연법인세 변동
+        _pcell("파생상품부채", col="기말금액", value=0, n_value_cols=5, nt="매각예정비유동자산비유동자산(또는",
+               tt="32-3. 당기와 전기 중 이연법인세자산(부채)의 변동내역은 다음과 같습니다.① 당기"),
+        # 20260325000202:00761:t360:r9:c2 거래상대방 집중도
+        _pcell("파생상품자산", col="기업", value=392715, n_value_cols=3, nt="위험관리",
+               tt="35-2-7 보고기간종료일 현재 연결실체의 금융자산의 신용위험에 대한 거래상대방별 집중도는 다음과 같습니다.〈당기말〉"),
+        # 상계·담보 열
+        _pcell("파생상품부채", col="상계되는 금액", tt="당기말 현재 파생상품부채"),
+        _pcell("파생상품부채", col="담보", tt="당기말 현재 파생상품부채"),
+        _pcell("파생상품부채", col="금융기관", tt="당기말 현재 파생상품부채"),
+        _pcell("파생상품부채", tt="당기말 현재 상계 대상 금융상품"),
+        _pcell("파생상품부채", tt="당기말 현재 파생상품부채", nt="신용위험"),
+    ]
+
+    def test_deriv_side_rejects(self):
+        from dart_search_mcp.ledger.instrument_validate import _deriv_side
+        for c in self.CASES:
+            self.assertIsNone(_deriv_side(c), (c["label_path"], c["col_header"], c["table_title"]))
+        self.assertEqual(_deriv_side(_pcell("파생상품부채", tt="당기말 현재 파생상품부채의 내역")), "liability")
+
+    def test_amounts_rejected(self):
+        for i, c in enumerate(self.CASES):
+            cell = dict(c, period="current_end")
+            inp = {"rcept_no": "R", "cells": {"X:r1:c1": cell}, "tables_text": "", "sentences": {}}
+            for key in ("derivative_liability", "derivative_asset", "host_carrying", "face"):
+                out, reasons = validate(_rec5(key, "current_end", cell["value"], ["X:r1:c1"]), inp)
+                self.assertIsNone(out["balance"]["current_end"][key], (i, key))
+
+
+class HostSumPeriodReasonTest(unittest.TestCase):
+    def test_period_only_failure_reason(self):
+        tt = "전환사채 내역"
+        cells = {"H:r1:c2": _pcell("액면금액", col="전기말", period="prior_end", value=1000, tt=tt),
+                 "H:r2:c2": _pcell("전환권조정", col="전기말", period="prior_end", value=-100, tt=tt)}
+        inp = {"rcept_no": "R", "cells": cells, "tables_text": "", "sentences": {}}
+        out, reasons = validate(_rec5("host_carrying", "current_end", 900, ["H:r1:c2", "H:r2:c2"]), inp)
+        self.assertIsNone(out["balance"]["current_end"]["host_carrying"])
+        self.assertEqual(reasons, ["period_mismatch:balance.current_end.host_carrying"])
+
+
+class HolderSideSentenceTest(unittest.TestCase):
+    """보유자 쪽 문장(취득한 전환사채의 전환권 → 금융자산)은 옵션 부채 근거가 아니다 — 자산은 문장 전체에서 본다."""
+
+    def test_holder_side(self):
+        from dart_search_mcp.ledger.instrument_validate import _option_liability_sentence
+        no = ("취득한 전환사채에 내재된 전환권은 파생상품으로 분류하여 당기손익-공정가치측정금융자산으로 계상하고 있습니다.",
+              "회사가 취득한 전환사채의 전환권은 파생상품으로 인식하였으며, 이는 파생상품자산에 포함되어 있습니다.")
+        for t in no:
+            self.assertFalse(_option_liability_sentence(t), t)
+        self.assertTrue(_option_liability_sentence(
+            "전환사채에 내재된 전환권은 파생상품으로 분류하였습니다. 회사는 금융자산을 공정가치로 측정합니다."))
+
+
+class PromptI4Test(unittest.TestCase):
+    def test_i4_version_and_rules(self):
+        self.assertEqual(PROMPT_VERSION, "i4")
+        user = build_messages(_inp())[1]["content"]
+        for phrase in ("equity_conflict", "자본요소", "회차가 다르", "만기", "이연법인세", "현금유입", "거래상대방",
+                       "파생금융자산(부채)", "발행시", "비파생"):
+            self.assertIn(phrase, user)
+        self.assertNotIn("「비파생금융부채」.", user)
 
 
 if __name__ == "__main__":

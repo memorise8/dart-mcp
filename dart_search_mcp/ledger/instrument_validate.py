@@ -17,8 +17,14 @@
    R15: option_class 는 전환권·신주인수권·교환권의 분류다. 그 근거 칸·문장은 이 셋 중 하나를 말해야 한다
    (조기상환청구권·매도청구권·풋·콜 근거는 embedded_separation 과 파생상품 금액에만 쓴다).
    기간(_period_ok): balance.current_end.* 는 current_end 칸(또는 잔액 열·기말 행인 current_period 칸),
-   prior_end 는 prior_end 칸(또는 잔액 열·기말 행인 prior_period 칸)과만 맞는다. 기간을 모르는 칸은 값 열이 하나인
-   표에서만 받는다. 아니면 `period_mismatch:<field>`.
+   prior_end 는 prior_end 칸(또는 잔액 열·기말 행인 prior_period 칸)과만 맞는다. 기간을 모르는 칸은 값 열이 하나이고
+   제목·주석 제목이 당기말·현재를 말하며 발행시·전환시·행사시·최초·평가가 없는 표에서 current_end 에만 맞는다.
+   아니면 `period_mismatch:<field>`(host 합이 기간만 어긋나도 같다).
+   회차(fix round 5): 금액 근거 칸(합의 칸 포함)의 회차(행 이름·label_path)가 기록 series_key 회차와 다르면(기록 회차를
+   모르는데 칸에 회차가 있어도) `series_mismatch:<field>`. 잔액 표가 아닌 표(만기분석·유동성위험·신용위험·이연법인세·
+   상계·담보·거래상대방; 현금유입·유출·거래상대방 종류 머리글)의 칸은 `not_balance:<field>`.
+   두 쪽을 말하는 제목·머리글·행 이름(「파생상품자산ㆍ부채」·「파생금융자산(부채)」·「파생상품자산부채」 …)은 쪽을
+   모르고, 「비파생…」은 파생 낱말이 아니다. 옵션 부채 문장은 같은 문장에 「자산」이 있으면 근거가 아니다(보유자 쪽).
    (R14: 정밀도가 통과율보다 우선 — 거부된 필드는 판단불가가 되지만 거짓 수락은 틀린 판정이 된다.)
 4. kind 가 CB|BW|EB|RCPS 가 아니면 기록을 버린다(None, [`bad_kind:<kind>`]).
 5. series_key 가 비면 instrument 의 「제 n 회」로 `<kind>-<n>`, 없으면 `<kind>-?<seq>`.
@@ -85,6 +91,8 @@ _END_ROW_RE = re.compile(r"^(?:당?기말|전기말|기말(?:잔액|금액)?|당
                          r"|장부가액|장부금액")
 # 「보고기간종료일 현재 …의 내역」처럼 한 시점의 잔액 표(변동·손익 표 아님) — 당기·전기 열이 곧 당기말·전기말이다.
 _STATUS_TITLE_RE = re.compile(r"현재")
+_UNKNOWN_OK_RE = re.compile(r"당기말|현재")
+_EVENT_TITLE_RE = re.compile(r"발행시|전환시|행사시|최초|평가|가치평가")
 _FLOW_TITLE_RE = re.compile(r"변동|증감|손익|발생|거래|현금흐름|[당전]기\s*중|기중")
 
 
@@ -103,12 +111,42 @@ _OTHER_COL_RE = re.compile(r"^기타(?:\(.*\))?$")  # 변동표의 「기타(*)�
 # 열 머리글만 파생을 말하는 칸은 행이 잔액 행(기말)·상품·회차 행일 때만(범주 행렬의 「유가증권 × 파생상품자산」 같은 칸 제외).
 _COL_ROW_RE = re.compile(r"^(?:당?기말|전기말|기말(?:잔액|금액)?|당기말잔액|전기말잔액|보고기간종료일(?:현재)?(?:장부금액|잔액)?)$"
                          r"|신주인수권부사채|전환사채|교환사채|우선주|Series|시리즈|^제?\d+(?:-\d+)?(?:회차|회|차|종)", re.I)
+# 잔액 표가 아닌 표(「현재」가 제목에 있어도): 만기분석(잔존계약만기·만기별·할인하지 않은 현금흐름)·유동성위험·
+# 신용위험(신용건전성·최대노출)·이연법인세·상계·담보·거래상대방 집중도 — 표를 설명하는 문장(제목 끝 문장)이나 주석 제목.
+# 「발행일 만기일 당기말」 같은 머리글 글자, 「만기 및 이자율」 차입금 내역 표, 앞 문단의 다른 이야기는 아니다.
+_NON_BALANCE_TITLE_RE = re.compile(r"만기분석|잔존계약만기|계약상만기|만기별|만기구조|할인하지|유동성위험|신용위험|신용건전성"
+                                   r"|최대노출|이연법인세|상계|담보|거래상대방|집중도")
+# 현금흐름(만기분석의 현금유입·유출)·상계·담보·신용보강 열, 현금유입·유출 행, 거래상대방 종류 열.
+_NON_BALANCE_COL_RE = re.compile(r"현금유입|현금유출|상계|담보|신용보강|최대노출|거래상대방")
+_NON_BALANCE_ROW_RE = re.compile(r"^(?:현금유입|현금유출)")
+_COUNTERPARTY_COL_RE = re.compile(r"^(?:개인|기업|법인|금융기관|은행|정부|공공기관|국가|지방자치단체|소매|도매|기관|중소기업|대기업"
+                                  r"|특수관계자|기타특수관계자|관계기업|종속기업|공동기업|국내|해외|기타거래처|거래처)$")
+
+
+def _title_core(title: str | None) -> str:
+    """제목에서 표를 설명하는 끝 문장(「…다.」로 나눈 조각 중 9자 이상인 마지막 것 — 「① 당기」·「〈당기말〉」 꼬리 제외)."""
+    parts = [p for p in re.split(r"다\.", title or "") if len(re.sub(r"\s+", "", p)) > 8]
+    return parts[-1] if parts else (title or "")
+
+
+def _non_balance_cell(cell: dict) -> bool:
+    """잔액 표가 아닌 표의 칸인가(만기분석·유동성위험·신용위험·이연법인세·상계·담보 제목, 현금유입·유출·거래상대방 머리글)."""
+    ctx = re.sub(r"\s+", "", _title_core(cell.get("table_title")) + "|" + (cell.get("note_title") or ""))
+    if _NON_BALANCE_TITLE_RE.search(ctx):
+        return True
+    col = re.sub(r"\s+", "", cell.get("col_header") or "")
+    labels = [_norm_label(p) for p in (cell.get("label_path") or [])] + [_norm_label(cell.get("label"))]
+    if _NON_BALANCE_COL_RE.search(col) or any(_NON_BALANCE_ROW_RE.search(t) for t in labels):
+        return True
+    return any(_COUNTERPARTY_COL_RE.match(seg) for seg in col.split("/"))
+
+
 _MATURITY_COL_RE = re.compile(r"개월|\d+년|만기|현금흐름|이내|초과")  # 만기분석 열은 장부금액이 아니다
 _MOVE_START_RE = re.compile(r"^(?:기초|발행|상환|전환|인식|제거)(?!권|청구권|우선주|사채)")
 _SERIES_TAG_RE = re.compile(r"^제?(\d+(?:-\d+)?)(?:회차|회|차|종)")
 _SERIES_ANY_RE = re.compile(r"(?:^|[^\d])제?(\d+(?:-\d+)?)(?:회차|회|차|종)|[Ss]eries([A-Z0-9]+)")
 _SENT_ID_RE = re.compile(r"(?:^|:)s:?(\d+)$")
-_DERIV_RE = re.compile(r"파생|전환권\s*\(?\s*부채")
+_DERIV_RE = re.compile(r"(?<!비)파생|전환권\s*\(?\s*부채")  # 「비파생금융부채」는 파생이 아니다
 _NEGATION_RE = re.compile(r"^[^.,。]{0,25}?(않|아니|없)")
 _DERIV_AMOUNT_KEYS = {"derivative_liability": "liability", "derivative_asset": "asset"}
 _SERIES_RE = re.compile(r"제\s*(\d+)\s*회")
@@ -130,7 +168,16 @@ def _words_side(text: str) -> str | None:
     return "liability" if liab else "asset"
 
 
-_BOTH_SIDES_RE = re.compile(r"(?<!비)파생(?:금융)?(?:상품)?\(?(자산|부채)\)?(?:및|과|와|,|·|/|또는)(?:파생(?:금융)?(?:상품)?)?(자산|부채)")
+# 「파생…(자산|부채)」 바로 뒤에 다른 쪽이 오면 두 쪽이다 — 이음은 낱말(및·과·와·또는)이나 글자가 아닌 기호 아무것
+# (「,」「·」「ㆍ」(U+318D)「∙」「/」「(」), 또는 아무것도 없음(「파생상품자산부채」·「파생금융자산(부채)」·「파생상품부채(자산)」).
+_SIDE_SEP = r"(?:[^가-힣A-Za-z0-9]{0,3}(?:및|과|와|또는)?[^가-힣A-Za-z0-9]{0,3})"
+_BOTH_SIDES_RE = re.compile(r"(?<!비)파생(?:금융)?(?:상품)?" + _SIDE_SEP + r"(자산|부채)" + _SIDE_SEP
+                            + r"(?:파생(?:금융)?(?:상품)?)?" + _SIDE_SEP + r"(자산|부채)")
+
+
+def _names_both_sides(text: str | None) -> bool:
+    text = re.sub(r"\s+", "", text or "")
+    return any(m.group(1) != m.group(2) for m in _BOTH_SIDES_RE.finditer(text))
 
 
 def _deriv_title_side(text: str | None) -> str | None:
@@ -138,7 +185,7 @@ def _deriv_title_side(text: str | None) -> str | None:
     마지막 언급). 제목이 두 쪽을 다 말하면(「파생상품자산 및 부채」·「파생상품 자산 및 부채」·「파생상품자산과
     파생상품부채」, 앞 문단의 「…파생상품자산으로 인식」과 뒤 「파생상품부채의 내역」) 쪽을 모른다(R14)."""
     text = re.sub(r"\s+", "", text or "")
-    if any(m.group(1) != m.group(2) for m in _BOTH_SIDES_RE.finditer(text)):
+    if _names_both_sides(text):
         return None
     found = list(_SIDE_DERIV_RE.finditer(text))
     if not found or len({m.group(1) for m in found}) > 1:
@@ -171,6 +218,8 @@ def _deriv_side(cell: dict) -> str | None:
     label = _norm_label(cell.get("label"))
     if _is_host_cell(cell) or _TOTAL_RE.match(label) or cell.get("region_kind") == "statement_cf":
         return None  # 현금흐름표 줄(「파생상품자산의 정산」)은 잔액이 아니다
+    if _non_balance_cell(cell):
+        return None  # 만기분석·신용위험·이연법인세·상계·담보·거래상대방 표
     parts = [_norm_label(p) for p in (cell.get("label_path") or [cell.get("label") or ""])]
     if any(_JOINED_INSTRUMENT_RE.search(p) for p in parts):
         return None  # 「제13회 전환사채 및 조기상환권」 — 상품 전체와 옵션을 함께 적은 행(옵션만의 금액이 아니다)
@@ -187,6 +236,8 @@ def _deriv_side(cell: dict) -> str | None:
     col_side = _deriv_title_side(col) or (_words_side(col) if _DERIV_RE.search(col) else None)
     deriv_parts = [p for p in parts if _DERIV_RE.search(p)]
     if deriv_parts:
+        if any(_names_both_sides(p) for p in deriv_parts):
+            return None  # 「파생상품자산(부채)」 행 — 쪽을 모른다
         plain = [p for p in parts if not _INSTRUMENT_RE.search(p)]
         return _words_side(" ".join(deriv_parts)) or _words_side(" ".join(plain)) or col_side or title_deriv
     if _option_term(label) or any(_option_term(p) for p in parts if not _INSTRUMENT_RE.search(p)):
@@ -194,6 +245,13 @@ def _deriv_side(cell: dict) -> str | None:
     if (_DERIV_RE.search(col) or _option_term(col)) and _COL_ROW_RE.search(label):
         return _deriv_title_side(col)  # 기말·상품·회차 행: 열 머리글이 쪽까지 말해야 한다
     return None
+
+
+def _sentence_around(text: str, start: int, end: int) -> str:
+    """일치 범위를 담은 한 문장(앞 「다.」·「.」 뒤부터 뒤 「.」까지)."""
+    a = max(text.rfind(".", 0, start), text.rfind("。", 0, start)) + 1
+    b = min([i for i in (text.find(".", end), text.find("。", end)) if i >= 0] or [len(text)])
+    return text[a:b]
 
 
 def _option_liability_sentence(text: str) -> bool:
@@ -204,7 +262,7 @@ def _option_liability_sentence(text: str) -> bool:
     if _CONV_TO_EQUITY_RE.search(text):
         return False
     for m in (m for rx in _OPTION_LIAB_SENT_RES for m in rx.finditer(text)):
-        if "자산" in m.group(0) or _NEGATION_RE.search(text[m.end():]) or _GAP_OTHER_SUBJECT_RE.search(m.group("gap")):
+        if "자산" in _sentence_around(text, m.start(), m.end()) or _NEGATION_RE.search(text[m.end():]) or _GAP_OTHER_SUBJECT_RE.search(m.group("gap")):
             continue
         if _CONDITIONAL_RE.search(text[:m.end()]) or _CONDITIONAL_RE.search(text[m.end():m.end() + 12]):
             continue
@@ -235,7 +293,11 @@ def _period_ok(cell: dict, target: str, n_value_cols: int | None = None) -> bool
     if p == target:
         return True
     if p in (None, "", "unknown"):
-        return (cell.get("n_value_cols") if n_value_cols is None else n_value_cols) == 1
+        # 값 열 하나인 잔액 표이고 제목·주석 제목이 당기말·현재를 말하며 사건 시점·평가 표가 아닐 때, current_end 에만.
+        if target != "current_end" or (cell.get("n_value_cols") if n_value_cols is None else n_value_cols) != 1:
+            return False
+        ctx = re.sub(r"\s+", "", (cell.get("table_title") or "") + "|" + (cell.get("note_title") or ""))
+        return bool(_UNKNOWN_OK_RE.search(ctx)) and not _EVENT_TITLE_RE.search(ctx)
     if p == target.replace("_end", "_period"):
         col = re.sub(r"\s+", "", cell.get("col_header") or "")
         if _BALANCE_COL_RE.search(col) or _END_ROW_RE.search(_norm_label(cell.get("label"))):
@@ -255,7 +317,7 @@ _EQUITY_OPTION_RE = {
 
 
 def _record_series(rec: dict) -> str | None:
-    m = re.match(r"^[A-Z]+-(\d+(?:-\d+)?)$", rec.get("series_key") or "")
+    m = re.match(r"^[A-Z]+-(\d+(?:-\d+)?|[A-Z0-9]+)$", rec.get("series_key") or "")
     return m.group(1) if m else None
 
 
@@ -425,6 +487,7 @@ def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = N
     # 규칙 1·2·3·6 — 금액 필드
     matched: dict[str, str] = {}
     matched_mult: dict[str, object] = {}
+    series = _record_series(rec)
     for field, holder, key in _amount_fields(rec):
         value = holder[key]
         if value is None:
@@ -448,12 +511,19 @@ def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = N
             if amount is not None and cv is not None and abs(cv - amount) <= AMOUNT_TOLERANCE:
                 value_hits.append(i)
         hits = [i for i in value_hits if target is None or _period_ok(cells[i], target)]
+        fit = [i for i in hits if _series_fits(cells[i], series)]
+        bal = [i for i in fit if not _non_balance_cell(cells[i])]
         side = _DERIV_AMOUNT_KEYS.get(key)
-        good = [i for i in hits if side is None or _deriv_side(cells[i]) == side]
+        good = [i for i in bal if side is None or _deriv_side(cells[i]) == side]
+        sum_reason = None
         if not good and key == "host_carrying" and amount is not None and len(ids) == cited.get(field):
             summed = _host_sum(ids, cells, amount, want_unit)
             if summed and target is not None and not all(_period_ok(cells[i], target) for i in summed):
-                summed = None
+                summed, sum_reason = None, "period_mismatch"
+            elif summed and not all(_series_fits(cells[i], series) for i in summed):
+                summed, sum_reason = None, "series_mismatch"
+            elif summed and any(_non_balance_cell(cells[i]) for i in summed):
+                summed, sum_reason = None, "not_balance"
             if summed:
                 matched[field] = "+".join(summed)
                 matched_mult[field] = cells[summed[0]].get("multiplier")
@@ -462,11 +532,17 @@ def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = N
         if not good:
             holder[key] = None
             evidence[field] = []
-            if value_hits and not hits:
+            if sum_reason and not value_hits:
+                reasons.append(f"{sum_reason}:{field}")
+            elif value_hits and not hits:
                 reasons.append(f"period_mismatch:{field}")
             elif not hits:
                 reasons.append(f"amount_mismatch:{field}")
-            elif all(_is_host_cell(cells[i]) for i in hits):
+            elif not fit:
+                reasons.append(f"series_mismatch:{field}")
+            elif not bal:
+                reasons.append(f"not_balance:{field}")
+            elif all(_is_host_cell(cells[i]) for i in bal):
                 reasons.append(f"host_only:{field}")
             else:
                 reasons.append(f"not_derivative:{field}")

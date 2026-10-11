@@ -1,4 +1,4 @@
-"""2층 ② 사채·우선주 기록 — 프롬프트(i3)·호출·캐시·공시 단위 실행(스펙 §5.3, 브리프 T9).
+"""2층 ② 사채·우선주 기록 — 프롬프트(i4)·호출·캐시·공시 단위 실행(스펙 §5.3, 브리프 T9).
 
 LLM 은 주입된 `complete_json(messages, schema) -> dict` 로 부른다(백엔드 이미지 안에서는
 scripts/ledger_instruments_in_backend.py 가 luna LLMClient 를 감싸 넘긴다). 표준 라이브러리와
@@ -22,7 +22,9 @@ from .instrument_validate import validate
 # i1 → i2: 2026-10-11 100건 측정(근거 통과 43.7%) 뒤 개정, 보고서 T9 측정 1회.
 # i2 → i3: fix round 4 — 검증기(R14·R15·기간 검사)와 맞춤. i2 가 가르치던 근거 중 검증기가 거부하는 것(파생상품부채 제목 표의
 # 회차 행, 열 머리글 없는 「기말」 행, 행사가격 조정 표의 내재파생상품 행, 「전환권을 금융부채로 분류」 문장)을 지웠다.
-PROMPT_VERSION = "i3"
+# i3 → i4: fix round 5 — 기간 모르는 칸(당기말·현재 잔액 표, current_end 만), 회차 다른 칸(series_mismatch), 비잔액 표
+# (만기·유동성·신용위험·이연법인세·상계·담보·거래상대방), 두 쪽 표기(ㆍ·괄호·붙여 쓰기), equity_conflict 를 검증기 그대로 적음.
+PROMPT_VERSION = "i4"
 
 CompleteJson = Callable[[list, dict], dict]
 
@@ -53,14 +55,14 @@ OUTPUT_SCHEMA = {
         }}}},
 }
 
-_SYSTEM_I3 = (
+_SYSTEM_I4 = (
     "너는 감사보고서 주석에서 전환사채·신주인수권부사채·교환사채·상환전환우선주를 회차별로 기록한다. "
     "표 칸 id와 문장 id로만 근거를 댄다. 보이지 않는 값은 null 또는 unconfirmed로 둔다. "
     "사채의 부채요소(주계약)와 전환권 파생상품부채는 다른 칸이다. option_class 는 전환권·신주인수권·교환권의 분류다. "
     "JSON 객체 하나만 답한다."
 )
 
-_RULES_I3 = """규칙(근거는 코드가 아래 규칙 그대로 확인한다. 규칙에 맞지 않는 근거를 댄 값은 버려진다):
+_RULES_I4 = """규칙(근거는 코드가 아래 규칙 그대로 확인한다. 규칙에 맞지 않는 근거를 댄 값은 버려진다):
 1. 회차(상품)마다 한 줄. kind 는 CB(전환사채)·BW(신주인수권부사채)·EB(교환사채)·RCPS(상환전환우선주) 중 하나.
    series_key 는 「제3회」 같은 회차 번호와 종류로 만든다(예: "CB-3"). 회차 번호가 보이지 않으면 series_key 는
    빈 문자열 "" 로 두고, 발행일·액면으로 묶고, 못 묶으면 따로 둔다. 같은 회차의 당기말·전기말 잔액은 한 줄에 담는다.
@@ -72,8 +74,15 @@ _RULES_I3 = """규칙(근거는 코드가 아래 규칙 그대로 확인한다. 
      「기말」·「장부가액」 행이거나, 표 제목이 「보고기간종료일 현재 …의 내역」 같은 시점 잔액 표(변동·손익·「당기 중」
      표가 아님)일 때만 각각 current_end·prior_end 금액이 된다.
    - [opening](기초) 열, 발행·상환·평가 같은 변동 열은 잔액 근거가 아니다.
-   - 기간 표시가 없는 칸(글 표의 v 칸 포함)은 그 표의 값 열(금액 자리)이 하나일 때만 쓴다. 발행조건 글 표에 회차 열이
-     여럿이면 그 v 칸으로 잔액을 대지 않는다(그 금액은 null).
+   - 기간 표시가 없는 칸(글 표의 v 칸 포함)은 다음을 모두 지킬 때만 balance.current_end 금액으로 쓴다(prior_end 로는 쓰지
+     않는다): 그 표의 값 열(금액 자리)이 하나, 표·주석 제목이 「당기말」이나 「현재」를 말함, 제목에 발행시·전환시·행사시·
+     최초·평가·가치평가가 없음. 발행조건 글 표(「…의 주요 발행조건」), 「가. 전환시」·「나. 발행시」 같은 평가 표의 칸으로는
+     잔액을 대지 않는다(그 금액은 null).
+   - 잔액 표가 아닌 표의 칸은 어느 금액의 근거도 아니다(제목에 「현재」가 있어도): 표·주석 제목이 만기(만기분석·잔존계약만기)·
+     유동성(유동성 위험)·신용위험·신용건전성·최대노출·이연법인세·상계·담보·거래상대방(집중도)을 말하는 표, 머리글이나 행이
+     현금유입·현금유출·상계·담보·신용보강을 말하는 칸, 열이 거래상대방 종류(개인·기업·금융기관·정부 …)인 칸.
+   - 회차: 근거 칸의 행 이름이나 위 묶음 행에 회차(「제8회」·「8회차」·「Series A」)가 있으면 그 회차가 이 줄의
+     series_key 회차와 같아야 한다. 회차가 다르거나 series_key 가 "" 인데 칸에 회차가 붙어 있으면 그 금액은 버려진다.
 4. null 이 아닌 필드는 모두 evidence 에 근거 id 를 댄다(금액마다, option_class·embedded_separation 도).
    evidence 키는 필드 경로다: "balance.current_end.face", "balance.prior_end.equity_component" 처럼.
    댈 근거가 없으면 금액은 null, 분류는 "unconfirmed" 로 둔다.
@@ -92,13 +101,16 @@ _RULES_I3 = """규칙(근거는 코드가 아래 규칙 그대로 확인한다. 
        조기상환권)」, 또는 표·주석 제목이 「파생상품부채」만 말하는 표(「파생상품부채의 내역」)의 「…내재파생상품」 행.
      · 옵션 이름 행(전환권·조기상환청구권·매도청구권·콜옵션 …): 열 머리글이나 표·주석 제목이 「파생상품부채」를 말할 때만.
      · 「기말」 행·회차 행·상품 이름 행: 열 머리글이 「파생상품부채」를 말할 때만(제목만으로는 안 된다).
-     아닌 것: 제목·열 머리글이 두 쪽을 다 말하는 표(「파생상품자산 및 부채」·「파생상품 자산 및 부채」·「파생상품자산과
-     파생상품부채」) — 쪽을 모르므로 null. 「…부채로 분류된 금융부채의 장부금액」 같은 행사가격 조정 공시 표(파생상품부채를
-     명시하지 않음). 공정가치 수준 열(「수준1」·「수준 2」·「Level 3」·「공정가치 수준/합계」), 회계오류 수정·재작성 열
+     아닌 것: 제목·열 머리글·행 이름이 두 쪽을 다 말하는 표(어떤 표기든: 「파생상품자산 및 부채」·「파생상품 자산 및 부채」·
+     「파생상품자산과 파생상품부채」·「파생상품자산ㆍ부채」·「파생상품자산부채」·「파생금융자산(부채)」·「파생상품부채(자산)」)
+     — 쪽을 모르므로 null. 쪽을 말하지 않는 행(「…내재파생상품」·「전환권 및 조기상환권」)은 제목이나 열 머리글이
+     파생상품부채를 명시하지 않으면 근거가 아니다(예: 「…부채로 분류된 금융부채의 장부금액」 같은 행사가격 조정 공시 표의
+     그런 행. 그 표에서도 「파생상품부채」처럼 행 이름이 쪽을 말하면 근거가 된다). 공정가치 수준 열(「수준1」·「수준 2」·「Level 3」·「공정가치 수준/합계」), 회계오류 수정·재작성 열
      (「조정금액」·「수정금액」·「재작성금액」), 현금흐름표 줄(「파생상품자산의 정산」), 손익·변동·민감도·만기분석 칸
      (평가이익·손실, 발행·행사·상환, 1% 증가, 1년 이내), 「전환권조정」·「전환권가치」 같은 차감 칸(괄호 음수),
      「사채할인발행차금」·「상환할증금」·「합계」 행, 옵션 낱말 없이 상품 이름만 있는 행의 금액(상품 전체 장부금액),
-     「전환사채 및 조기상환권」처럼 상품과 옵션을 함께 적은 행, 「비파생금융부채」.
+     「전환사채 및 조기상환권」처럼 상품과 옵션을 함께 적은 행, 「비파생금융부채」·「비파생상품」처럼 비파생을 말하는
+     행·열(파생상품 칸이 아니다).
    - derivative_asset: 같은 규칙으로 쪽이 자산인 칸(「파생상품자산」 행, 제목이 「파생상품자산의 내역」인 표의 매도청구권·
      콜옵션 행). 이름(매도청구권·콜옵션)만으로 자산이라고 정하지 않는다.
    - equity_component: 전환권대가·신주인수권대가 등 자본요소(「전환사채의 자본요소」·「전환권대가」 행).
@@ -119,6 +131,11 @@ _RULES_I3 = """규칙(근거는 코드가 아래 규칙 그대로 확인한다. 
      「…경우 부채로 분류한다」 같은 조건부·부정 문장, 전환권을 자본(기타자본잉여금)으로 옮겼다는 문장, 「전환권 및 상환권이
      없는 …」, 상품 전체를 당기손익-공정가치로 지정했다는 문장.
    - 사채 부채요소·전환권조정 칸만 있으면 derivative_liability 가 아니다. 근거가 없으면 "unconfirmed".
+   - equity_conflict: 입력에 그 종류의 자본요소 칸(CB·RCPS 전환권대가·전환권의 자본요소, BW 신주인수권대가, EB 교환권대가;
+     0 이 아니고 파생·부채 낱말이 없는 행)이 이 줄과 같은 회차이거나 회차가 붙어 있지 않으면, 다른 근거가 있어도
+     "derivative_liability" 는 확인되지 않는다(그 전환권은 자본이었으므로). 그때는 근거에 맞게 "equity" 나 "unconfirmed".
+   - 「파생상품」이라고 분류한 문장이라도 같은 문장이 자산(금융자산·파생상품자산)을 말하면 근거가 아니다(취득한
+     전환사채의 전환권처럼 보유자 쪽 문장).
 8. embedded_separation: 내재파생상품을 주계약과 분리했으면 "separated"(separated_targets 에 분리한 것:
    "conversion"·"redemption"), 분리하지 않았으면 "not_separated", 상품 전체를 당기손익-공정가치로 측정하면
    "whole_fvpl", 모르면 "unconfirmed". 근거는 그렇게 말하는 문장 id 가 가장 좋다.
@@ -126,7 +143,7 @@ _RULES_I3 = """규칙(근거는 코드가 아래 규칙 그대로 확인한다. 
    extinguished(소멸)·modified(조건 변경)·none(변동 없음). 모르면 빈 목록.
 10. 대상 상품이 없으면 {"instruments": []}."""
 
-_EXAMPLE_I3 = """예시 입력 1(일동홀딩스, 천원 표):
+_EXAMPLE_I4 = """예시 입력 1(일동홀딩스, 천원 표):
 [T7] (consolidated) / 제목: 당기말과 전기말 현재 전환사채의 세부내역 / 단위: (단위: 천원)
 머리글 | c1=당기말 [current_end] | c2=전기말 [prior_end]
 r2 전환사채의 부채요소
@@ -180,7 +197,7 @@ s21: 발행가액에서 부채요소를 차감하고 매도청구권과 조기�
  「파생상품자산 및 부채」처럼 두 쪽을 다 말하는 제목의 표였다면 금액은 null 이다.)"""
 
 
-_USER_I3 = """{rules}
+_USER_I4 = """{rules}
 
 출력 형식(JSON):
 {schema}
@@ -194,8 +211,8 @@ _USER_I3 = """{rules}
 입력 문장(id: 글):
 {sentences}"""
 
-PROMPT_I3 = {"version": PROMPT_VERSION, "system": _SYSTEM_I3, "rules": _RULES_I3, "example": _EXAMPLE_I3,
-             "user": _USER_I3}
+PROMPT_I4 = {"version": PROMPT_VERSION, "system": _SYSTEM_I4, "rules": _RULES_I4, "example": _EXAMPLE_I4,
+             "user": _USER_I4}
 
 
 def _example_cell(value, label, *, path=None, col, period, tt, nt=None, multiplier=1, n_value_cols=2):
@@ -255,15 +272,15 @@ def _example_cases() -> list[tuple[dict, dict]]:
     return [({"rcept_no": "EX1", "tables_text": "", "cells": cells1, "sentences": {}}, rec1), (inp2, rec2), (inp3, rec3)]
 
 
-_EXAMPLE_CASES_I3 = _example_cases()
+_EXAMPLE_CASES_I4 = _example_cases()
 
 
 def build_messages(inp: dict) -> list[dict]:
     sentences = "\n".join(f"{sid}: {text}" for sid, text in (inp.get("sentences") or {}).items()) or "(없음)"
-    user = _USER_I3.format(rules=_RULES_I3, schema=json.dumps(OUTPUT_SCHEMA, ensure_ascii=False),
-                           example=_EXAMPLE_I3, tables_text=inp.get("tables_text") or "(없음)",
+    user = _USER_I4.format(rules=_RULES_I4, schema=json.dumps(OUTPUT_SCHEMA, ensure_ascii=False),
+                           example=_EXAMPLE_I4, tables_text=inp.get("tables_text") or "(없음)",
                            sentences=sentences)
-    return [{"role": "system", "content": _SYSTEM_I3}, {"role": "user", "content": user}]
+    return [{"role": "system", "content": _SYSTEM_I4}, {"role": "user", "content": user}]
 
 
 def cache_key(inp: dict) -> str:
