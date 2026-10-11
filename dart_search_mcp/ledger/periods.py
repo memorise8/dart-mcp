@@ -92,7 +92,8 @@ _FLOW_RE = re.compile("^(?:" + "|".join(_FLOW) + ")$")
 _BRACKETS_RE = re.compile(r"[〈〉\[\]<>【】《》「」『』]")
 _SUFFIX_RE = re.compile(r"(?:장부가액|장부금액|잔액|금액|가액|합계|액|계)$")
 _PAREN_TERM_RE = re.compile(r"\(((?:당|전)(?:분|반)?기(?:말)?)\)")
-_END_PREFIX_RE = re.compile(r"^([당전])(?:분)?기말(?!\d)")
+# 「당기말 원화환산금액」은 당기말, 「전기말 대비 증감」「당기말 이후」 같은 비교 머리글은 기간이 아니다
+_END_PREFIX_RE = re.compile(r"^([당전])(?:분)?기말(?!\d)(?!.*(?:대비|증감|이후|이전|변동))")
 
 
 def _kind(text: str) -> str:
@@ -184,6 +185,9 @@ _BOTH = ("당기와전기", "당기및전기", "전기와당기", "당기ㆍ전�
 _T2_WORDS = (("당기말", "current_end"), ("당분기말", "current_end"), ("전기말", "prior_end"))
 _TITLE_WORDS = _T2_WORDS + (("보고기간종료일현재", "current_end"), ("보고기간말현재", "current_end"),
                             ("재무상태표일현재", "current_end"), ("재무제표일현재", "current_end"),
+                            # 「기말 현재」보다 먼저: 전기 기말·전분기말·전반기말은 전기, 당분기말·당반기말·당기 기말은 당기
+                            ("전기기말", "prior_end"), ("전분기말", "prior_end"), ("전반기말", "prior_end"),
+                            ("당기기말", "current_end"), ("당반기말", "current_end"),
                             ("기말현재", "current_end"), ("당기중", "current_period"), ("전기중", "prior_period"))
 
 

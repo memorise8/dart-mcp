@@ -141,6 +141,16 @@ class PeriodTest(unittest.TestCase):
                         "<TBODY><TR><TD>a</TD><TD>1</TD><TD>2</TD></TR></TBODY></TABLE>")
         self.assertEqual([c.period for c in classify_columns(g, None, "")][1:], ["prior_end", "prior_end"])
 
+    def test_prior_interim_and_gimal_phrases(self):  # 리뷰 1: 「기말현재」 부분 일치가 전기·전분기·전반기를 당기말로 만들지 않게
+        for ctx in ("전기 기말 현재 담보 내역은 다음과 같습니다.", "전분기말 현재 차입금 내역", "전반기말 현재 잔액"):
+            self.assertEqual(self._ctx(ctx), ["prior_end"] * 2, ctx)
+        for ctx in ("당분기말 현재 차입금 내역", "당반기말 현재 잔액", "당기 기말 현재 잔액", "기말 현재 잔액"):
+            self.assertEqual(self._ctx(ctx), ["current_end"] * 2, ctx)
+
+    def test_end_prefix_comparison_headers_stay_unknown(self):  # 리뷰 3
+        for head in ("전기말 대비 증감", "당기말 이후", "전기말대비증감률", "당기말 이전"):
+            self.assertEqual(self._one(head), "unknown", head)
+
     def test_header_amount_suffix_and_paren_term(self):
         g = parse_table("<TABLE><THEAD><TR><TH>구분</TH><TH>기초장부가액</TH><TH>취득</TH><TH>기말가액</TH></TR></THEAD>"
                         "<TBODY><TR><TD>토지</TD><TD>1</TD><TD>2</TD><TD>3</TD></TR></TBODY></TABLE>")

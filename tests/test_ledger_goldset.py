@@ -132,6 +132,27 @@ class MeasureTablesTest(unittest.TestCase):
         self.assertAlmostEqual(m["read_failed_ratio"], 0.25)  # 전체 표 4개 중 1
         self.assertEqual(m["counts"]["period_found"], {"true": 1, "false": 1})
 
+    def test_adjusted_ratios_exclude_non_financial_tables(self):  # R8
+        chk = lambda pf: {"period_found": pf, "unit_found": pf, "sum_ok": None, "identity_ok": None}  # noqa: E731
+        tables = [
+            _table("A:t1", checks=chk(True)),
+            _table("A:t2", checks=chk(False)),
+            _table("A:t3", checks=chk(False), region={"kind": "other", "note_no": None, "note_title": None, "sub_path": []}),
+            _table("A:t4", checks=chk(False), region={"kind": "auditor_report", "note_no": None, "note_title": None, "sub_path": []}),
+            _table("A:t5", checks=chk(False), region={"kind": "statement_ce", "note_no": None, "note_title": None, "sub_path": []}),
+            _table("A:t6", checks=chk(True), region={"kind": "statement_bs", "note_no": None, "note_title": None, "sub_path": []}),
+        ]
+        write_filing(self.tmp, "A", _filing("A", tables))
+        m = self.cli.measure_tables(self.tmp, ["A"])
+        self.assertAlmostEqual(m["period_found_ratio"], 2 / 6, places=4)  # 원 정의 그대로
+        adj = m["adjusted"]
+        self.assertEqual(adj["excluded_region_kinds"], ["auditor_report", "other", "statement_ce"])
+        self.assertEqual(adj["tables"], 3)
+        self.assertEqual(adj["excluded_tables"], 3)
+        self.assertAlmostEqual(adj["period_found_ratio"], 2 / 3, places=4)
+        self.assertAlmostEqual(adj["unit_found_ratio"], 2 / 3, places=4)
+        self.assertEqual(adj["counts"]["period_found"], {"true": 2, "false": 1})
+
 
 if __name__ == "__main__":
     unittest.main()

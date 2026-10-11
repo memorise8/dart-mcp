@@ -17,7 +17,7 @@ from .periods import classify_columns, marker_only
 from .regions import Spot, plain, scan_file
 from .units import Unit, column_units, own_column_units, same_unit, table_unit, value_krw
 
-PARSER_VERSION = "ledger-t2"
+PARSER_VERSION = "ledger-t3"
 
 _SCOPE_RE = re.compile(r"_(\d{5})\.xml$", re.I)
 _TOTAL_RE = re.compile(r"^(합\s*계|총\s*계|계)$")
@@ -161,7 +161,8 @@ def _unit_dict(u: Unit) -> dict:
 
 # ---------- 검사 ----------
 def _sum_ok(rows: list[dict], value_cols: list[int]) -> bool | None:
-    """total·subtotal 행 = 바로 위 같은 단계 item 합(열별). 소계 뒤 합계는 소계들 + 마지막 소계 뒤 item 합."""
+    """total·subtotal 행 = 바로 위 같은 단계 item 합. 소계 뒤 합계는 소계들 + 마지막 소계 뒤 item 합.
+    구조 해석 여럿 중 하나가 그 행의 모든 열에서 맞으면 통과."""
     results: list[bool] = []
     seg_start = sub_start = 0
     prev_total: dict | None = None
@@ -182,18 +183,24 @@ def _sum_ok(rows: list[dict], value_cols: list[int]) -> bool | None:
         readings = [(subs, items), (_same_group(row, subs), _same_group(row, items)), (subs, _level_run(row, items)),
                     ([], _after_blank_parent(items, value_cols))]
         carry = [prev_total] if prev_total is not None and row["kind"] == "total" and not subs and items else []
-        for c in value_cols:
-            total = _cell_value(row, c)
-            if total is None:
-                continue
-            sums = []
-            for r_subs, r_items in readings + ([(carry, items)] if carry else []):
+        if carry:
+            readings.append((carry, items))
+        # 한 해석이 이 행의 모든 열에서 맞아야 통과(열마다 다른 해석을 고르지 않는다). 열마다 맞음/틀림/해당 없음.
+        verdicts = []
+        for r_subs, r_items in readings:
+            marks = []
+            for c in value_cols:
+                total = _cell_value(row, c)
+                if total is None:
+                    continue
                 parts = [_cell_value(r, c) for r in r_subs if _cell_value(r, c) is not None]
                 parts += _top_values([(r["level"], _cell_value(r, c)) for r in r_items])
                 if parts:
-                    sums.append(sum(parts))
-            if sums:
-                results.append(any(abs(x - total) <= SUM_TOLERANCE for x in sums))
+                    marks.append(abs(sum(parts) - total) <= SUM_TOLERANCE)
+            if marks:
+                verdicts.append(all(marks))
+        if verdicts:
+            results.append(any(verdicts))
         sub_start = i + 1
         if row["kind"] == "total":
             seg_start = i + 1

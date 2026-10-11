@@ -348,6 +348,15 @@ class FilingTablesTest(unittest.TestCase):
         self.assertTrue(self._sum_doc([("기초 부채", "7,233"), ("급여비용:", ""), ("  근무원가", "943"),
                                        ("  이자비용", "229"), ("  재측정요소", "(4,509)"), ("소계", "(3,337)")]))
 
+    def test_columns_must_agree_on_one_reading(self):  # 리뷰 4: 열마다 다른 해석으로 통과하면 안 된다
+        doc = ("<DOCUMENT><BODY><P>(단위: 천원)</P><TABLE BORDER=\"1\"><THEAD><TR><TH COLSPAN=\"2\">구분</TH><TH>당기말</TH><TH>전기말</TH></TR></THEAD><TBODY>"
+               "<TR><TD>채무상품</TD><TD>A</TD><TD>10</TD><TD>5</TD></TR>"
+               "<TR><TD ROWSPAN=\"3\">지분상품</TD><TD>B</TD><TD>20</TD><TD>7</TD></TR><TR><TD>C</TD><TD>30</TD><TD>8</TD></TR>"
+               "<TR><TD>소계</TD><TD>60</TD><TD>15</TD></TR></TBODY></TABLE></BODY></DOCUMENT>")
+        self.assertFalse(build_filing_tables("X", [("x.xml", doc.encode())], {})[0]["checks"]["sum_ok"])
+        ok = doc.replace("<TD>15</TD>", "<TD>20</TD>")  # 두 열 모두 구간 전체 해석으로 맞음
+        self.assertTrue(build_filing_tables("X", [("x.xml", ok.encode())], {})[0]["checks"]["sum_ok"])
+
     def test_subtotal_spanning_two_groups_still_ok(self):  # 소계가 앞 묶음까지 더한 원문 — 묶음 안·밖 어느 쪽이든 맞으면 통과
         doc = ("<DOCUMENT><BODY><P>(단위: 천원)</P><TABLE BORDER=\"1\"><THEAD><TR><TH COLSPAN=\"2\">구분</TH><TH>당기말</TH></TR></THEAD><TBODY>"
                "<TR><TD ROWSPAN=\"1\">채무상품</TD><TD>A</TD><TD>10</TD></TR>"

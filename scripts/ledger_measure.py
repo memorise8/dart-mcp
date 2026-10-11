@@ -23,6 +23,11 @@ from dart_search_mcp.ledger.tables import load_filing  # noqa: E402
 
 CHECKS = ("period_found", "unit_found", "sum_ok", "identity_ok")
 
+# R8: 완료 기준(기간·단위)은 재무 금액 표에서 잰다. 아래 구간의 표는 보정 비율의 분모에서 뺀다(표 기록은 그대로).
+#   auditor_report·other — 감사인 보고서·외부감사 실시내용 서식(감사참여자·주요 감사실시내용·커뮤니케이션)·표지·목차
+#   statement_ce — 자본변동표 본문(기간이 행으로 내려가 열 기간이 없다)
+EXCLUDED_REGION_KINDS = ("auditor_report", "other", "statement_ce")
+
 
 def _ratio(c: Counter) -> float | None:
     n = c.get("true", 0) + c.get("false", 0)
@@ -39,7 +44,10 @@ def _iter_tables(out_dir: Path, sample: list[str]):
 
 
 def measure_tables(out_dir: Path, sample: list[str]) -> dict:
+    """원 정의 비율과, EXCLUDED_REGION_KINDS 표를 뺀 보정 비율(adjusted)을 함께 낸다. 기준은 보정 비율에 건다."""
     checks = {k: Counter() for k in CHECKS}
+    adj_checks = {k: Counter() for k in CHECKS}
+    adj_status: Counter = Counter()
     status: Counter = Counter()
     missing: list[str] = []
     filings = 0
@@ -50,11 +58,17 @@ def measure_tables(out_dir: Path, sample: list[str]) -> dict:
         filings += 1
         for t in filing.get("tables", []):
             status[t.get("status", "?")] += 1
+            kept = (t.get("region") or {}).get("kind") not in EXCLUDED_REGION_KINDS
+            if kept:
+                adj_status[t.get("status", "?")] += 1
             for k in CHECKS:
                 v = (t.get("checks") or {}).get(k)
                 if v is not None:
                     checks[k][str(bool(v)).lower()] += 1
+                    if kept:
+                        adj_checks[k][str(bool(v)).lower()] += 1
     n = sum(status.values())
+    n_adj = sum(adj_status.values())
     return {
         "filings": filings,
         "filings_missing": missing,
@@ -66,6 +80,17 @@ def measure_tables(out_dir: Path, sample: list[str]) -> dict:
         "identity_ok_ratio": _ratio(checks["identity_ok"]),
         "read_failed_ratio": round(status.get("read_failed", 0) / n, 4) if n else None,
         "counts": {k: dict(v) for k, v in checks.items()},
+        "adjusted": {
+            "excluded_region_kinds": list(EXCLUDED_REGION_KINDS),
+            "tables": n_adj,
+            "excluded_tables": n - n_adj,
+            "period_found_ratio": _ratio(adj_checks["period_found"]),
+            "unit_found_ratio": _ratio(adj_checks["unit_found"]),
+            "sum_ok_ratio": _ratio(adj_checks["sum_ok"]),
+            "identity_ok_ratio": _ratio(adj_checks["identity_ok"]),
+            "read_failed_ratio": round(adj_status.get("read_failed", 0) / n_adj, 4) if n_adj else None,
+            "counts": {k: dict(v) for k, v in adj_checks.items()},
+        },
     }
 
 
