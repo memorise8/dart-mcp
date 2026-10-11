@@ -193,6 +193,12 @@ _SENT_ID_RE = re.compile(r"(?:^|:)s:?(\d+)$")
 _DERIV_RE = re.compile(r"(?<!비)파생|전환권\s*\(?\s*부채")  # 「비파생금융부채」는 파생이 아니다
 _NEGATION_RE = re.compile(r"^[^.,。]{0,25}?(않|아니|없)")
 _DERIV_AMOUNT_KEYS = {"derivative_liability": "liability", "derivative_asset": "asset"}
+_NON_DERIV_KEYS = ("face", "host_carrying", "equity_component")
+
+
+def _derivative_row(cell: dict) -> bool:
+    """행 이름(어느 층이든)이 파생상품 행인가(「파생상품부채」 — face·host_carrying·equity_component 근거가 아니다)."""
+    return any(_DERIV_RE.search(_norm_label(p)) for p in [*(cell.get("label_path") or []), cell.get("label") or ""])
 _SERIES_RE = re.compile(r"제\s*(\d+)\s*회")
 _ENUMS = {"option_class": OPTION_CLASSES, "embedded_separation": EMBEDDED_SEPARATIONS}
 
@@ -634,18 +640,42 @@ def _amortised_sentence(text: str) -> bool:
     return not re.search(r"파생|공정가치|분리|" + _OPT_ANY, t)
 
 
+def _row_col_texts(cell: dict) -> list[str]:
+    return [*(cell.get("label_path") or []), cell.get("label") or "", cell.get("col_header") or ""]
+
+
 def _cell_tied(cell: dict, kind: str) -> bool:
-    """칸이 이 종류의 상품 것인가: 행 이름·열 머리글(종류·옵션 낱말), 없으면 표 끝 문장·주석 제목(종류·옵션 낱말)."""
-    r = _ties([*(cell.get("label_path") or []), cell.get("label") or "", cell.get("col_header") or ""], kind)
-    if r is None:
-        r = _ties([_title_core(cell.get("table_title")), cell.get("note_title") or ""], kind)
-    return r is True
+    """칸이 이 종류의 상품 것인가 — 상품 종류 낱말로만(fix round 1: 매도청구권·콜옵션·풋·조기상환 같은 일반 옵션 낱말은
+    아무 종류에나 붙으므로 칸을 묶지 못한다). 행 이름·열 머리글에 종류 낱말이 없으면 표 끝 문장·주석 제목에서 본다."""
+    kinds: set[str] = set()
+    for t in _row_col_texts(cell):
+        kinds |= _text_kinds(t)
+    if not kinds:
+        for t in (_title_core(cell.get("table_title")), cell.get("note_title") or ""):
+            kinds |= _text_kinds(t)
+    return kind in kinds
+
+
+# 자산 쪽 분리 칸에서 막는 것: 제3자(지정 가능) 콜, 「…권자의」 보유자 옵션, 회사·투자 이름 층(남의 상품·지분 옵션).
+_ASSET_SEP_BLOCK_RE = re.compile(r"제\s*3\s*자|제삼자|권자")
+_COMPANY_LAYER_RE = re.compile(r"\(주\)|㈜|주식회사|유한회사|합자회사|조합|투자|펀드|(?<![A-Za-z])(?:Inc|Ltd|Co|Corp|LLC)(?![A-Za-z])")
 
 
 def _separation_cell(cid: str, cell: dict, kind: str, series: str | None, nb: set) -> bool:
-    """이 상품의 분리 파생상품 금액 칸(쪽이 정해진 파생상품 잔액 칸, 0 아님, 잔액 표, 종류·회차가 맞음)."""
-    return (cid not in nb and _deriv_side(cell) is not None and bool(_num(cell.get("value")))
-            and _series_fits(cell, series, kind) and _cell_tied(cell, kind))
+    """이 상품의 분리 파생상품 금액 칸(잔액 표, 0 아님, 종류·회차가 맞고 상품 종류 낱말로 그 상품에 묶임).
+    기본은 부채 쪽 칸만이다(fix round 1). 자산 쪽 칸은 행 이름·열 머리글 자체가 기록 종류를 말하고, 제3자·권자(보유자)
+    낱말과 회사·투자 이름 층(label_path)이 없을 때만 — 제3자 지정 콜, 보유한 신주인수권, 남의 지분 콜은 분리가 아니다."""
+    if cid in nb or not _num(cell.get("value")) or not _series_fits(cell, series, kind) or not _cell_tied(cell, kind):
+        return False
+    side = _deriv_side(cell)
+    if side == "liability":
+        return True
+    if side != "asset":
+        return False
+    texts = [re.sub(r"\s+", "", t) for t in _row_col_texts(cell)]
+    own = set().union(*(_text_kinds(t) for t in texts))
+    return (kind in own and not any(_ASSET_SEP_BLOCK_RE.search(t) for t in texts)
+            and not any(_COMPANY_LAYER_RE.search(p) for p in (cell.get("label_path") or [])))
 
 
 def _measured_cell(cid: str, cell: dict, kind: str, series: str | None, nb: set, rx: re.Pattern) -> bool:
@@ -669,7 +699,9 @@ def _separation_supported(claim: str, ids: list[str], rec: dict, cells: dict, se
       옵션 목록이 「파생상품(부채)로 인식」). 근거 중 분리하지 않았다는 문장이 있으면 아니다. 자본요소 분리는 아니다.
     - not_separated: 분리하지 않았다는 문장, 상각후원가로만 측정한다는 문장·칸, 또는 전체 FVPL 지정(d8).
     - whole_fvpl: 전체 FVPL 지정 문장이나 당기손익-공정가치 측정 금융부채 칸의 그 상품 행.
-    not_separated·whole_fvpl 은 기록에 확인된 파생상품 금액이 없고, 입력에 그 상품의 분리 파생상품 칸·분리 문장이 없을 때만."""
+    not_separated·whole_fvpl 은 기록에 확인된 파생상품 금액이 없고, 입력에 그 상품의 분리 파생상품 칸·분리 문장이 없을 때만.
+    주의: 이 「입력 전체」 검사는 build_input 이 넘긴 문장·칸만 본다. 문장은 MAX_SENTENCES(200)·대상 주석으로 잘리므로
+    잘린 곳에 있는 분리 문장은 모순으로 잡히지 않는다(최선 노력 검사이지 보증이 아니다)."""
     kind, series = rec.get("kind"), _record_series(rec)
     sent = [sentences[i] for i in ids if i in sentences and _sentence_fits(sentences[i], kind, series)]
     ev_cells = [(i, cells[i]) for i in ids if i in cells]
@@ -761,6 +793,14 @@ def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = N
         fit = [i for i in hits if _series_fits(cells[i], series, kind)]
         bal = [i for i in fit if i not in nb]
         side = _DERIV_AMOUNT_KEYS.get(key)
+        if side is None and key in _NON_DERIV_KEYS:
+            nonderiv = [i for i in bal if not _derivative_row(cells[i])]
+            if bal and not nonderiv:
+                holder[key] = None
+                evidence[field] = []
+                reasons.append(f"derivative_row:{field}")
+                continue
+            bal = nonderiv
         good = [i for i in bal if side is None or _deriv_side(cells[i]) == side]
         sum_reason = None
         if not good and key == "host_carrying" and amount is not None and len(ids) == cited.get(field):
@@ -831,6 +871,8 @@ def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = N
             rec["embedded_separation"] = UNCONFIRMED
             evidence["embedded_separation"] = []
             reasons.append("no_separation_ref")
+    if rec.get("embedded_separation") != "separated":
+        rec["separated_targets"] = []  # 분리가 확인되지 않으면 분리 대상도 없다(fix round 1)
 
     # 확인된 근거만 남긴다(비어 버린 필드는 빈 목록)
     rec["evidence"] = evidence

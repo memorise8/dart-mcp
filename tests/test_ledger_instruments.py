@@ -1778,7 +1778,7 @@ class PromptI4Test(unittest.TestCase):
 
 
 
-# ---- T9b (실제 공시 칸·문장에서 만든 경우, build_input 으로 읽음) ----
+# ---- T9b (실제 공시 칸·문장 값을 build_input 출력에서 손으로 옮긴 경우 — 테스트는 dart_collected 를 읽지 않는다) ----
 def _rcell(value, label, *, path=None, col, period="current_end", tt, nt, n_value_cols, multiplier=1):
     return {"raw": f"{value:,}", "value": value, "unit_kind": "krw", "multiplier": multiplier, "period": period,
             "label": label, "label_path": path or [label], "col_header": col, "table_title": tt, "note_title": nt,
@@ -2091,7 +2091,8 @@ class EmbeddedSeparationTest(unittest.TestCase):
         # 분리 문장·정책 문장·자본 분리 문장은 아니다
         for sid, t in (("s391", S391), ("s98", S98), ("p", "금융부채는 상각후원가로 측정합니다.")):
             self._check("not_separated", [sid], _inp9b({}, {sid: t}), False, series_key="CB-1")
-        # 입력에 그 상품의 분리 파생상품 칸이 있거나, 기록에 확인된 파생상품 금액이 있으면 아니다
+        # 입력에 그 상품의 분리 파생상품 칸이 있거나, 기록에 확인된 파생상품 금액이 있으면 아니다.
+        # (입력 전체 검사는 build_input 이 넘긴 문장·칸만 본다 — MAX_SENTENCES 로 잘린 문장의 모순은 못 잡는다. 최선 노력 검사.)
         cell = {"D:r1:c1": _pcell("전환사채 조기상환청구권", tt="당기말 현재 파생상품부채의 내역", nt="파생상품", value=300)}
         self._check("not_separated", ["s262"], _inp9b(cell, sents), False, series_key="CB-1")
         bal = {"current_end": {"derivative_liability": 300}}
@@ -2130,6 +2131,89 @@ class EmbeddedSeparationTest(unittest.TestCase):
         self._check("whole_fvpl", ["F:r8:c1"], _inp9b({"F:r8:c1": dict(fv, value=0)}), False, kind="RCPS",
                     series_key="")
         self._check("whole_fvpl", ["F:r8:c1"], _inp9b({"F:r8:c1": fv}), False, kind="CB", series_key="")
+
+
+class T9bFixRound1Test(unittest.TestCase):
+    """fix round 1: 분리 칸은 기본이 부채 쪽이고, 칸은 상품 종류 낱말로만 상품에 묶인다(일반 옵션 낱말 아님).
+    자산 쪽 칸은 행·열이 기록 종류를 말하고 제3자·권자(보유자)·회사 이름 층이 없을 때만."""
+
+    REAL = [
+        # 20260407000185:00760:t072:r2:c3 보유자 쪽 BW 신주인수권(투자회사 층)
+        ("BW", _rcell(1562153, "신주인수권부사채권자의 신주인수권", path=["신주인수권부사채권자의 신주인수권", "(주)아이티아이"],
+                      col="전기말", period="prior_end", nt="파생상품", n_value_cols=2, multiplier=1000,
+                      tt="13. 파생상품자산(1) 보고기간종료일 현재 파생상품의 주요 내용은 다음과 같습니다.")),
+        # 20260316001629:00760:t054:r1:c2 제3자 지정가능 콜
+        ("CB", _rcell(1165850, "전환사채 제 3자 지정가능 매도청구권(콜옵션)",
+                      path=["파생상품자산", "전환사채 제 3자 지정가능 매도청구권(콜옵션)"], col="공정가치",
+                      nt="금융상품 공정가치", n_value_cols=2, multiplier=1000,
+                      tt="3) 당기말 현재 당사는 공정가치 서열체계에서 수준3으로 분류되는 반복적인 공정가치 측정치에 대해 다음의 "
+                         "가치평가기법과 투입변수를 사용하고 있습니다.")),
+        # 20260323001689:00760:t250:r2:c3 관계없는 지분 콜
+        ("CB", _rcell(5234, "키스톤뱅커스1호사모투자 합자회사지분 매도청구권(call option)", col="기말 금액", nt="파생상품",
+                      n_value_cols=3, multiplier=1000,
+                      tt="30. 파생상품(1) 파생상품자산당기 중 파생상품자산의 변동내역은 다음과 같습니다.")),
+        # 20260319000615:00760:t066:r1:c2 일반 「매도청구권」만
+        ("CB", _rcell(1078209, "매도청구권", col="전기말", period="prior_end", nt="파생상품", n_value_cols=2, multiplier=1000,
+                      tt="10. 파생상품자산당기말 및 전기말 현재 당사의 파생상품자산의 내역은 다음과 같습니다.")),
+    ]
+
+    def test_real_asset_cells_not_separation(self):
+        for kind, c in self.REAL:
+            out, reasons = validate(_rec_emb("separated", ["X:r1:c1"], kind=kind, series_key=""), _inp9b({"X:r1:c1": c}))
+            self.assertEqual(out["embedded_separation"], "unconfirmed", c["label"])
+            self.assertEqual(reasons, ["no_separation_ref"], c["label"])
+
+    def test_generic_option_liability_cell_needs_kind_word(self):
+        tt = "당기말 현재 파생상품부채의 내역은 다음과 같습니다."
+        cells = {"D:r1:c1": _pcell("조기상환청구권", tt=tt, nt="파생상품", value=300),
+                 "D:r2:c1": _pcell("전환사채 조기상환청구권", tt=tt, nt="파생상품", value=300),
+                 "D:r3:c1": _pcell("조기상환청구권", tt=tt, nt="전환사채", value=300)}   # 주석 제목이 종류를 말함
+        inp = _inp9b(cells)
+        out, reasons = validate(_rec_emb("separated", ["D:r1:c1"], series_key=""), inp)
+        self.assertEqual(reasons, ["no_separation_ref"])
+        for cid in ("D:r2:c1", "D:r3:c1"):
+            out, reasons = validate(_rec_emb("separated", [cid], series_key=""), inp)
+            self.assertEqual(out["embedded_separation"], "separated", cid)
+
+    def test_own_kind_asset_cell_allowed(self):
+        tt = "당기말 현재 파생상품자산의 내역은 다음과 같습니다."
+        ok = _pcell("전환사채 매도청구권", tt=tt, nt="파생상품", value=300)
+        for label in ("매도청구권", "전환사채 제3자 지정 매도청구권", "전환사채권자의 매도청구권"):
+            c = _pcell(label, tt="전환사채 관련 파생상품자산의 내역", nt="전환사채", value=300)
+            out, reasons = validate(_rec_emb("separated", ["A:r1:c1"], series_key=""), _inp9b({"A:r1:c1": c}))
+            self.assertEqual(reasons, ["no_separation_ref"], label)
+        c = _pcell("전환사채 매도청구권", path=["㈜에이비씨", "전환사채 매도청구권"], tt=tt, nt="파생상품", value=300)
+        out, reasons = validate(_rec_emb("separated", ["A:r1:c1"], series_key=""), _inp9b({"A:r1:c1": c}))
+        self.assertEqual(reasons, ["no_separation_ref"])
+        out, reasons = validate(_rec_emb("separated", ["A:r1:c1"], series_key=""), _inp9b({"A:r1:c1": ok}))
+        self.assertEqual(out["embedded_separation"], "separated")
+
+    def test_targets_cleared_when_unconfirmed(self):
+        rec = _rec_emb("separated", ["s98"], series_key="")
+        rec["separated_targets"] = ["conversion"]
+        out, reasons = validate(rec, _inp9b({}, {"s98": S98}))
+        self.assertEqual(out["embedded_separation"], "unconfirmed")
+        self.assertEqual(out["separated_targets"], [])
+        rec = _rec_emb("separated", ["s391"], series_key="")
+        rec["separated_targets"] = ["redemption"]
+        out, _ = validate(rec, _inp9b({}, {"s391": S391}))
+        self.assertEqual(out["separated_targets"], ["redemption"])
+
+    def test_derivative_row_not_non_derivative_amount(self):
+        """20260401000435:00760:t039:r11:c2 「파생상품부채」 = 0 은 face·host_carrying·equity_component 근거가 아니다."""
+        cid = "20260401000435:00760:t039:r11:c2"
+        cell = _rcell(0, "파생상품부채", col="장부금액/상각후원가측정금융부채", tt="② 금융부채가. 당기말", nt="금융상품",
+                      n_value_cols=5, multiplier=1000)
+        for key in ("face", "host_carrying", "equity_component"):
+            out, reasons = validate(_rec5(key, "current_end", 0, [cid], series_key=""), _inp9b({cid: cell}))
+            self.assertIsNone(out["balance"]["current_end"][key], key)
+            self.assertEqual(reasons, [f"derivative_row:balance.current_end.{key}"], key)
+
+    def test_prompt_rule8_matches(self):
+        user = build_messages(_inp())[1]["content"]
+        self.assertNotIn("옵션만 — 분리다", user)
+        for phrase in ("제3자", "권자", "회사 이름", "상품 종류 낱말", "파생상품자산 칸"):
+            self.assertIn(phrase, user)
 
 
 class PromptI5Test(unittest.TestCase):
