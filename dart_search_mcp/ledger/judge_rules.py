@@ -205,7 +205,8 @@ def _cell_tid(ref: str) -> str | None:
     return m.group("tid") if m else None
 
 
-def _record_line(rec: dict, field: str, side: str | None, tables: dict) -> tuple[str, list[str], str]:
+def _record_line(rec: dict, field: str, side: str | None, tables: dict,
+                 ev_key: str = "option_class") -> tuple[str, list[str], str]:
     """기록 근거 줄: 「<상품> <칸 이름> <금액><단위> (<당기말|전기말>, 주석 …)」."""
     name = (rec.get("instrument") or rec.get("series_key") or "사채").strip()
     ev = rec.get("evidence") or {}
@@ -220,7 +221,7 @@ def _record_line(rec: dict, field: str, side: str | None, tables: dict) -> tuple
         if head:
             where.append(head)
         return f"{name} {_FIELD_LABEL[field]} {_fmt_amount(amount)}{unit} ({', '.join(where)})", refs, head
-    refs = [r for k, v in ev.items() if k in ("option_class", "embedded_separation") for r in (v or [])]
+    refs = list(dict.fromkeys(ev.get(ev_key) or []))
     tid = next((t for t in map(_cell_tid, refs) if t), None)
     return f"{name} {_FIELD_LABEL[field]} 분류 (근거 {', '.join(refs) or '기록'})", refs, _heading(tid, tables)
 
@@ -296,7 +297,7 @@ def _emb_run(ctx: Ctx, ins: list[dict]) -> dict | None:
                           if _record_side(sep[0], k)), "derivative_liability")
             if _record_side(sep[0], field):
                 return _from_records("SEPARATED", [(sep[0], field)], ctx.tables)
-            line, refs, head = _record_line(sep[0], field, None, ctx.tables)
+            line, refs, head = _record_line(sep[0], field, None, ctx.tables, "embedded_separation")
             return _res("SEPARATED", evidence=line.replace(f"{_FIELD_LABEL[field]} 분류", "주계약과 분리"),
                         refs=refs, kind="instrument_record", heading=head)
         return _from_facts("SEPARATED", strong, ctx.tables)
@@ -343,6 +344,8 @@ def _consensus(ctx: Ctx, topic: str, runs: tuple, fn) -> dict | None:
     va, vb = (ra or {}).get("value"), (rb or {}).get("value")
     if va == vb:
         return ra
+    if {va, vb} == {None, UND}:  # 한 실행은 행 없음, 다른 실행은 판단불가 — 둘 다 확정 값이 없다
+        return ra or rb
     desc = lambda r: "행 없음" if r is None else (r["value"] + (f"/{r['held_reason']}" if r["held_reason"] else ""))  # noqa: E731
     return _review(f"두 실행 값이 다름: 1차 {desc(ra)} / 2차 {desc(rb)}")
 
@@ -518,6 +521,47 @@ def _bc_cost(ctx: Ctx) -> dict | None:
     if len(found) > 1:
         return _review("사업결합 관련 원가 계정이 영업·영업외 양쪽으로 나옴")
     return ctx.und(topic, "bc_cost_no_account")
+
+
+# ---------------------------------------------------------------- 1층 표에서 읽는 meta
+
+def _table_head(t: dict) -> str:
+    region = t.get("region") or {}
+    return " ".join([region.get("note_title") or "", t.get("title") or ""])
+
+
+def scope_meta(tables: list[dict], fs_scope: str, *, rules_path: Path | None = None) -> dict:
+    """1층 표 기록(한 공시) → judge_filing meta 의 표 정보(그 fs_scope 표만).
+
+    tables: {table_id: 주석 번호·제목·종류·단위 배수}, movement_table: 무형자산 주석에 변동표(기초·기말·취득·상각 낱말
+    중 min_words 개 이상)가 있는가, category_table: 금융상품 범주표가 있는가, read_failed_topics: 관련 주석
+    표를 읽지 못한 주제.
+    """
+    rules = load_rules(rules_path)
+    mv, cat = rules["movement_table"], rules["category_table"]
+    mv_note, mv_words = re.compile(mv["note"]), [re.compile(w) for w in mv["words"]]
+    cat_note, cat_head, cat_row = re.compile(cat["note"]), re.compile(cat["head"]), re.compile(cat["row"])
+    topic_notes = {t: re.compile(p) for t, p in rules["topic_notes"].items()}
+    out = {"tables": {}, "movement_table": False, "category_table": False, "read_failed_topics": set()}
+    for t in tables:
+        if (t.get("fs_scope") or "") != fs_scope:
+            continue
+        region = t.get("region") or {}
+        out["tables"][t.get("table_id")] = {"note_no": region.get("note_no"), "note_title": region.get("note_title"),
+                                            "kind": region.get("kind"),
+                                            "multiplier": (t.get("unit") or {}).get("multiplier")}
+        note = region.get("note_title") or ""
+        head = _table_head(t)
+        if t.get("status") == "read_failed":
+            out["read_failed_topics"].update(k for k, rx in topic_notes.items() if rx.search(head))
+            continue
+        labels = [r.get("label") or "" for r in t.get("rows") or []]
+        text = " ".join(labels + [" ".join(c.get("header_path") or []) for c in t.get("columns") or []])
+        if mv_note.search(note) and sum(1 for w in mv_words if w.search(text)) >= mv["min_words"]:
+            out["movement_table"] = True
+        if cat_note.search(head) and (cat_head.search(t.get("title") or "") or any(cat_row.search(lb) for lb in labels)):
+            out["category_table"] = True
+    return out
 
 
 # ---------------------------------------------------------------- 공개 함수

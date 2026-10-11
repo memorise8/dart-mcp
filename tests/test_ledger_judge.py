@@ -132,6 +132,11 @@ class ConsensusTest(unittest.TestCase):
         r = self.run2([I()], None, facts=[F("HOST_LIABILITY", 5)])["CONVERSION_OPTION_CLASS"]
         self.assertEqual(r["held_reason"], "no_facts")
 
+    def test_no_row_vs_undetermined_is_not_review(self):
+        # 1차는 줄은 있으나 기록 0개(사실도 없음 → 행 없음), 2차는 unconfirmed 기록뿐(판단불가) — 둘 다 확정 값 없음
+        r = self.run2([], [I()])["CONVERSION_OPTION_CLASS"]
+        self.assertEqual(r["held_reason"], "no_facts")
+
     def test_both_missing_uses_facts(self):
         r = self.run2(None, None, facts=[F("CONV_OPTION_EQUITY", 5)])
         self.assertEqual(r["CONVERSION_OPTION_CLASS"]["value"], "EQUITY")
@@ -145,6 +150,12 @@ class EmbeddedTest(unittest.TestCase):
     def test_separated_record(self):
         r = judge([], [I(sep="separated", cur={"derivative_liability": 7})])
         self.assertEqual(r["EMBEDDED_DERIVATIVE_SEPARATION"]["value"], "SEPARATED")
+
+    def test_separated_record_without_amount_cites_separation_evidence(self):
+        ins = [I(sep="separated", ev={"embedded_separation": ["s7", "s7"], "option_class": ["s1"]})]
+        r = judge([], ins)["EMBEDDED_DERIVATIVE_SEPARATION"]
+        self.assertEqual((r["value"], r["source_refs"]), ("SEPARATED", ["s7"]))
+        self.assertEqual(r["evidence"], "제3회 전환사채 주계약과 분리 (근거 s7)")
 
     def test_strong_fact_separated(self):
         f = F("EMB_DERIV_LIABILITY", 7, label="파생상품부채(전환권)", target="conversion", basis="label")
@@ -403,6 +414,91 @@ class CommonTest(unittest.TestCase):
     def test_read_failed(self):
         r = judge([], [], [M("LEASE_EXEMPTION")], read_failed_topics={"LEASE_EXEMPTION"})["LEASE_EXEMPTION"]
         self.assertEqual(r["held_reason"], "read_failed")
+
+
+def T(tid, note_title, labels, *, title="", headers=(), status="verified", scope="separate", kind="note", mult=1000):
+    return {"table_id": tid, "fs_scope": scope, "status": status, "title": title,
+            "region": {"kind": kind, "note_no": "9", "note_title": note_title, "sub_path": []},
+            "unit": {"raw": "(단위: 천원)", "kind": "krw", "multiplier": mult, "currency": "KRW"},
+            "rows": [{"row": i, "label": lb, "label_path": [lb], "cells": []} for i, lb in enumerate(labels, 1)],
+            "columns": [{"col": i, "header_path": [h]} for i, h in enumerate(headers, 1)]}
+
+
+class ScopeMetaTest(unittest.TestCase):
+    def test_scope_meta(self):
+        from dart_search_mcp.ledger.judge_rules import scope_meta
+        tables = [
+            T("R:00760:t001", "무형자산", ["기초", "취득", "상각", "기말"], headers=["개발비", "소프트웨어"]),
+            T("R:00760:t002", "금융상품", ["상각후원가측정금융자산", "합계"], title="범주별 금융상품"),
+            T("R:00760:t003", "리스", [], status="read_failed"),
+            T("R:00761:t001", "무형자산", ["개발비"], headers=["취득원가", "장부금액"], scope="consolidated"),
+        ]
+        m = scope_meta(tables, "separate")
+        self.assertTrue(m["movement_table"])
+        self.assertTrue(m["category_table"])
+        self.assertEqual(m["read_failed_topics"], {"LEASE_EXEMPTION"})
+        self.assertEqual(m["tables"]["R:00760:t001"],
+                         {"note_no": "9", "note_title": "무형자산", "kind": "note", "multiplier": 1000})
+        c = scope_meta(tables, "consolidated")
+        self.assertFalse(c["movement_table"])
+        self.assertFalse(c["category_table"])
+        self.assertNotIn("R:00760:t001", c["tables"])
+
+
+class CliTest(unittest.TestCase):
+    def test_cli_end_to_end(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("ledger_judge_cli",
+                                                      Path(__file__).parents[1] / "scripts" / "ledger_judge.py")
+        cli = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cli)
+        main = cli.main
+
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            led = d / "ledger"
+            led.mkdir()
+            facts = [F("CONV_OPTION_EQUITY", 5), F("FVOCI_EQUITY", 7, "prior_end")]
+            (led / "facts.jsonl").write_text("".join(json.dumps(f, ensure_ascii=False) + "\n" for f in facts))
+            (led / "policy_marks.jsonl").write_text(json.dumps(M("LEASE_EXEMPTION"), ensure_ascii=False) + "\n")
+            (d / "audit.jsonl").write_text(json.dumps({"rcept_no": R, "corp_code": "00999999", "fiscal_year": 2025}) + "\n")
+
+            def run_row(recs, model="gpt-5.6-luna"):
+                return json.dumps({"rcept_no": R, "fs_scope": "separate", "records": recs, "model_used": model,
+                                   "prompt_version": "i9"}, ensure_ascii=False) + "\n"
+            eq = [I("equity", cur={"equity_component": 5})]
+            li = [I("derivative_liability", cur={"derivative_liability": 5})]
+            # 1차: 마지막 줄(equity)을 쓴다. 2차: luna 가 아닌 줄은 버려 그 실행엔 기록이 없다 → 확인 필요
+            (d / "run1.jsonl").write_text(run_row(li) + run_row(eq))
+            (d / "run2.jsonl").write_text(run_row(eq, model="gpt-5.4-mini"))
+            v1 = {"rcept_no": R, "corp_code": "00999999", "fiscal_year": 2025, "topic": "PPA_MEASUREMENT_PERIOD",
+                  "value": "PROVISIONAL", "evidence": "잠정", "held_reason": ""}
+            (d / "v1.jsonl").write_text(json.dumps(v1, ensure_ascii=False) + "\n")
+            out = d / "out" / "topic_stance.v2.jsonl"
+            rc = main(["--ledger", str(led), "--facts-audit", str(d / "audit.jsonl"), "--instruments",
+                       str(d / "run1.jsonl"), "--instruments2", str(d / "run2.jsonl"), "--v1-stance",
+                       str(d / "v1.jsonl"), "--tables", str(d / "no-tables"), "--out", str(out), "--workers", "1"])
+            self.assertEqual(rc, 0)
+            rows = {r["topic"]: r for r in map(json.loads, out.read_text().splitlines())}
+            self.assertEqual(rows["CONVERSION_OPTION_CLASS"]["held_reason"], "needs_review")
+            self.assertEqual(rows["FVOCI_DESIGNATION"]["value"], "DESIGNATED")
+            self.assertEqual(rows["FVOCI_DESIGNATION"]["corp_code"], "00999999")
+            self.assertEqual(rows["LEASE_EXEMPTION"]["held_reason"], "policy_only")
+            self.assertEqual((rows["PPA_MEASUREMENT_PERIOD"]["value"], rows["PPA_MEASUREMENT_PERIOD"]["held_reason"]),
+                             ("UNDETERMINED", "needs_review"))
+            recs = [json.loads(x) for x in (out.parent / "records.v2.jsonl").read_text().splitlines()]
+            self.assertEqual(len(recs), len(rows))
+            fv = next(r for r in recs if r["topic"] == "FVOCI_DESIGNATION")
+            self.assertEqual([f["concept"] for f in fv["facts"]], ["FVOCI_EQUITY"])
+            summary = json.loads((out.parent / "topic_stance.v2.summary.json").read_text())
+            self.assertEqual(summary["rows"], len(rows))
+            self.assertEqual(summary["instruments"]["run2"]["dropped_model"], 1)
+            # 덮지 않는다
+            self.assertEqual(main(["--ledger", str(led), "--facts-audit", str(d / "audit.jsonl"), "--instruments",
+                                   str(d / "run1.jsonl"), "--instruments2", str(d / "run2.jsonl"), "--out", str(out)]), 2)
 
 
 if __name__ == "__main__":
