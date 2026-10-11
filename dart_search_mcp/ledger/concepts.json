@@ -1,103 +1,652 @@
 {
-  "concepts_version": "c1",
-  "note": "2층 ① 개념 사전. 패턴은 공백을 지운 행 이름에 대한 정규식. regions: statement_bs | note:<정규식>(주석 제목·표 제목). column_patterns가 있으면 「행 × 열」 개념(열 header_path 마지막 요소). topics.keywords는 측정(주제 낱말 행 매칭률)에만 쓴다.",
-  "topics": {
-    "conversion": {"name": "전환권", "keywords": "전환권|신주인수권|교환권|자본요소|전환사채|교환사채|전환우선주|상환우선주|사채할인발행차금|상환할증금"},
-    "embedded": {"name": "내재파생상품", "keywords": "파생상품|내재파생|조기상환청구권|매도청구권|콜옵션"},
-    "fvoci": {"name": "FVOCI", "keywords": "기타포괄손익.?공정가치|FVOCI"},
-    "devcost": {"name": "개발비", "keywords": "개발비|연구비|연구개발"},
-    "lease": {"name": "리스", "keywords": "단기리스|소액|리스부채"},
-    "ip": {"name": "투자부동산", "keywords": "투자부동산"},
-    "bc": {"name": "사업결합", "keywords": "이전대가|이전한대가|순자산|취득관련원가|사업결합"}
+ "concepts_version": "c2",
+ "note": "2층 ① 개념 사전. 패턴은 공백을 지운 행 이름(앞 번호·「차감:」, 뒤 각주 표지 뗌)에 대한 정규식. regions: statement_bs·statement_is | note:<정규식>(주석 제목 또는 표 제목). column_patterns가 있으면 「행 × 열」 개념(열 header_path 마지막 요소). 같은 id가 여럿이면 같은 개념의 다른 표 모양(예: 열이 자산 종류인 변동표)이다. context_exclude_patterns는 상위 행(값 빈 머리 행 포함)에 있으면 안 되는 낱말. topics는 측정(정의 B: 주제 낱말 행 매칭률)에만 쓴다.",
+ "topics": {
+  "conversion": {
+   "name": "전환권",
+   "keywords": "전환권|신주인수권|교환권|자본요소|전환사채|신주인수권부사채|교환사채|전환우선주부채|상환우선주부채|상환전환우선주|전환상환우선주|사채할인발행차금|상환할증금|전환권조정",
+   "kw_exclude": "파생|이자|평가|(?<!당기)(?<!포괄)손익|이익|손실|비용|(?<!할인)발행|행사|보통주전환|전환청구|대체|상각|증가|감소|처분|채무증권|금융자산|세율|법인세|(사채|주|부채)의?전환$|상환(청구)?권|조기상환|주식수",
+   "context_exclude": "금융자산|투자"
   },
-  "concepts": [
-    {"id": "CONV_OPTION_EQUITY", "topic": "conversion",
-     "label_patterns": ["전환권대가", "신주인수권대가", "자본요소", "교환권대가"],
-     "regions": ["statement_bs", "note:사채|전환|신주인수권|자본잉여금|우선주"],
-     "exclude_patterns": ["상환", "행사", "전환으로", "대체"],
-     "value_kind": "balance"},
-    {"id": "CONV_OPTION_LIABILITY", "topic": "conversion",
-     "label_patterns": ["전환권부채", "전환권\\s*\\(?파생", "신주인수권부채", "전환권.*파생상품부채", "파생상품부채.*전환권"],
-     "regions": ["note:사채|전환|파생|공정가치|우선주"],
-     "value_kind": "balance", "target": "conversion"},
-    {"id": "HOST_LIABILITY", "topic": "conversion",
-     "label_patterns": ["^전환사채$", "^신주인수권부사채$", "^교환사채$", "상환전환우선주부채", "사채할인발행차금", "전환권조정", "상환할증금"],
-     "regions": ["note:사채|전환|우선주", "statement_bs"],
-     "value_kind": "balance"},
-    {"id": "EMB_DERIV_LIABILITY", "topic": "embedded",
-     "label_patterns": ["파생상품부채", "내재파생(상품)?부채", "조기상환청구권", "전환권.*부채"],
-     "context_patterns": ["전환|상환|우선주|사채|내재"],
-     "regions": ["note:사채|파생|공정가치|우선주|금융상품"],
-     "exclude_patterns": ["통화|이자율|선물환|스왑"],
-     "value_kind": "balance", "target": "by_label"},
-    {"id": "EMB_DERIV_ASSET", "topic": "embedded",
-     "label_patterns": ["파생상품자산", "매도청구권", "콜옵션", "조기상환권.*자산"],
-     "context_patterns": ["전환|상환|우선주|사채|내재"],
-     "regions": ["note:사채|파생|공정가치|우선주|금융상품"],
-     "exclude_patterns": ["통화|이자율|선물환|스왑"],
-     "value_kind": "balance", "target": "by_label"},
-    {"id": "FVOCI_EQUITY", "topic": "fvoci",
-     "label_patterns": ["기타포괄손익.?공정가치.*(지분|주식|출자)", "(지분|주식).*기타포괄손익.?공정가치"],
-     "regions": ["statement_bs", "note:금융상품|공정가치|기타포괄"],
-     "exclude_patterns": ["채무", "채권", "사채"],
-     "value_kind": "balance"},
-    {"id": "FVOCI_DEBT", "topic": "fvoci",
-     "label_patterns": ["기타포괄손익.?공정가치.*(채무|채권|사채)"],
-     "regions": ["statement_bs", "note:금융상품|공정가치|기타포괄"],
-     "value_kind": "balance"},
-    {"id": "FVOCI_EQUITY_RESERVE", "topic": "fvoci",
-     "label_patterns": ["기타포괄손익.?공정가치.*(지분|주식).*평가"],
-     "regions": ["statement_bs", "note:기타포괄|자본"],
-     "value_kind": "balance"},
-    {"id": "DEV_COST_ASSET", "topic": "devcost",
-     "label_patterns": ["^개발비$"],
-     "regions": ["note:무형자산", "statement_bs"],
-     "exclude_patterns": ["경상", "연구"],
-     "value_kind": "balance"},
-    {"id": "DEV_COST_ADDITION", "topic": "devcost",
-     "label_patterns": ["^개발비$"], "column_patterns": ["취득|증가|자본화"],
-     "regions": ["note:무형자산"],
-     "value_kind": "flow"},
-    {"id": "DEV_COST_AMORT", "topic": "devcost",
-     "label_patterns": ["개발비.*상각", "무형자산상각비.*개발비"],
-     "regions": ["note:무형자산|판매비"],
-     "value_kind": "flow"},
-    {"id": "RND_EXPENSE", "topic": "devcost",
-     "label_patterns": ["경상연구개발비", "연구개발비", "연구비"],
-     "regions": ["note:판매비|연구|비용"],
-     "exclude_patterns": ["개발비"],
-     "value_kind": "flow"},
-    {"id": "LEASE_SHORT_TERM_EXP", "topic": "lease",
-     "label_patterns": ["단기리스.*(료|비용)"],
-     "regions": ["note:리스|사용권"],
-     "value_kind": "flow"},
-    {"id": "LEASE_LOW_VALUE_EXP", "topic": "lease",
-     "label_patterns": ["소액(자산)?리스.*(료|비용)"],
-     "regions": ["note:리스|사용권"],
-     "value_kind": "flow"},
-    {"id": "LEASE_LIABILITY", "topic": "lease",
-     "label_patterns": ["^리스부채$", "유동리스부채", "비유동리스부채"],
-     "regions": ["statement_bs", "note:리스"],
-     "value_kind": "balance"},
-    {"id": "IP_CARRYING", "topic": "ip",
-     "label_patterns": ["투자부동산"], "column_patterns": ["장부금액"],
-     "regions": ["note:투자부동산"],
-     "value_kind": "balance"},
-    {"id": "IP_FAIR_VALUE", "topic": "ip",
-     "label_patterns": ["투자부동산"], "column_patterns": ["공정가치"],
-     "regions": ["note:투자부동산"],
-     "value_kind": "balance"},
-    {"id": "BC_CONSIDERATION", "topic": "bc",
-     "label_patterns": ["이전대가", "이전한\\s*대가"],
-     "regions": ["note:사업결합"],
-     "value_kind": "flow"},
-    {"id": "BC_NET_ASSETS_FV", "topic": "bc",
-     "label_patterns": ["식별.*순자산.*공정가치", "순자산\\s*공정가치"],
-     "regions": ["note:사업결합"],
-     "value_kind": "flow"},
-    {"id": "BC_RELATED_COST", "topic": "bc",
-     "label_patterns": ["사업결합.*관련.*원가", "취득관련원가"],
-     "regions": ["note:사업결합"],
-     "value_kind": "flow"}
-  ]
+  "embedded": {
+   "name": "내재파생상품",
+   "keywords": "파생상품|내재파생|조기상환청구권|매도청구권|콜옵션|풋옵션|상환청구권",
+   "kw_exclude": "평가|(?<!당기)(?<!포괄)손익|이익|손실|거래|만기|위험회피|통화|이자율|선물환|스왑|증가|감소|발행|행사|대체|처분|변동",
+   "require_context": "전환|상환|우선주|사채|내재|Convertible|CB|RCPS|CPS|BW|EB"
+  },
+  "fvoci": {
+   "name": "FVOCI",
+   "keywords": "기타포괄손익.?공정가치|FVOCI",
+   "kw_exclude": "처분|대체|취득|법인세|이연|재분류|증가|감소|배당"
+  },
+  "devcost": {
+   "name": "개발비",
+   "keywords": "개발비|연구비|연구개발",
+   "kw_exclude": "인력개발|교육|세액공제|손상|처분|정부보조|국고보조"
+  },
+  "lease": {
+   "name": "리스",
+   "keywords": "단기리스|소액|리스부채",
+   "kw_exclude": "이자|현금유출|상환|할인되지|변동리스료|측정치에포함되지|만기|이내|초과|증가|감소|신규|해지|대체|순투자|미래|지급"
+  },
+  "ip": {
+   "name": "투자부동산",
+   "keywords": "투자부동산|기말.*장부|장부(금|가)액|공정가치",
+   "kw_exclude": "감가상각|상각비|취득|처분|대체|수익|비용|손상|임대|변동|증가|감소|원가|누계|기초",
+   "column_rows": {
+    "row": "^(토지|건물|구축물|합계|계|총계|토지및건물|투자부동산)$",
+    "column": "장부(금|가)액|공정가치"
+   }
+  },
+  "bc": {
+   "name": "사업결합",
+   "keywords": "이전대가|이전한대가|순자산|취득관련원가|사업결합.*원가"
+  }
+ },
+ "concepts": [
+  {
+   "id": "CONV_OPTION_EQUITY",
+   "topic": "conversion",
+   "label_patterns": [
+    "전환권대가",
+    "신주인수권대가",
+    "자본요소",
+    "교환권대가"
+   ],
+   "regions": [
+    "statement_bs",
+    "note:사채|전환|신주인수권|자본|우선주|금융부채|차입금"
+   ],
+   "exclude_patterns": [
+    "상환",
+    "행사",
+    "전환으로",
+    "대체",
+    "세율",
+    "법인세",
+    "이연",
+    "파생",
+    "부채"
+   ],
+   "value_kind": "balance"
+  },
+  {
+   "id": "CONV_OPTION_LIABILITY",
+   "topic": "conversion",
+   "label_patterns": [
+    "전환권부채",
+    "전환권\\s*\\(?파생",
+    "신주인수권부채",
+    "전환권.*파생상품부채",
+    "파생상품부채.*전환권",
+    "(전환권|신주인수권)대가.*(파생|부채)"
+   ],
+   "regions": [
+    "note:사채|전환|파생|공정가치|우선주|금융부채|차입금"
+   ],
+   "exclude_patterns": [
+    "평가",
+    "(?<!당기)(?<!포괄)손익",
+    "이익",
+    "손실",
+    "증가",
+    "감소"
+   ],
+   "value_kind": "balance",
+   "target": "conversion"
+  },
+  {
+   "id": "CONV_OPTION_LIABILITY",
+   "topic": "conversion",
+   "label_patterns": [
+    "^(.*(사채|우선주|우선주부채))?(전환권|신주인수권|교환권)(등)?$"
+   ],
+   "context_patterns": [
+    "파생|당기손익|공정가치|금융부채|부채로분류"
+   ],
+   "regions": [
+    "note:사채|전환|파생|공정가치|우선주|금융부채|차입금"
+   ],
+   "value_kind": "balance",
+   "target": "conversion",
+   "exclude_patterns": [
+    "대가",
+    "조정"
+   ]
+  },
+  {
+   "id": "HOST_LIABILITY",
+   "topic": "conversion",
+   "label_patterns": [
+    "^전환사채$",
+    "^신주인수권부사채$",
+    "^교환사채$",
+    "상환전환우선주부채",
+    "전환상환우선주부채",
+    "^(전환|상환)우선주부채$",
+    "사채할인발행차금",
+    "상환할증금",
+    "(전환권|신주인수권|교환권|우선주)조정$"
+   ],
+   "regions": [
+    "note:사채|전환|우선주|금융부채|차입금",
+    "statement_bs"
+   ],
+   "exclude_patterns": [
+    "이자",
+    "(?<!할인)발행",
+    "평가",
+    "증가",
+    "감소",
+    "전환권$",
+    "채무증권",
+    "투자"
+   ],
+   "value_kind": "balance"
+  },
+  {
+   "id": "HOST_LIABILITY",
+   "topic": "conversion",
+   "label_patterns": [
+    "^(제?\\d+회|유동성?|비유동성?|무보증|무기명|기명|사모|공모)[^-]*(전환사채|신주인수권부사채|교환사채)(계)?(\\(.*\\))?$",
+    "^(전환사채|신주인수권부사채|교환사채|(전환상환|상환전환)우선주(부채)?)의?(장부(금|가)액|액면(금|가)액)$",
+    "^(기명식|무기명식|누적적|비누적적|참가적|비참가적)*(전환상환|상환전환)우선주(부채)?$"
+   ],
+   "regions": [
+    "note:사채|전환|우선주|금융부채|차입금",
+    "statement_bs"
+   ],
+   "exclude_patterns": [
+    "이자",
+    "(?<!할인)발행",
+    "평가",
+    "증가",
+    "감소",
+    "전환권$",
+    "채무증권",
+    "투자"
+   ],
+   "value_kind": "balance",
+   "own_label_only": true
+  },
+  {
+   "id": "HOST_LIABILITY",
+   "topic": "conversion",
+   "label_patterns": [
+    "^(유동성?|비유동성?)?(전환사채|신주인수권부사채|교환사채)$",
+    "^(전환상환|상환전환)우선주(부채)?$"
+   ],
+   "context_patterns": [
+    "금융부채|부채"
+   ],
+   "context_exclude_patterns": [
+    "금융자산|투자"
+   ],
+   "regions": [
+    "note:공정가치|금융상품"
+   ],
+   "own_label_only": true,
+   "value_kind": "balance"
+  },
+  {
+   "id": "EMB_DERIV_LIABILITY",
+   "topic": "embedded",
+   "label_patterns": [
+    "파생상품부채",
+    "내재파생(상품)?부채",
+    "조기상환청구권",
+    "상환청구권",
+    "풋옵션",
+    "전환권.*부채",
+    "전환권(및|과|,)?(조기)?상환(청구)?권",
+    "상환(청구)?권(및|과|,)?전환권"
+   ],
+   "context_patterns": [
+    "전환|상환|우선주|사채|내재|Convertible|CB|RCPS|CPS|BW|EB"
+   ],
+   "regions": [
+    "note:사채|파생|공정가치|우선주|금융상품|금융부채|금융자산|차입금"
+   ],
+   "exclude_patterns": [
+    "통화|이자율|선물환|스왑|위험회피",
+    "평가|(?<!당기)(?<!포괄)손익|이익|손실|증가|감소"
+   ],
+   "value_kind": "balance",
+   "target": "by_label"
+  },
+  {
+   "id": "EMB_DERIV_ASSET",
+   "topic": "embedded",
+   "label_patterns": [
+    "파생상품자산",
+    "매도청구권",
+    "콜옵션",
+    "조기상환권.*자산"
+   ],
+   "context_patterns": [
+    "전환|상환|우선주|사채|내재|Convertible|CB|RCPS|CPS|BW|EB"
+   ],
+   "regions": [
+    "note:사채|파생|공정가치|우선주|금융상품|금융부채|금융자산|차입금"
+   ],
+   "exclude_patterns": [
+    "통화|이자율|선물환|스왑|위험회피",
+    "평가|(?<!당기)(?<!포괄)손익|이익|손실|증가|감소"
+   ],
+   "value_kind": "balance",
+   "target": "by_label"
+  },
+  {
+   "id": "FVOCI_EQUITY",
+   "topic": "fvoci",
+   "label_patterns": [
+    "기타포괄손익.?공정가치.*(지분|주식|출자)",
+    "(지분|주식).*기타포괄손익.?공정가치"
+   ],
+   "regions": [
+    "statement_bs",
+    "note:금융상품|공정가치|기타포괄|금융자산"
+   ],
+   "exclude_patterns": [
+    "채무",
+    "채권",
+    "사채",
+    "평가",
+    "처분",
+    "대체",
+    "(?<!당기)(?<!포괄)손익"
+   ],
+   "value_kind": "balance"
+  },
+  {
+   "id": "FVOCI_DEBT",
+   "topic": "fvoci",
+   "label_patterns": [
+    "기타포괄손익.?공정가치.*(채무|채권|사채)"
+   ],
+   "regions": [
+    "statement_bs",
+    "note:금융상품|공정가치|기타포괄|금융자산"
+   ],
+   "exclude_patterns": [
+    "평가",
+    "처분",
+    "대체",
+    "(?<!당기)(?<!포괄)손익"
+   ],
+   "value_kind": "balance"
+  },
+  {
+   "id": "FVOCI_FA_TOTAL",
+   "topic": "fvoci",
+   "label_patterns": [
+    "^(비?유동)?기타포괄손익.?공정가치(측정)?(금융자산|금융상품|지정금융자산)?$"
+   ],
+   "regions": [
+    "statement_bs",
+    "note:금융상품|공정가치|기타포괄|금융자산"
+   ],
+   "value_kind": "balance",
+   "exclude_patterns": [
+    "주식|지분|출자|채무|채권|사채"
+   ]
+  },
+  {
+   "id": "FVOCI_EQUITY_RESERVE",
+   "topic": "fvoci",
+   "label_patterns": [
+    "기타포괄손익.?공정가치.*(지분|주식).*평가"
+   ],
+   "regions": [
+    "statement_bs",
+    "note:기타포괄|자본"
+   ],
+   "exclude_patterns": [
+    "대체",
+    "처분"
+   ],
+   "value_kind": "balance"
+  },
+  {
+   "id": "FVOCI_DEBT_RESERVE",
+   "topic": "fvoci",
+   "label_patterns": [
+    "기타포괄손익.?공정가치.*(채무|채권).*평가"
+   ],
+   "regions": [
+    "statement_bs",
+    "note:기타포괄|자본"
+   ],
+   "exclude_patterns": [
+    "대체",
+    "처분"
+   ],
+   "value_kind": "balance"
+  },
+  {
+   "id": "FVOCI_FA_RESERVE",
+   "topic": "fvoci",
+   "label_patterns": [
+    "기타포괄손익.?공정가치(측정)?금융(자산|상품)평가"
+   ],
+   "regions": [
+    "statement_bs",
+    "note:기타포괄|자본"
+   ],
+   "exclude_patterns": [
+    "대체",
+    "처분"
+   ],
+   "value_kind": "balance"
+  },
+  {
+   "id": "DEV_COST_ASSET",
+   "topic": "devcost",
+   "label_patterns": [
+    "^개발비$"
+   ],
+   "regions": [
+    "note:무형자산",
+    "statement_bs"
+   ],
+   "exclude_patterns": [
+    "경상",
+    "연구"
+   ],
+   "context_exclude_patterns": [
+    "상각누계|손상차손누계|정부보조|국고보조"
+   ],
+   "value_kind": "balance"
+  },
+  {
+   "id": "DEV_COST_ASSET",
+   "topic": "devcost",
+   "label_patterns": [
+    "^(기말|기말금액|기말잔액|기말장부(금|가)액|당기말|당기말잔액|장부(금|가)액|순장부(금|가)액)$"
+   ],
+   "column_patterns": [
+    "^개발비"
+   ],
+   "regions": [
+    "note:무형자산"
+   ],
+   "context_exclude_patterns": [
+    "취득원가|상각누계|손상차손누계|정부보조|국고보조"
+   ],
+   "value_kind": "balance"
+  },
+  {
+   "id": "DEV_COST_ADDITION",
+   "topic": "devcost",
+   "label_patterns": [
+    "^개발비$"
+   ],
+   "column_patterns": [
+    "^(당기)?(취득|증가|자본화|내부개발|개별취득|외부취득|대체증가|대체\\(증가\\)|취득및대체)(액)?(\\(.*\\))?$"
+   ],
+   "regions": [
+    "note:무형자산"
+   ],
+   "value_kind": "flow"
+  },
+  {
+   "id": "DEV_COST_ADDITION",
+   "topic": "devcost",
+   "label_patterns": [
+    "^(취득|증가|자본화|내부개발|개별취득|외부취득|대체\\(?증가\\)?)(액)?$"
+   ],
+   "column_patterns": [
+    "^개발비"
+   ],
+   "regions": [
+    "note:무형자산"
+   ],
+   "context_exclude_patterns": [
+    "상각누계|손상차손누계|정부보조|국고보조"
+   ],
+   "value_kind": "flow"
+  },
+  {
+   "id": "DEV_COST_AMORT",
+   "topic": "devcost",
+   "label_patterns": [
+    "개발비.*상각",
+    "무형자산상각비.*개발비"
+   ],
+   "regions": [
+    "note:무형자산|판매비"
+   ],
+   "value_kind": "flow"
+  },
+  {
+   "id": "DEV_COST_AMORT",
+   "topic": "devcost",
+   "label_patterns": [
+    "^개발비$"
+   ],
+   "column_patterns": [
+    "^(무형자산)?상각(비)?$"
+   ],
+   "regions": [
+    "note:무형자산"
+   ],
+   "value_kind": "flow"
+  },
+  {
+   "id": "DEV_COST_AMORT",
+   "topic": "devcost",
+   "label_patterns": [
+    "^(무형자산)?상각(비)?$"
+   ],
+   "column_patterns": [
+    "^개발비"
+   ],
+   "regions": [
+    "note:무형자산"
+   ],
+   "context_exclude_patterns": [
+    "상각누계|손상차손누계|정부보조|국고보조"
+   ],
+   "value_kind": "flow"
+  },
+  {
+   "id": "RND_EXPENSE",
+   "topic": "devcost",
+   "label_patterns": [
+    "경상연구개발비",
+    "연구개발비",
+    "경상개발비",
+    "경상연구비",
+    "^연구비$"
+   ],
+   "regions": [
+    "statement_is",
+    "note:판매비|관리비|연구|비용|제조원가|성격"
+   ],
+   "exclude_patterns": [
+    "^개발비$",
+    "상각",
+    "인력개발",
+    "자산",
+    "세액공제",
+    "정부보조",
+    "국고보조"
+   ],
+   "value_kind": "flow"
+  },
+  {
+   "id": "LEASE_SHORT_LOW_EXP",
+   "topic": "lease",
+   "label_patterns": [
+    "단기.*소액|소액.*단기"
+   ],
+   "regions": [
+    "note:리스|사용권"
+   ],
+   "exclude_patterns": [
+    "현금유출",
+    "부채",
+    "단기리스가아닌"
+   ],
+   "value_kind": "flow"
+  },
+  {
+   "id": "LEASE_SHORT_TERM_EXP",
+   "topic": "lease",
+   "label_patterns": [
+    "단기리스"
+   ],
+   "regions": [
+    "note:리스|사용권"
+   ],
+   "exclude_patterns": [
+    "현금유출",
+    "부채",
+    "소액"
+   ],
+   "value_kind": "flow"
+  },
+  {
+   "id": "LEASE_LOW_VALUE_EXP",
+   "topic": "lease",
+   "label_patterns": [
+    "소액(기초)?(자산)?(리스|관련)"
+   ],
+   "regions": [
+    "note:리스|사용권"
+   ],
+   "exclude_patterns": [
+    "현금유출",
+    "부채",
+    "단기(?!리스가아닌)"
+   ],
+   "value_kind": "flow"
+  },
+  {
+   "id": "LEASE_LIABILITY",
+   "topic": "lease",
+   "label_patterns": [
+    "^(유동성?|비유동성?|총|금융)?리스부채(합계|계|-?\\(?(유동|비유동|유동성)\\)?)?$",
+    "재무상태표에인식(된|되는)리스부채$"
+   ],
+   "regions": [
+    "statement_bs",
+    "note:리스|금융부채|차입금"
+   ],
+   "value_kind": "balance"
+  },
+  {
+   "id": "IP_CARRYING",
+   "topic": "ip",
+   "label_patterns": [
+    "^(투자부동산|토지|건물|구축물|토지및건물|합계|계|총계|소계)$"
+   ],
+   "column_patterns": [
+    "^(기말)?순?장부(금|가)액$"
+   ],
+   "regions": [
+    "note:투자부동산"
+   ],
+   "value_kind": "balance"
+  },
+  {
+   "id": "IP_CARRYING",
+   "topic": "ip",
+   "label_patterns": [
+    "^(기말|기말금액|기말잔액|기말순?장부(금|가)액|당기말|순?장부(금|가)액)$"
+   ],
+   "column_patterns": [
+    "^(합계|계|총계|투자부동산)$"
+   ],
+   "regions": [
+    "note:투자부동산"
+   ],
+   "context_exclude_patterns": [
+    "취득원가|상각누계|손상차손누계"
+   ],
+   "value_kind": "balance"
+  },
+  {
+   "id": "IP_FAIR_VALUE",
+   "topic": "ip",
+   "label_patterns": [
+    "^(투자부동산|토지|건물|구축물|토지및건물|합계|계|총계|소계)$"
+   ],
+   "column_patterns": [
+    "^(기말)?공정가치(평가|금액)?$"
+   ],
+   "regions": [
+    "note:투자부동산"
+   ],
+   "value_kind": "balance"
+  },
+  {
+   "id": "IP_FAIR_VALUE",
+   "topic": "ip",
+   "label_patterns": [
+    "^공정가치(금액)?$"
+   ],
+   "column_patterns": [
+    "^(합계|계|총계|투자부동산)$"
+   ],
+   "regions": [
+    "note:투자부동산"
+   ],
+   "value_kind": "balance"
+  },
+  {
+   "id": "BC_CONSIDERATION",
+   "topic": "bc",
+   "label_patterns": [
+    "이전대가",
+    "이전한\\s*대가"
+   ],
+   "regions": [
+    "note:사업결합|합병"
+   ],
+   "value_kind": "flow"
+  },
+  {
+   "id": "BC_CONSIDERATION",
+   "topic": "bc",
+   "label_patterns": [
+    "."
+   ],
+   "column_patterns": [
+    "이전대가|이전한대가"
+   ],
+   "regions": [
+    "note:사업결합|합병"
+   ],
+   "exclude_patterns": [
+    "^합계$|^계$"
+   ],
+   "value_kind": "flow"
+  },
+  {
+   "id": "BC_NET_ASSETS_FV",
+   "topic": "bc",
+   "label_patterns": [
+    "식별.*순자산.*공정가치",
+    "순자산\\s*공정가치",
+    "순자산.*공정가치"
+   ],
+   "regions": [
+    "note:사업결합|합병"
+   ],
+   "value_kind": "flow"
+  },
+  {
+   "id": "BC_RELATED_COST",
+   "topic": "bc",
+   "label_patterns": [
+    "사업결합.*관련.*원가",
+    "취득관련원가"
+   ],
+   "regions": [
+    "note:사업결합|합병"
+   ],
+   "value_kind": "flow"
+  }
+ ]
 }
