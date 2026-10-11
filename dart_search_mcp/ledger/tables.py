@@ -15,7 +15,7 @@ from . import _dart_agent
 from .grid import _CELL_RE, _THEAD_RE, _TR_RE, Grid, parse_table
 from .periods import classify_columns
 from .regions import Spot, plain, scan_file
-from .units import Unit, column_units, table_unit, value_krw
+from .units import Unit, column_units, own_column_units, same_unit, table_unit, value_krw
 
 PARSER_VERSION = "ledger-t1"
 
@@ -66,19 +66,71 @@ def _iso(yyyymmdd: str | None) -> str | None:
 
 
 # ---------- 행 ----------
-def _row_meta(table_xml: str) -> list[tuple[int, str | None, int | None]]:
-    """grid 행 순서대로 (들여쓰기, ACODE, ALEVEL). grid._raw_rows 와 같은 행 거르기를 쓴다."""
+def _raw_cells(table_xml: str) -> list[list[tuple[str, str]]]:
+    """grid 행 순서대로 TR의 원문 칸 (속성, 안쪽 글). grid._raw_rows 와 같은 행 거르기를 쓴다."""
     out = []
     for tr in _TR_RE.finditer(table_xml):
-        cells = list(_CELL_RE.finditer(tr.group(1)))
-        if not cells:
-            continue
-        attrs, inner = cells[0].group(2), cells[0].group(3)
-        a = _ACODE_RE.search(attrs)
-        lv = _ALEVEL_RE.search(attrs)
-        indent = len(_INDENT_UNIT_RE.findall(_INDENT_RE.match(inner).group(0)))
-        out.append((indent, a.group(1) if a else None, int(lv.group(1)) if lv else None))
+        cells = [(m.group(2), m.group(3)) for m in _CELL_RE.finditer(tr.group(1))]
+        if cells:
+            out.append(cells)
     return out
+
+
+def _cell_meta(grid: Grid, raw: list[list[tuple[str, str]]], origin: tuple[int, int]) -> tuple[int, str | None, int | None]:
+    """격자 칸(origin) → 그 칸 원문의 (들여쓰기, ACODE, ALEVEL).
+
+    TR의 k번째 원문 칸 = 그 행에서 시작하는 k번째 격자 칸(위 행 ROWSPAN 자리는 건너뛰고 왼쪽부터 놓이므로)."""
+    r, c = origin
+    starts = sorted({cell.origin[1] for cell in grid.rows[r] if cell.origin[0] == r})
+    if r >= len(raw) or c not in starts or starts.index(c) >= len(raw[r]):
+        return 0, None, None
+    attrs, inner = raw[r][starts.index(c)]
+    a = _ACODE_RE.search(attrs)
+    lv = _ALEVEL_RE.search(attrs)
+    indent = len(_INDENT_UNIT_RE.findall(_INDENT_RE.match(inner).group(0)))
+    return indent, (a.group(1) if a else None), (int(lv.group(1)) if lv else None)
+
+
+def _is_numberish(text: str) -> bool:
+    fs = _dart_agent.fs_table()
+    t = fs.squash(text).rstrip("%％")
+    return fs.parse_amount(t) is not None
+
+
+def _stub_cols(cols, grid: Grid) -> tuple[list[int], int | None]:
+    """행 머리(첫 값 열 왼쪽의 레이블 열들)와 평평한 표의 대표 레이블 열.
+
+    행 머리에 ROWSPAN 칸이 있으면 계층 표다(대표 열 None → 행마다 가장 구체적인 칸).
+    없으면 평평한 표다: 서로 다른 글이 가장 많은 열(같으면 왼쪽)이 대표 열이다
+    (「구분=종속기업 / 회사명=…」에서는 회사명, 「회사명 / 소재국가」에서는 회사명)."""
+    values = [c.col for c in cols if c.role == "value"]
+    first_value = min(values) if values else grid.n_cols
+    stub = [c.col for c in cols if c.role == "label" and c.col < first_value] or [0]
+    body = grid.rows[grid.header_rows:]
+    if len(stub) == 1:
+        return stub, stub[0]
+    if any(row[c].rowspan > 1 for row in body for c in stub):
+        return stub, None
+    distinct = {c: len({row[c].text for row in body if row[c].text and not _is_numberish(row[c].text)}) for c in stub}
+    return stub, max(stub, key=lambda c: (distinct[c], -c))
+
+
+def _label_cells(grid: Grid, r: int, stub: list[int], main_col: int | None):
+    """(대표 레이블 칸, label_path, 레이블 칸들). 숫자·비율 칸은 레이블로 보지 않는다.
+
+    계층 표(main_col None)는 가장 구체적인 칸 = 이 행에서 시작한 마지막 비지 않은 칸,
+    평평한 표는 대표 열의 칸(비었으면 첫 칸)."""
+    cells = [grid.rows[r][c] for c in stub if grid.rows[r][c].text and not _is_numberish(grid.rows[r][c].text)]
+    path: list[str] = []
+    for cell in cells:
+        if cell.text not in path:
+            path.append(cell.text)
+    if not cells:
+        return None, path, cells
+    if main_col is not None:
+        return next((cell for cell in cells if cell.col == main_col), cells[0]), path, cells
+    own = [cell for cell in cells if cell.origin[0] == r]
+    return (own or cells)[-1], path, cells
 
 
 def _row_kind(label: str) -> str:
@@ -226,15 +278,17 @@ def _table_record(spot: Spot, base: dict, doc_unit: Unit | None, period_end: str
     t_unit, t_found = table_unit(spot.context, header_text, doc_unit)
     c_units = column_units(cols, t_unit)
     value_cols = [c.col for c in cols if c.role == "value"]
-    meta = _row_meta(spot.xml)
-    label_cols = [c.col for c in cols if c.role == "label"] or [0]
+    own_units = own_column_units(cols)
+    raw_cells = _raw_cells(spot.xml)
+    stub, main_col = _stub_cols(cols, grid)
 
     rows = []
     for r in range(grid.header_rows, len(grid.rows)):
         row = grid.rows[r]
         if all(c.is_header for c in row):
             continue
-        label = next((row[c].text for c in label_cols if row[c].text), "")
+        best, label_path, lcells = _label_cells(grid, r, stub, main_col)
+        label = best.text if best is not None else ""
         cells = []
         for c in value_cols:
             cell = row[c]
@@ -244,12 +298,19 @@ def _table_record(spot: Spot, base: dict, doc_unit: Unit | None, period_end: str
             u = c_units[c]
             cells.append({"col": c, "raw": cell.text, "value": v,
                           "value_krw": value_krw(v, u) if v is not None else None,
-                          "unit_override": _unit_dict(u) if u != t_unit else None})
+                          "unit_override": None if same_unit(u, t_unit) else _unit_dict(u)})
         if not label and all(x["value"] is None for x in cells):
             continue
-        indent, acode, alevel = meta[r] if r < len(meta) else (0, None, None)
-        rows.append({"row": r, "label": label, "level": alevel if alevel is not None else indent,
-                     "acode": acode, "kind": _row_kind(label), "cells": cells})
+        indent, acode, alevel = _cell_meta(grid, raw_cells, best.origin) if best is not None else (0, None, None)
+        if acode is None and grid.fmt == "FINANCE":
+            acode = _cell_meta(grid, raw_cells, grid.rows[r][0].origin)[1]
+        kinds = {_row_kind(c.text) for c in lcells}
+        kind = _row_kind(label)
+        if kind == "item":  # 「합계」·「소계」가 다른 레이블 열에 있어도 잡는다
+            kind = "total" if "total" in kinds else "subtotal" if "subtotal" in kinds else "item"
+        rows.append({"row": r, "label": label, "label_path": label_path,
+                     "level": alevel if alevel is not None else indent,
+                     "acode": acode, "kind": kind, "cells": cells})
 
     columns = []
     for c in cols:
@@ -259,7 +320,8 @@ def _table_record(spot: Spot, base: dict, doc_unit: Unit | None, period_end: str
         columns.append(d)
 
     has_values = bool(value_cols)
-    unit_found = (t_found or all(c_units[c] is not t_unit for c in value_cols)) if has_values else None
+    # 표 단위를 찾았거나, 모든 값 열이 머리글에 제 단위를 가졌으면 단위를 찾은 것
+    unit_found = (t_found or all(c in own_units for c in value_cols)) if has_values else None
     checks = {
         "period_found": any(c.period != "unknown" for c in cols if c.role == "value") if has_values else None,
         "unit_found": unit_found,

@@ -131,6 +131,85 @@ class FilingTablesTest(unittest.TestCase):
         t = build_filing_tables("X", [("x.xml", doc.encode())], {})[0]
         self.assertTrue(t["checks"]["sum_ok"])
 
+    def test_rowspan_parent_label_keeps_specific_label(self):  # 리뷰 1차: ROWSPAN 상위 글이 하위 레이블을 덮지 않게
+        doc = """<DOCUMENT><BODY><P>(단위: 천원)</P><TABLE BORDER="1"><THEAD>
+<TR><TH>구 분</TH><TH>항 목</TH><TH>당기말</TH></TR></THEAD><TBODY>
+<TR><TD ROWSPAN="3">제3회 전환사채</TD><TD>액면가액</TD><TD>1,000</TD></TR>
+<TR><TD>  전환권조정</TD><TD>(100)</TD></TR>
+<TR><TD>장부금액</TD><TD>900</TD></TR>
+</TBODY></TABLE></BODY></DOCUMENT>"""
+        t = build_filing_tables("X", [("x.xml", doc.encode())], {})[0]
+        self.assertEqual([r["label"] for r in t["rows"]], ["액면가액", "전환권조정", "장부금액"])
+        self.assertEqual([r["label_path"] for r in t["rows"]],
+                         [["제3회 전환사채", "액면가액"], ["제3회 전환사채", "전환권조정"], ["제3회 전환사채", "장부금액"]])
+        self.assertEqual([r["level"] for r in t["rows"]], [0, 2, 0])  # 들여쓰기는 고른 칸에서
+
+    def test_flat_record_table_uses_first_label_and_skips_numbers(self):
+        # ROWSPAN 없는 평평한 표: 회사명이 레이블(오른쪽 소재국·지분율 칸이 아님), 숫자 칸은 레이블 아님
+        doc = """<DOCUMENT><BODY><P>(단위: 천원)</P><TABLE BORDER="1"><THEAD>
+<TR><TH>회사명</TH><TH>소재국가</TH><TH>지분율</TH><TH>장부가액</TH></TR></THEAD><TBODY>
+<TR><TD>에이사</TD><TD>중국</TD><TD>100%</TD><TD>159,923</TD></TR>
+<TR><TD>비사</TD><TD>대한민국</TD><TD>100%</TD><TD>183,201</TD></TR>
+</TBODY></TABLE></BODY></DOCUMENT>"""
+        t = build_filing_tables("X", [("x.xml", doc.encode())], {})[0]
+        self.assertEqual([r["label"] for r in t["rows"]], ["에이사", "비사"])
+        self.assertEqual(t["rows"][0]["label_path"], ["에이사", "중국"])
+
+    def test_flat_table_picks_most_distinct_label_column(self):
+        # 「구분」이 줄마다 같은 글로 반복되는 평평한 표: 회사명 열이 레이블
+        doc = """<DOCUMENT><BODY><P>(단위: 원)</P><TABLE BORDER="1"><THEAD>
+<TR><TH>구 분</TH><TH>회사명</TH><TH>당기</TH></TR></THEAD><TBODY>
+<TR><TD>종속기업</TD><TD>가사</TD><TD>10</TD></TR>
+<TR><TD>종속기업</TD><TD>나사</TD><TD>20</TD></TR>
+</TBODY></TABLE></BODY></DOCUMENT>"""
+        t = build_filing_tables("X", [("x.xml", doc.encode())], {})[0]
+        self.assertEqual([r["label"] for r in t["rows"]], ["가사", "나사"])
+        self.assertEqual(t["rows"][1]["label_path"], ["종속기업", "나사"])
+
+    def test_total_in_second_label_column(self):
+        doc = """<DOCUMENT><BODY><P>(단위: 원)</P><TABLE BORDER="1"><THEAD>
+<TR><TH>구 분</TH><TH>지 역</TH><TH>당기말</TH></TR></THEAD><TBODY>
+<TR><TD ROWSPAN="3">매출채권</TD><TD>국내</TD><TD>100</TD></TR>
+<TR><TD>해외</TD><TD>50</TD></TR>
+<TR><TD>소 계</TD><TD>150</TD></TR>
+<TR><TD></TD><TD>합 계</TD><TD>150</TD></TR>
+</TBODY></TABLE></BODY></DOCUMENT>"""
+        t = build_filing_tables("X", [("x.xml", doc.encode())], {})[0]
+        self.assertEqual([r["kind"] for r in t["rows"]], ["item", "item", "subtotal", "total"])
+        self.assertTrue(t["checks"]["sum_ok"])
+
+    def test_bad_subtotal_in_second_label_column_needs_review(self):
+        doc = """<DOCUMENT><BODY><P>(단위: 원)</P><TABLE BORDER="1"><THEAD>
+<TR><TH>구 분</TH><TH>지 역</TH><TH>당기말</TH></TR></THEAD><TBODY>
+<TR><TD ROWSPAN="3">매출채권</TD><TD>국내</TD><TD>100</TD></TR>
+<TR><TD>해외</TD><TD>50</TD></TR>
+<TR><TD>소 계</TD><TD>999</TD></TR>
+</TBODY></TABLE></BODY></DOCUMENT>"""
+        t = build_filing_tables("X", [("x.xml", doc.encode())], {})[0]
+        self.assertEqual(t["status"], "needs_review")
+
+    def test_unit_override_ignores_raw_text(self):
+        # 표 단위 「(단위: 천원)」과 열 「금액(천원)」은 같은 단위 — 덮어쓰기 아님
+        doc = """<DOCUMENT><BODY><P>(단위: 천원)</P><TABLE BORDER="1"><THEAD>
+<TR><TH>구 분</TH><TH>주식수(주)</TH><TH>금액(천원)</TH></TR></THEAD><TBODY>
+<TR><TD>보통주</TD><TD>1,000</TD><TD>5,000</TD></TR></TBODY></TABLE></BODY></DOCUMENT>"""
+        t = build_filing_tables("X", [("x.xml", doc.encode())], {})[0]
+        shares, amount = t["rows"][0]["cells"]
+        self.assertEqual(shares["unit_override"]["kind"], "shares")
+        self.assertIsNone(shares["value_krw"])
+        self.assertIsNone(amount["unit_override"])
+        self.assertEqual(amount["value_krw"], 5_000_000)
+
+    def test_unit_found_from_column_units(self):
+        doc = """<DOCUMENT><BODY><TABLE BORDER="1"><THEAD>
+<TR><TH>구 분</TH><TH>당기말(천원)</TH><TH>전기말(천원)</TH></TR></THEAD><TBODY>
+<TR><TD>현금</TD><TD>10</TD><TD>20</TD></TR></TBODY></TABLE></BODY></DOCUMENT>"""
+        t = build_filing_tables("X", [("x.xml", doc.encode())], {})[0]
+        self.assertTrue(t["checks"]["unit_found"])
+        doc2 = doc.replace("(천원)", "")
+        t2 = build_filing_tables("X", [("x.xml", doc2.encode())], {})[0]
+        self.assertFalse(t2["checks"]["unit_found"])
+
     def test_footnotes_only_consecutive(self):
         t = build_filing_tables("X", [("x.xml", NESTED_SUM_DOC.encode())], {})[0]
         self.assertEqual([f["mark"] for f in t["footnotes"]], ["(*1)", "주1)"])

@@ -70,20 +70,33 @@ def _is_quantity_prefix(prefix: str) -> bool:
     return p == "" or any(p.endswith(w) for w in _QTY_WORDS)
 
 
-def column_units(columns: list[ColumnInfo], table_u: Unit) -> dict[int, Unit]:
-    """열 머리글 마지막 요소의 「(주)」·「(천원)」·「(%)」가 표 단위를 덮어쓴다."""
+def own_column_units(columns: list[ColumnInfo]) -> dict[int, Unit]:
+    """열 머리글 마지막 요소에 「(주)」·「(천원)」·「(%)」처럼 제 단위가 있는 열만 {열: 단위}."""
     out: dict[int, Unit] = {}
     for c in columns:
-        u = None
-        if c.header_path:
-            m = _PAREN_RE.search(c.header_path[-1].strip())
-            if m:
-                inner = m.group(1).strip()
-                # 「삼성전자(주)」의 (주)는 법인 표지이지 주식 수 단위가 아니다
-                if inner != "주" or _is_quantity_prefix(c.header_path[-1].strip()[:m.start()]):
-                    u = _parse(inner, f"({inner})")
-        out[c.col] = u or table_u
+        if not c.header_path:
+            continue
+        m = _PAREN_RE.search(c.header_path[-1].strip())
+        if not m:
+            continue
+        inner = m.group(1).strip()
+        # 「삼성전자(주)」의 (주)는 법인 표지이지 주식 수 단위가 아니다
+        if inner != "주" or _is_quantity_prefix(c.header_path[-1].strip()[:m.start()]):
+            u = _parse(inner, f"({inner})")
+            if u is not None:
+                out[c.col] = u
     return out
+
+
+def column_units(columns: list[ColumnInfo], table_u: Unit) -> dict[int, Unit]:
+    """열 제 단위가 표 단위를 덮어쓴다. 제 단위가 없는 열은 표 단위."""
+    own = own_column_units(columns)
+    return {c.col: own.get(c.col, table_u) for c in columns}
+
+
+def same_unit(a: Unit, b: Unit) -> bool:
+    """원문 표기(raw)는 빼고 종류·배수·통화만 비교한다."""
+    return (a.kind, a.multiplier, a.currency) == (b.kind, b.multiplier, b.currency)
 
 
 def value_krw(value: float, unit: Unit) -> int | None:
