@@ -465,6 +465,12 @@ class DictionaryC2Test(unittest.TestCase):
         t["rows"][0]["label"] = "기타포괄손익-공정가치측정금융자산"  # 1층이 평평한 표에서 부모 칸을 대표로 고른 경우
         self.assertEqual({f["concept"] for f in self.facts(t)}, {"FVOCI_EQUITY"})
 
+    def test_balance_skips_issue_date_column(self):
+        t = _table([("전환권대가 등 (파생상품부채(자산))", [3999, -101, -53])], note_title="전환사채",
+                   title="부채로 분류된 각 금융부채의 장부금액", periods=("unknown", "current_end", "prior_end"),
+                   headers=["발행일", "당기말", "전기말"])
+        self.assertEqual({f["period"] for f in self.facts(t)}, {"current_end", "prior_end"})
+
     def test_coverage_keyword_scope_excludes_flows(self):
         t = _table([("전환권대가", [1, 2]), ("전환사채 이자비용", [3, 4]), ("유동파생상품부채(전환사채)", [1, 1])])
         cov = coverage([t], self.concepts)["conversion"]
