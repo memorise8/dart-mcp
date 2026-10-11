@@ -720,8 +720,18 @@ class FixRound2Test(unittest.TestCase):
     def facts(self, *tables):
         return extract_facts(list(tables), self.concepts)
 
-    def test_version_c4(self):
-        self.assertEqual(self.concepts[0].version, "c4")
+    def test_version_c5(self):
+        self.assertEqual(self.concepts[0].version, "c5")
+
+    def test_fvpl_equity(self):
+        # T10: FVOCI 「지정 안 함」 판정용 당기손익-공정가치 지분상품 개념(c5)
+        t = _table([("당기손익-공정가치측정 지분상품", [100, 90]), ("기타포괄손익-공정가치측정 지분상품", [50, 40]),
+                    ("당기손익-공정가치측정금융자산(전환사채)", [7, 7]), ("당기손익-공정가치측정 채무상품", [3, 3]),
+                    ("당기손익-공정가치측정 지분상품 평가이익", [1, 1])], note_title="금융상품", title="범주별")
+        got = {(f["label"], f["concept"]) for f in self.facts(t)}
+        self.assertIn(("당기손익-공정가치측정 지분상품", "FVPL_EQUITY"), got)
+        self.assertIn(("기타포괄손익-공정가치측정 지분상품", "FVOCI_EQUITY"), got)
+        self.assertEqual({lb for lb, c in got if c == "FVPL_EQUITY"}, {"당기손익-공정가치측정 지분상품"})
 
     def test_plain_bond_face_and_carrying_not_host(self):
         # 20260402000760 t061 「(1) 사채내역」(FRN), 20260422000648 t047 「제1회 무보증사모사채」 모양
