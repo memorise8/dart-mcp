@@ -22,7 +22,10 @@ import json
 import re
 from collections import Counter
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
+
+from .periods import _kind as _period_word
 
 CONCEPTS_PATH = Path(__file__).with_name("concepts.json")
 
@@ -33,10 +36,23 @@ _MARK_RE = re.compile(r"(\(\*\d*\)|\*\d*\)?|주\d+\))\s*$")
 _WS_RE = re.compile(r"\s+")
 _AMOUNT_UNITS = {"krw", "foreign", "unknown"}
 _PREFERRED_COL_RE = re.compile(r"^(?:합계|총계|계|(?:기말)?순?장부(?:금|가)액|기말(?:잔액|금액)?|당기말(?:잔액)?)$")
-_FLOW_HEADER_RE = re.compile(r"취득|증가|감소|상각|처분|대체|손상|환입|발생|상환|전환|행사|기초|발행|최초|인식시")
+_FLOW_HEADER_RE = re.compile(r"취득|증가|감소|증감|변동|상각|처분|대체|손상|환입|발생|상환|전환|행사|기초|발행|최초|인식시")
 # 금액이 아닌 숫자 열(공정가치 서열 「수준」, 주당 가격, 비율·이자율, 만기 연도) — 단위가 원으로 잡혀도 금액 개념에 안 쓴다
-_NON_AMOUNT_HEADER_RE = re.compile(r"^(수준|Level|서열)$|주당|가격|단가|전환가액|행사가액|비율|이자율|할인율|만기일|^만기$|연도|^기간$|잔존기간|상환기간|%")
-_TARGET_RULES = (("conversion", re.compile(r"전환|Convertible|CB|CPS|BW")), ("redemption", re.compile(r"상환|매도청구|콜옵션")))
+_NON_AMOUNT_HEADER_RE = re.compile(r"^(수준|Level|서열)$|주당|가격|단가|전환가액|행사가액|비율|이자율|할인율|만기일|^만기$|연도|^기간$|잔존기간|상환기간|주식수|%")
+# target(내재파생 분리 대상): 구체적인 옵션 낱말이 상품 이름 속 「전환」「상환」보다 앞선다.
+_T_CONV_OPTION = re.compile(r"전환권|신주인수권|교환권")
+_T_REDEMPTION_OPTION = re.compile(r"조기상환청구권|상환청구권|조기상환권|상환권|매도청구권|콜옵션|풋옵션|수의상환|[Cc]all|[Pp]ut")
+_T_NON_CONVERTIBLE = re.compile(r"신종자본증권|영구채|일반사채")
+_T_CONV_GENERIC = re.compile(r"전환|Convertible|CB|CPS|BW")
+_T_REDEMPTION_GENERIC = re.compile(r"상환")
+# 잔액 개념에 쓰지 않는 행(최초 인식·발행 시점 금액)
+_BALANCE_ROW_EXCLUDE = re.compile(r"최초|(?<!할인)발행|인식시")
+# 표 제목으로 구간을 맞추지 않는 주석(제목에 「전환사채」가 나와도 사채 금액 표가 아니다)
+_TITLE_REGION_BLOCK = re.compile(r"법인세|이연|주식기준보상|주식보상|금융수익|금융비용|금융원가|사용권자산|현금흐름|주당|위험|유동성|부문")
+# 어느 개념도 맞추지 않는 주석: 항목 이름을 다른 뜻으로 되풀이한다(일시적차이·현금흐름·주당이익)
+_NOTE_BLOCK = re.compile(r"법인세|이연|현금흐름|주당")
+_PATH_PERIOD = {"current_end": "current_end", "prior_end": "prior_end", "current_term": "current_period",
+                "prior_term": "prior_period"}
 _HANGUL_RE = re.compile(r"[가-힣]")
 END = {"current_end", "prior_end"}
 PERIOD = {"current_period", "prior_period"}
@@ -55,6 +71,7 @@ class Concept:
     column_patterns: tuple = ()
     context_exclude_patterns: tuple = ()
     own_label_only: bool = False
+    title_region: bool = False
     topic: str = ""
     version: str = ""
     _rx: dict = field(default_factory=dict, compare=False, hash=False, repr=False)
@@ -80,7 +97,8 @@ def load_concepts(path: Path | None = None) -> list[Concept]:
                            value_kind=c["value_kind"], target=c.get("target"),
                            column_patterns=tuple(c.get("column_patterns") or ()),
                            context_exclude_patterns=tuple(c.get("context_exclude_patterns") or ()),
-                           own_label_only=bool(c.get("own_label_only")), topic=c.get("topic", ""),
+                           own_label_only=bool(c.get("own_label_only")), title_region=bool(c.get("title_region")),
+                           topic=c.get("topic", ""),
                            version=version))
     return out
 
@@ -112,25 +130,48 @@ def _row_texts(row: dict) -> tuple[str, list[str], str]:
 
 
 # ---------- 구간 ----------
-def _region_ok(concept: Concept, table: dict) -> tuple[bool, bool]:
-    """(맞음, 주석 제목 모름)."""
+@lru_cache(maxsize=None)
+def _compiled(pattern: str) -> re.Pattern:
+    return re.compile(pattern)
+
+
+def _region_match(concept: Concept, table: dict) -> tuple[bool, bool, bool]:
+    """(맞음, 주석 제목 모름, 표 제목으로만 맞음).
+
+    note:<re> 는 주석 제목에 맞춘다. title_region 개념(사채·전환권·내재파생)만 주석 제목이 안 맞을 때 표 제목에도
+    맞춘다(일동 「금융부채」 주석의 전환사채 표). 법인세·주식보상·금융수익비용·사용권자산 등 주석은 표 제목을 안 본다."""
     region = table.get("region") or {}
     kind = region.get("kind")
     title = _WS_RE.sub("", table.get("title") or "")
+    nt = _WS_RE.sub("", region.get("note_title") or "")
+    if kind == "note" and nt and _NOTE_BLOCK.search(nt):
+        return False, False, False
+    title_ok = concept.title_region and bool(title) and not (nt and _TITLE_REGION_BLOCK.search(nt))
+    title_only = unknown = False
     for spec in concept.regions:
         if not spec.startswith("note:"):
             if spec == kind:
-                return True, False
+                return True, False, False
             continue
         if kind != "note":
             continue
-        rx = re.compile(spec[5:])
-        nt = _WS_RE.sub("", region.get("note_title") or "")
-        if (nt and rx.search(nt)) or (title and rx.search(title)):
-            return True, False
-        if not nt:
-            return True, True
-    return False, False
+        rx = _compiled(spec[5:])
+        if nt and rx.search(nt):
+            return True, False, False
+        if title_ok and rx.search(title):
+            title_only = True
+        elif not nt:
+            unknown = True
+    if title_only:
+        return True, False, True
+    if unknown:
+        return True, True, False
+    return False, False, False
+
+
+def _region_ok(concept: Concept, table: dict) -> tuple[bool, bool]:
+    """(맞음, 주석 제목 모름)."""
+    return _region_match(concept, table)[:2]
 
 
 def _note_region_ok(concepts: list[Concept], table: dict) -> bool:
@@ -139,7 +180,7 @@ def _note_region_ok(concepts: list[Concept], table: dict) -> bool:
         return False
     for c in concepts:
         note_only = Concept(c.id, c.label_patterns, (), tuple(s for s in c.regions if s.startswith("note:")), (),
-                            c.value_kind, None)
+                            c.value_kind, None, title_region=c.title_region)
         if note_only.regions:
             ok, unknown = _region_ok(note_only, table)
             if ok and not unknown:
@@ -159,20 +200,33 @@ def _parents(rows: list[dict]) -> list[list[str]]:
     out = []
     stack: list[tuple[int, str]] = []
     header: str | None = None
-    for r in rows:
+    for k, r in enumerate(rows):
         lv = r.get("level") or 0
+        name = norm_label(r.get("label"))
         while stack and stack[-1][0] >= lv:
             stack.pop()
         ps = [norm_label(t) for _, t in stack]
-        if header and header not in ps and header != norm_label(r.get("label")):
+        if header and header not in ps and header != name:
             ps.append(header)
         out.append(ps)
         stack.append((lv, r.get("label") or ""))
         if r.get("kind") in ("subtotal", "total"):
             header = None
-        elif _is_blank_header(r):
-            header = norm_label(r.get("label"))
+        elif _is_blank_header(r) and _starts_section(rows, k):
+            header = name
     return out
+
+
+def _starts_section(rows: list[dict], k: int) -> bool:
+    """값 빈 행이 구획 머리인지: 앞 행과 이름이 같으면 아니다(여러 줄로 이어 쓴 칸). 다음 행이 더 깊거나
+    이름이 다를 때만 머리다."""
+    name = norm_label(rows[k].get("label"))
+    if k > 0 and norm_label(rows[k - 1].get("label")) == name:
+        return False
+    if k + 1 >= len(rows):
+        return False
+    nxt = rows[k + 1]
+    return (nxt.get("level") or 0) > (rows[k].get("level") or 0) or norm_label(nxt.get("label")) != name
 
 
 def _footnote_text(table: dict, row: dict) -> str:
@@ -196,14 +250,39 @@ def _label_level(concept: Concept, label: str, parents: list[str], joined: str) 
     return None
 
 
-def _target(concept: Concept, own: str, context: list[str]) -> str | None:
+def _target_of(text: str) -> str | None:
+    """글 하나에서 분리 대상. 구체 옵션 낱말(전환권 / 조기상환청구권·매도청구권·콜옵션…) > 비전환 상품 이름
+    (신종자본증권) > 상품 이름 속 「전환」·「상환」. 전환권과 상환 옵션이 함께 있으면(「전환권 및 상환권」) conversion."""
+    if not text:
+        return None
+    if _T_CONV_OPTION.search(text):
+        return "conversion"
+    if _T_REDEMPTION_OPTION.search(text):
+        return "redemption"
+    if _T_NON_CONVERTIBLE.search(text):
+        return "other"
+    if _T_CONV_GENERIC.search(text):
+        return "conversion"
+    if _T_REDEMPTION_GENERIC.search(text):
+        return "redemption"
+    return None
+
+
+def _target(concept: Concept, label: str, path_parents: list[str], row_context: list[str],
+            title: str) -> tuple[str | None, str | None, str | None]:
+    """(target, target_basis, target_hint). 행 이름 → 경로 부모(가까운 것부터) → 상위 행·각주(context).
+    표 제목만 근거면 target 은 비우고 target_hint 에만 적는다(제목은 표 전체 이야기라 행 근거가 아니다)."""
     if concept.target != "by_label":
-        return concept.target
-    for text in [own, *context]:
-        for name, rx in _TARGET_RULES:
-            if text and rx.search(text):
-                return name
-    return "other"
+        return concept.target, ("concept" if concept.target else None), None
+    for basis, texts in (("label", [label]), ("path", list(reversed(path_parents))), ("context", row_context)):
+        for text in texts:
+            t = _target_of(text)
+            if t:
+                return t, basis, None
+    hint = _target_of(title)
+    if hint:
+        return None, None, hint
+    return "other", "label", None
 
 
 def _cell_unit(table: dict, cell: dict) -> dict:
@@ -211,9 +290,12 @@ def _cell_unit(table: dict, cell: dict) -> dict:
 
 
 def _is_amount_row(table: dict, row: dict) -> bool:
+    """금액 item 행: 금액 단위이고 금액 아닌 머리글(주식수·가격·수준…)이 아닌 열에 값이 하나 이상."""
     if row.get("kind") != "item":
         return False
+    cols = {c["col"]: c for c in table.get("columns") or [] if c.get("role") == "value"}
     return any(c.get("value") is not None and _cell_unit(table, c).get("kind") in _AMOUNT_UNITS
+               and not _NON_AMOUNT_HEADER_RE.search(_header_last(cols.get(c["col"]) or {}))
                for c in row.get("cells") or [])
 
 
@@ -222,10 +304,21 @@ def _header_last(col: dict) -> str:
     return _WS_RE.sub("", hp[-1]) if hp else ""
 
 
+def _row_period(row: dict) -> str | None:
+    """행 경로에 기간 낱말(「당기말」「전기」)만 있는 칸이 있으면 그 기간(기간이 행으로 나뉜 표)."""
+    for p in row.get("label_path") or []:
+        k = _PATH_PERIOD.get(_period_word(p or ""))
+        if k:
+            return k
+    return None
+
+
 def _cell_period(concept: Concept, col: dict, has_end: bool, has_period: bool,
-                 row_by_col: bool) -> tuple[str | None, bool]:
+                 row_by_col: bool, row_period: str | None = None) -> tuple[str | None, bool]:
     """(사실 기간, 추정 여부). None 이면 이 칸을 쓰지 않는다."""
     p = col.get("period") or "unknown"
+    if p == "unknown" and row_period:
+        p = row_period
     if p == "opening":
         return None, False
     if row_by_col:  # 열이 무엇인지 이미 머리글로 정했다 — 기간은 그 열의 것
@@ -235,8 +328,10 @@ def _cell_period(concept: Concept, col: dict, has_end: bool, has_period: bool,
     if concept.value_kind == "balance":
         if p in END:
             return p, False
-        if p in PERIOD:
-            return (_TO_END[p], True) if not has_end else (None, False)
+        if p in PERIOD:  # 기말 열 없는 표의 당기·전기 열 = 그 기말. 증감·취득 같은 흐름 열은 아니다
+            if has_end or _FLOW_HEADER_RE.search(_header_last(col)):
+                return None, False
+            return _TO_END[p], True
         if p == "unknown" and not _FLOW_HEADER_RE.search(_header_last(col)):
             return "unknown", False
         return None, False
@@ -256,6 +351,7 @@ def _candidates(table: dict, concepts: list[Concept]):
                    if cell.get("value") is not None and _cell_unit(table, cell).get("kind") in _AMOUNT_UNITS}
     periods = {c.get("period") for k, c in cols.items() if k in amount_cols}
     has_end, has_period = bool(periods & END), bool(periods & PERIOD)
+    headers = [_WS_RE.sub("", "".join(c.get("header_path") or [])) for c in cols.values()]
     parents = _parents(rows)
     title = _WS_RE.sub("", table.get("title") or "")
     regions = [(_region_ok(c, table)) for c in concepts]
@@ -266,6 +362,7 @@ def _candidates(table: dict, concepts: list[Concept]):
             continue
         foot = _WS_RE.sub("", _footnote_text(table, row))
         context = [*path_parents, title, *parents[i], foot]
+        row_period = _row_period(row)
         for order, c in enumerate(concepts):
             ok, _unknown = regions[order]
             if not ok:
@@ -273,10 +370,14 @@ def _candidates(table: dict, concepts: list[Concept]):
             level = _label_level(c, label, path_parents, joined)
             if level is None:
                 continue
+            if level == 1 and row.get("kind") in ("subtotal", "total"):
+                continue  # 「전환사채 / 소계」: 부모 이름만으로 소계·합계를 개념에 걸지 않는다
+            if c.value_kind == "balance" and _BALANCE_ROW_EXCLUDE.search(label):
+                continue  # 「최초 인식시점 장부금액」「발행시」는 잔액이 아니다
             if any(rx.search(label) or rx.search(joined) for rx in c.rx("exclude_patterns")):
                 continue
             if c.context_patterns and not any(rx.search(t) for rx in c.rx("context_patterns")
-                                              for t in [label, *context] if t):
+                                              for t in [label, *context, *headers] if t):
                 continue
             if c.context_exclude_patterns and any(rx.search(t) for rx in c.rx("context_exclude_patterns")
                                                   for t in [*path_parents, *parents[i]] if t):
@@ -293,7 +394,7 @@ def _candidates(table: dict, concepts: list[Concept]):
                     continue
                 if col_rx and not any(rx.search(_header_last(col)) for rx in col_rx):
                     continue
-                period, inferred = _cell_period(c, col, has_end, has_period, bool(col_rx))
+                period, inferred = _cell_period(c, col, has_end, has_period, bool(col_rx), row_period)
                 if period is None:
                     continue
                 picked.append((cell, col, period, inferred))
@@ -350,17 +451,26 @@ def extract_facts(tables: list[dict], concepts: list[Concept], *, stats: Counter
                 "amount_krw": cell.get("value_krw") if unit.get("kind") == "krw" else None,
                 "label": row.get("label"), "label_path": row.get("label_path") or [],
                 "column": (col.get("header_path") or [""])[-1],
-                "target": _target(c, "".join([*path_parents, label]), [title, *parents[i], foot]),
+                "target": None, "target_basis": None,
                 "source": {"table_id": table.get("table_id"), "page": table.get("page"), "row": row.get("row"),
                            "col": cell["col"]},
                 "source_status": table.get("status"), "concepts_version": c.version,
             }
+            target, basis, hint = _target(c, label, path_parents, [*reversed(parents[i]), foot], title)
+            fact["target"], fact["target_basis"] = target, (basis if basis != "concept" else None)
+            if hint:
+                fact["target_hint"] = hint
             if unit.get("kind") == "foreign":
                 fact["currency"] = unit.get("currency")
             if inferred:
                 fact["period_inferred"] = True
-            if _region_ok(c, table)[1]:
+            _ok, unknown, title_only = _region_match(c, table)
+            if unknown:
                 fact["region_unknown"] = True
+            if title_only:
+                fact["region_basis"] = "title"
+                if stats is not None:
+                    stats["facts_region_title_only"] += 1
             facts.append(fact)
             if stats is not None:
                 stats[f"concept:{c.id}"] += 1
@@ -396,28 +506,31 @@ def unmatched_rows(tables: list[dict], concepts: list[Concept]) -> Counter:
     return out
 
 
-def _topic_row(spec: dict, table: dict, row: dict, context: list[str]) -> bool:
-    """정의 B: 이 행이 주제 낱말 행인지(concepts.json topics). keywords 가 행 이름·경로에 있고 kw_exclude 가 없으며,
-    require_context 가 있으면 행·경로·표 제목·상위 행·각주 중 하나에 있어야 한다.
-    context_exclude 가 주석 제목·표 제목·상위 행에 있으면 뺀다(투자자 쪽 표: 「당기손익-공정가치측정금융자산」).
-    column_rows 가 있으면 「행 이름이 row 에 맞고 값 열 머리글 하나가 column 에 맞는」 행도 넣는다(투자부동산 표의 토지·건물)."""
-    label, parents, joined = _row_texts(row)
+def _topic_row(spec: dict, table: dict, row: dict, context: list[str]) -> tuple[bool, str | None]:
+    """정의 B: (주제 낱말 행인지, 뺀 규칙 이름). concepts.json topics:
+    keywords 가 행 이름·경로에 있거나, column_rows(행 이름이 row 에 맞고 값 열 머리글 하나가 column 에 맞음)면 주제 행.
+    exclusions 는 이름 붙은 규칙 목록 {name, pattern, on: row|context, why, when_context?} — 처음 걸린 규칙 이름.
+    when_context 가 있으면 행 규칙은 주석·표 제목·상위 행에 그 낱말이 있을 때만 뺀다.
+    on=context 는 주석 제목·표 제목·상위 행(각주 제외)에 맞춘다."""
+    label, _parents_, joined = _row_texts(row)
     text = label + " " + joined
     hit = bool(spec.get("keywords") and re.search(spec["keywords"], text))
     cr = spec.get("column_rows")
     if not hit and cr and re.search(cr["row"], label):
         hit = any(re.search(cr["column"], _header_last(c)) for c in table.get("columns") or [] if c.get("role") == "value")
     if not hit:
-        return False
-    if spec.get("kw_exclude") and re.search(spec["kw_exclude"], text):
-        return False
-    if spec.get("require_context") and not any(re.search(spec["require_context"], t) for t in [text, *context] if t):
-        return False
+        return False, None
     note_title = _WS_RE.sub("", (table.get("region") or {}).get("note_title") or "")
-    if spec.get("context_exclude") and any(re.search(spec["context_exclude"], t)
-                                           for t in [note_title, *context[:-1]] if t):
-        return False
-    return True
+    ctx = [t for t in [note_title, *context[:-1]] if t]
+    for rule in spec.get("exclusions") or []:
+        rx = _compiled(rule["pattern"])
+        if rule.get("on", "row") == "row":
+            when = rule.get("when_context")
+            if rx.search(text) and (not when or any(_compiled(when).search(t) for t in ctx)):
+                return True, rule["name"]
+        elif any(rx.search(t) for t in ctx):
+            return True, rule["name"]
+    return True, None
 
 
 def coverage(tables: list[dict], concepts: list[Concept], topics: dict | None = None,
@@ -425,14 +538,16 @@ def coverage(tables: list[dict], concepts: list[Concept], topics: dict | None = 
     """주제별 매칭률 재료(주석 제목을 읽은 주석 표만, read_failed 제외).
 
     rows/matched: 주제 개념들의 note: 구간에 드는 주석 표의 금액 item 행 / 그중 주제 개념에 걸린 행(정의 A).
-    kw_rows/kw_matched: 그중 주제 낱말 행(_topic_row) / 걸린 행(정의 B).
+    kw_all_rows/kw_all_matched: 그중 주제 낱말 행 전부(제외 규칙 되돌림).
+    kw_rows/kw_matched: 그중 제외 규칙에 안 걸린 행(정의 B). excluded_by_rule: 규칙별로 뺀 행 수.
     unmatched 를 주면 주제별 정의 B 미매칭 행 이름을 센다."""
     topics = topics if topics is not None else load_topics()
     by_topic: dict[str, list[Concept]] = {}
     for c in concepts:
         by_topic.setdefault(c.topic, []).append(c)
     ids = {c.id: c.topic for c in concepts}
-    out = {t: {"rows": 0, "matched": 0, "kw_rows": 0, "kw_matched": 0} for t in by_topic}
+    out = {t: {"rows": 0, "matched": 0, "kw_all_rows": 0, "kw_all_matched": 0, "kw_rows": 0, "kw_matched": 0,
+               "excluded_by_rule": {}} for t in by_topic}
     for table in tables:
         if table.get("status") == "read_failed" or (table.get("region") or {}).get("kind") != "note":
             continue
@@ -455,9 +570,16 @@ def coverage(tables: list[dict], concepts: list[Concept], topics: dict | None = 
                 s = out[t]
                 s["rows"] += 1
                 s["matched"] += m
-                if _topic_row(topics.get(t) or {}, table, row, context):
-                    s["kw_rows"] += 1
-                    s["kw_matched"] += m
-                    if not m and unmatched is not None:
-                        unmatched.setdefault(t, Counter())[_row_key(row)] += 1
+                is_kw, rule = _topic_row(topics.get(t) or {}, table, row, context)
+                if not is_kw:
+                    continue
+                s["kw_all_rows"] += 1
+                s["kw_all_matched"] += m
+                if rule:
+                    s["excluded_by_rule"][rule] = s["excluded_by_rule"].get(rule, 0) + 1
+                    continue
+                s["kw_rows"] += 1
+                s["kw_matched"] += m
+                if not m and unmatched is not None:
+                    unmatched.setdefault(t, Counter())[_row_key(row)] += 1
     return out

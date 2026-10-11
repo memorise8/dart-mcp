@@ -63,7 +63,7 @@ def _ratio(a: int, b: int):
     return round(a / b, 4) if b else None
 
 
-def summarize(results: list[dict], concepts_version: str, elapsed: float) -> tuple[dict, Counter]:
+def summarize(results: list[dict], concepts_version: str, elapsed: float, missing: int = 0) -> tuple[dict, Counter]:
     stats: Counter = Counter()
     unmatched: Counter = Counter()
     table_status: Counter = Counter()
@@ -89,17 +89,24 @@ def summarize(results: list[dict], concepts_version: str, elapsed: float) -> tup
             by_period[f["period"]] += 1
         filings_with.update({f["concept"] for f in r["facts"]})
         for t, s in r["coverage"].items():
-            agg = cov.setdefault(t, Counter())
-            agg.update(s)
+            agg = cov.setdefault(t, {"counts": Counter(), "excluded_by_rule": Counter()})
+            agg["counts"].update({k: v for k, v in s.items() if k != "excluded_by_rule"})
+            agg["excluded_by_rule"].update(s.get("excluded_by_rule") or {})
         for t, c in r["topic_unmatched"].items():
             topic_unmatched.setdefault(t, Counter()).update(c)
-    coverage = {t: {**dict(s), "ratio_all_rows": _ratio(s["matched"], s["rows"]),
-                    "ratio_keyword_rows": _ratio(s["kw_matched"], s["kw_rows"])} for t, s in sorted(cov.items())}
+    coverage = {}
+    for t, a in sorted(cov.items()):
+        s = a["counts"]
+        coverage[t] = {**dict(s), "excluded_by_rule": dict(a["excluded_by_rule"].most_common()),
+                       "ratio_all_rows": _ratio(s["matched"], s["rows"]),
+                       "ratio_keyword_rows": _ratio(s["kw_matched"], s["kw_rows"]),
+                       "ratio_keyword_restored": _ratio(s["kw_all_matched"], s["kw_all_rows"])}
     summary = {
         "concepts_version": concepts_version,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "elapsed_sec": round(elapsed, 1),
         "filings": len(results),
+        "filings_missing": missing,
         "filings_failed": sum(1 for r in results if r["error"]),
         "filing_errors": dict(errors.most_common(20)),
         "table_parser_versions": dict(versions),
@@ -113,10 +120,12 @@ def summarize(results: list[dict], concepts_version: str, elapsed: float) -> tup
         "conflict_rows": stats.get("conflict_rows", 0),
         "conflicts": dict(sorted((k, v) for k, v in stats.items() if k.startswith("conflict:"))),
         "tables_read_failed_skipped": stats.get("tables_read_failed_skipped", 0),
+        "facts_region_title_only": stats.get("facts_region_title_only", 0),
         "coverage": coverage,
         "coverage_definition": {
             "ratio_all_rows": "주제 개념 note: 구간 주석 표의 금액 item 행 중 주제 개념에 걸린 비율(정의 A)",
-            "ratio_keyword_rows": "그중 행 이름·경로에 주제 낱말(concepts.json topics.keywords)이 있는 행만(정의 B)",
+            "ratio_keyword_rows": "그중 주제 낱말 행(topics.keywords) 중 제외 규칙(topics.exclusions)에 안 걸린 행만(정의 B, 판정 기준)",
+            "ratio_keyword_restored": "정의 B에서 제외 규칙으로 뺀 행을 되돌린 값(주제 낱말 행 전부)",
         },
         "topic_unmatched_top": {t: c.most_common(30) for t, c in sorted(topic_unmatched.items())},
     }
@@ -138,10 +147,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"이미 있음(덮지 않음): {', '.join(existing)} in {args.out_dir}", file=sys.stderr)
         return 2
     if args.rcept_list:
-        rcepts = [ln.strip() for ln in args.rcept_list.read_text(encoding="utf-8").splitlines() if ln.strip()]
-        rcepts = [r for r in rcepts if (args.tables / f"{r}.json.gz").exists()]
+        listed = [ln.strip() for ln in args.rcept_list.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        rcepts = [r for r in listed if (args.tables / f"{r}.json.gz").exists()]
+        missing = len(listed) - len(rcepts)
     else:
         rcepts = sorted(p.name[: -len(".json.gz")] for p in args.tables.glob("*.json.gz"))
+        missing = 0
     if args.limit:
         rcepts = rcepts[: args.limit]
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -166,15 +177,16 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{i}/{len(jobs)} {time.time() - t0:.0f}s", file=sys.stderr, flush=True)
     tmp.replace(facts_path)
 
-    summary, unmatched = summarize(results, version, time.time() - t0)
+    summary, unmatched = summarize(results, version, time.time() - t0, missing)
     with (args.out_dir / "facts.unmatched.tsv").open("w", encoding="utf-8") as fh:
         fh.write("count\tlabel\n")
         for label, n in unmatched.most_common(UNMATCHED_TOP):
             fh.write(f"{n}\t{label}\n")
     (args.out_dir / "facts.summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps({k: summary[k] for k in ("concepts_version", "filings", "filings_failed", "facts")},
+    print(json.dumps({k: summary[k] for k in ("concepts_version", "filings", "filings_missing", "filings_failed", "facts")},
                      ensure_ascii=False))
-    print(json.dumps({t: (c["ratio_all_rows"], c["ratio_keyword_rows"]) for t, c in summary["coverage"].items()},
+    print(json.dumps({t: (c["ratio_all_rows"], c["ratio_keyword_rows"], c["ratio_keyword_restored"])
+                      for t, c in summary["coverage"].items()},
                      ensure_ascii=False))
     return 0
 

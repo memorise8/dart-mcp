@@ -172,7 +172,8 @@ class HandTableTest(unittest.TestCase):
     def test_rowspan_child_host(self):
         t = _table([(["제3회 전환사채", "전환권조정"], [-30, -40]), (["제3회 전환사채", "액면금액"], [1000, 1000])])
         host = _by(self.facts(t), "HOST_LIABILITY")
-        self.assertEqual({f["label"] for f in host}, {"전환권조정"})
+        # c3: 회차 아래 「액면금액」도 주계약 금액(c1·c2에서는 안 걸렸음)
+        self.assertEqual({f["label"] for f in host}, {"전환권조정", "액면금액"})
 
     def test_read_failed_table_has_no_facts(self):
         t = _table([("전환권대가", [100, 200])], status="read_failed")
@@ -309,7 +310,8 @@ class DictionaryC2Test(unittest.TestCase):
         self.assertIn(("전환권", "CONV_OPTION_LIABILITY"), got)
         self.assertIn(("조기상환청구권", "EMB_DERIV_LIABILITY"), got)
         self.assertIn(("전환권조정", "HOST_LIABILITY"), got)
-        self.assertNotIn(("액면가액", "HOST_LIABILITY"), got)
+        # c3: 사채 머리 행 아래 「액면가액」은 주계약 구성 금액(「전환사채」 행이 액면인 것과 같은 뜻)
+        self.assertIn(("액면가액", "HOST_LIABILITY"), got)
 
     def test_host_in_financial_liability_note_and_series_rows(self):
         t = _table([("제1회 무보증사모전환사채", [100, 0]), ("차감: 사채할인발행차금", [-5, 0]), ("신주인수권조정", [-3, 0]),
@@ -482,6 +484,233 @@ class DictionaryC2Test(unittest.TestCase):
         self.assertEqual((cov["kw_rows"], cov["kw_matched"]), (1, 1))
 
 
+class FixRound1Test(unittest.TestCase):
+    """T6 수정 1차(리뷰 지적·R10)."""
+
+    def setUp(self):
+        self.concepts = load_concepts()
+
+    def facts(self, *tables):
+        return extract_facts(list(tables), self.concepts)
+
+    def test_version_c3(self):
+        self.assertEqual(self.concepts[0].version, "c3")
+
+    # 지적 1: target 은 행 이름 → 경로 → 상위 행·각주 순, 근거 표시
+    def test_target_specific_option_word_beats_instrument_name(self):
+        t = _table([(["전환상환우선주", "조기상환청구권"], [5, 6]), (["전환사채", "콜옵션"], [1, 2])],
+                   note_title="파생상품", title="파생상품 내역")
+        got = {(f["concept"], f["amount"]): (f["target"], f["target_basis"]) for f in self.facts(t)}
+        self.assertEqual(got[("EMB_DERIV_LIABILITY", 5)], ("redemption", "label"))
+        self.assertEqual(got[("EMB_DERIV_ASSET", 1)], ("redemption", "label"))
+
+    def test_target_non_convertible_instrument_label(self):
+        t = _table([("비유동파생상품자산(신종자본증권)", [50, 40])], note_title="금융상품 공정가치",
+                   title="전환사채 관련 파생상품")
+        (f, _) = _by(self.facts(t), "EMB_DERIV_ASSET")
+        self.assertEqual((f["target"], f["target_basis"]), ("other", "label"))
+
+    def test_target_from_path_parent(self):
+        t = _table([(["제3회 전환사채", "파생상품부채"], [5, 6])], note_title="사채", title="파생상품의 내역")
+        (f, _) = _by(self.facts(t), "EMB_DERIV_LIABILITY")
+        self.assertEqual((f["target"], f["target_basis"]), ("conversion", "path"))
+
+    def test_target_from_footnote_is_context(self):
+        t = _table([("파생상품부채(*)", [5, 6])], note_title="공정가치", title="① 당기말")
+        t["footnotes"] = [{"mark": "(*)", "text": "상환전환우선주부채 중 내재파생상품 분리금액입니다."}]
+        (f, _) = _by(self.facts(t), "EMB_DERIV_LIABILITY")
+        self.assertEqual((f["target"], f["target_basis"]), ("conversion", "context"))
+
+    def test_target_not_from_title_alone(self):
+        # 일동 연결 t072 모양: 「전환사채 및 파생상품부채의 내역」 표의 「파생상품부채」
+        t = _table([("유동:", [None, None]), ("전환사채", [0, 59520394]), ("파생상품부채", [0, 23816450])],
+                   note_title="금융부채", title="① 당기말과 전기말 현재 전환사채 및 파생상품부채의 내역은 다음과 같습니다.",
+                   unit=KRW1000)
+        (f, _) = _by(self.facts(t), "EMB_DERIV_LIABILITY")
+        self.assertIsNone(f["target"])
+        self.assertIsNone(f["target_basis"])
+        self.assertEqual(f["target_hint"], "conversion")
+
+    def test_non_embedded_concepts_have_fixed_target_basis(self):
+        t = _table([("전환권대가", [1, 2])])
+        f = self.facts(t)[0]
+        self.assertEqual((f["target"], f["target_basis"]), (None, None))
+
+    # 지적 2: 값 빈 행이 머리 행이 되는 조건
+    def test_blank_continuation_rows_are_not_headers(self):
+        # 20260320001084 t047 모양(가치평가기법 표: 같은 이름의 빈 이어짐 행)
+        rows = [("파생상품자산", [None]), ("유동파생상품자산(전환사채)", [1185896], 1), ("유동파생상품자산(전환사채)", [None], 1),
+                ("유동파생상품자산(전환사채)", [None], 1), ("비유동파생상품자산(신종자본증권)", [50274958], 1),
+                ("비유동파생상품자산(신종자본증권)", [None], 1)]
+        t = _table(rows, note_title="금융상품 공정가치", title="가치평가기법과 투입변수", periods=("current_end",),
+                   headers=["공정가치"])
+        from dart_search_mcp.ledger.facts import _parents
+        self.assertEqual(_parents(t["rows"])[4], ["파생상품자산"])
+        got = {f["label"]: f["target"] for f in _by(self.facts(t), "EMB_DERIV_ASSET")}
+        self.assertEqual(got["유동파생상품자산(전환사채)"], "conversion")
+        self.assertNotEqual(got.get("비유동파생상품자산(신종자본증권)"), "conversion")
+
+    def test_blank_row_followed_by_same_label_is_not_header(self):
+        from dart_search_mcp.ledger.facts import _parents
+        t = _table([("전환권", [None]), ("전환권", [5]), ("기타", [1])], periods=("current_end",), headers=["금액"])
+        self.assertEqual(_parents(t["rows"])[2], [])
+
+    # 지적 3: 부모 경로로만 걸린 소계·합계, 잔액 개념의 최초 인식 행
+    def test_subtotal_not_matched_by_parent_only(self):
+        t = _table([(["전환사채", "제2회차", "전환권 및 조기상환청구권"], [515, 720]), (["전환사채", "소계"], [1514, 1985])],
+                   note_title="상환전환우선주부채", title="파생상품부채의 내역")
+        t["rows"][1]["kind"] = "subtotal"
+        self.assertEqual(_by(self.facts(t), "HOST_LIABILITY"), [])
+
+    def test_initial_recognition_row_not_balance(self):
+        t = _table([(["4회차 전환사채 파생상품부채", "최초 인식시점 장부금액"], [300, 300]),
+                    (["4회차 전환사채 파생상품부채", "당기말 장부금액"], [120, 150])],
+                   note_title="전환사채", title="파생상품부채")
+        self.assertEqual({f["amount"] for f in _by(self.facts(t), "EMB_DERIV_LIABILITY")}, {120, 150})
+
+    # 지적 4: 표 제목으로 구간 맞추기는 사채·전환 개념만, 법인세 등 주석 제외
+    def test_title_region_only_for_instrument_concepts(self):
+        lease = _table([("리스부채", [10, 9])], note_title="기타자산", title="리스부채 내역")
+        tax = _table([("전환사채", [10, 9])], note_title="법인세비용", title="전환사채 관련 일시적차이", tid="R:00760:t002")
+        host = _table([("전환사채", [10, 9])], note_title="기타부채", title="전환사채 내역", tid="R:00760:t003")
+        risk = _table([("전환사채", [10, 9])], note_title="유동성 위험", title="금융부채별 계약상 만기", tid="R:00760:t004")
+        seg = _table([("전환사채", [10, 9])], note_title="영업부문", title="2) 금융부채", tid="R:00760:t005")
+        facts = self.facts(lease, tax, host, risk, seg)
+        self.assertEqual({(f["concept"], f["source"]["table_id"]) for f in facts}, {("HOST_LIABILITY", "R:00760:t003")})
+        self.assertEqual({f.get("region_basis") for f in facts}, {"title"})
+
+    # 작은 것: 행 경로가 기간인 표
+    def test_period_from_row_path(self):
+        t = _table([(["당기말", "전환권대가"], [100]), (["전기말", "전환권대가"], [90])], periods=("unknown",),
+                   headers=["금액"])
+        self.assertEqual({(f["period"], f["amount"]) for f in self.facts(t)}, {("current_end", 100), ("prior_end", 90)})
+
+    # c3 사전 보강(두 번째 조정 표본 tune2, seed 20261013)
+    def test_c3_host_generic_instrument_rows(self):
+        t = _table([("전환사채(액면가액)", [10, 9]), ("단기전환사채", [5, 4]), ("전환사채의 부채요소", [8, 7]),
+                    ("㈜도이프 제1회 사모전환사채", [3, 3]), ("전환권조정 및 할인발행차금", [-1, -1]), ("주식할인발행차금", [-2, -2]),
+                    ("전환사채 콜옵션", [1, 1]), ("전환우선주부채", [6, 6])], note_title="사채", title="사채 내역")
+        got = {f["label"] for f in _by(self.facts(t), "HOST_LIABILITY")}
+        self.assertEqual(got, {"전환사채(액면가액)", "단기전환사채", "전환사채의 부채요소", "㈜도이프 제1회 사모전환사채",
+                               "전환권조정 및 할인발행차금", "전환우선주부채"})
+
+    def test_c3_embedded_more_labels(self):
+        t = _table([("전환상환우선주부채(파생상품)", [4, 4]), ("내재파생상품(제2차전환사채)", [3, 3]),
+                    ("복합금융상품 매도청구권", [2, 2]), ("파생상품금융부채", [1, 1])], note_title="파생상품", title="파생상품 내역")
+        got = {f["label"]: f["concept"] for f in self.facts(t)}
+        self.assertEqual(got["전환상환우선주부채(파생상품)"], "EMB_DERIV_LIABILITY")
+        self.assertEqual(got["내재파생상품(제2차전환사채)"], "EMB_DERIV_LIABILITY")
+        self.assertEqual(got["복합금융상품 매도청구권"], "EMB_DERIV_ASSET")
+        self.assertNotIn("파생상품금융부채", got)  # 문맥 없는 일반 파생상품은 사실로 내지 않는다(알려진 재현율 틈)
+
+    def test_c3_lease_liability_variants_and_regions(self):
+        t = _table([("리스부채의 현재가치", [1, 1]), ("장기리스부채", [2, 2]), ("부동산리스부채", [3, 3]),
+                    ("유동성금융리스부채", [4, 4])], note_title="기타부채", title="기타부채 내역")
+        self.assertEqual(len(_by(self.facts(t), "LEASE_LIABILITY")), 8)
+        e = _table([("단기/소액자산리스료", [1, 1])], note_title="비용의 성격별 분류", title="성격별 비용",
+                   periods=("current_period", "prior_period"))
+        self.assertEqual({f["concept"] for f in self.facts(e)}, {"LEASE_SHORT_LOW_EXP"})
+
+    def test_c3_fvoci_total_prefixes(self):
+        t = _table([("단기기타포괄손익-공정가치측정금융자산", [1, 1]), ("장기기타포괄손익-공정가치측정금융자산", [2, 2])],
+                   note_title="금융자산", title="금융자산")
+        self.assertEqual(len(_by(self.facts(t), "FVOCI_FA_TOTAL")), 4)
+
+    def test_c3_rnd_more_labels_and_intangible_note(self):
+        t = _table([("경상연구개발비", [5, 4]), ("위탁연구비", [1, 1]), ("시험연구비", [1, 1]), ("시장개발비", [9, 9])],
+                   note_title="무형자산", title="연구개발 지출", periods=("current_period", "prior_period"))
+        self.assertEqual({f["label"] for f in _by(self.facts(t), "RND_EXPENSE")}, {"경상연구개발비", "위탁연구비", "시험연구비"})
+
+    def test_c3_ip_period_columns_and_construction(self):
+        t = _table([("기말순장부금액", [100, 90])], note_title="투자부동산", title="투자부동산 변동",
+                   periods=("current_period", "prior_period"), headers=["당기", "전기"])
+        self.assertEqual({(f["period"], f["amount"]) for f in _by(self.facts(t), "IP_CARRYING")},
+                         {("current_end", 100), ("prior_end", 90)})
+        t2 = _table([("건설중인투자부동산", [5, 6])], note_title="투자부동산", title="장부금액",
+                    periods=("current_end", "current_end"), headers=["장부금액", "공정가치"], tid="R:00760:t002")
+        self.assertEqual({f["concept"] for f in self.facts(t2)}, {"IP_CARRYING", "IP_FAIR_VALUE"})
+
+    def test_c3_bc_net_assets_total_row(self):
+        t = _table([("순자산", [1294])], note_title="사업결합", title="취득한 자산과 인수한 부채의 공정가치",
+                   periods=("unknown",), headers=["금액"])
+        self.assertEqual({f["concept"] for f in self.facts(t)}, {"BC_NET_ASSETS_FV"})
+        t2 = _table([("인수한 순자산 장부금액", [1000])], note_title="사업결합", title="공정가치",
+                    periods=("unknown",), headers=["금액"], tid="R:00760:t002")
+        self.assertEqual(self.facts(t2), [])
+
+    def test_c3_tax_and_cashflow_notes_never_match(self):
+        tax = _table([("리스부채", [10, 9]), ("전환권조정", [1, 1])], note_title="법인세비용 및 이연법인세", title="일시적차이")
+        cf = _table([("리스부채", [10, 9])], note_title="현금흐름표", title="재무활동 부채", tid="R:00760:t002")
+        self.assertEqual(self.facts(tax, cf), [])
+
+    def test_c3_share_count_and_price_rows_are_not_amount_rows(self):
+        t = _table([("제7회전환사채", [1000, 5000])], note_title="주당이익", title="잠재적보통주",
+                   periods=("unknown", "unknown"), headers=["전환가능 주식수", "전환가격"])
+        self.assertEqual(coverage([t], self.concepts)["conversion"]["kw_all_rows"], 0)
+
+    def test_c3_host_in_category_table_by_column_context(self):
+        t = _table([("전환사채", [10, 10]), ("전환사채(유동)", [5, 5])], note_title="금융상품의 범주", title="2) 전기말",
+                   periods=("prior_end", "prior_end"), headers=["상각후원가측정 금융부채", "합계"])
+        self.assertEqual(len(_by(self.facts(t), "HOST_LIABILITY")), 2)
+
+    def test_c3_host_series_child_face_amount(self):
+        t = _table([(["제1회 무보증사모전환사채", "액면금액"], [100, 100]), (["제1회 무보증사모전환사채", "전환가액"], [5, 5]),
+                    (["파생상품부채(전환사채)", "장부금액"], [7, 7])], note_title="전환사채", title="전환사채의 내역")
+        self.assertEqual({f["amount"] for f in _by(self.facts(t), "HOST_LIABILITY")}, {100})
+
+    def test_c3_movement_change_column_not_inferred_balance(self):
+        t = _table([("기타포괄손익-공정가치금융자산", [10, 3, 13])], note_title="기타자본구성요소", title="기타포괄손익누계액의 증감",
+                   periods=("opening", "current_period", "current_period"), headers=["기 초", "증 감", "기 말"])
+        self.assertEqual({(f["concept"], f["amount"], f["period"]) for f in self.facts(t)},
+                         {("FVOCI_FA_RESERVE", 13, "current_end")})
+
+    def test_c3_fvoci_reserve_loss_allowance(self):
+        t = _table([("기타포괄손익-공정가치측정금융자산신용손실충당금", [1, 2])], note_title="기타포괄손익누계액", title="구성")
+        self.assertEqual({f["concept"] for f in self.facts(t)}, {"FVOCI_DEBT_RESERVE"})
+
+    def test_c3_lease_regions_and_ip_closing_column(self):
+        t = _table([("리스료-단기리스", [1, 1])], note_title="차입금", title="리스 손익", periods=("current_period", "prior_period"))
+        u = _table([("유동리스부채", [2, 2])], note_title="사용권자산", title="리스부채의 내역", tid="R:00760:t002")
+        v = _table([("건설중인투자부동산", [1, 2, 3])], note_title="투자부동산", title="변동", tid="R:00760:t003",
+                   periods=("opening", "current_period", "current_end"), headers=["기초", "취득", "기말"])
+        got = {(f["concept"], f["amount"]) for f in self.facts(t, u, v)}
+        self.assertIn(("LEASE_SHORT_TERM_EXP", 1), got)
+        self.assertIn(("LEASE_LIABILITY", 2), got)
+        self.assertIn(("IP_CARRYING", 3), got)
+
+    def test_c3_fvoci_category_gain_rows_excluded_by_named_rule(self):
+        t = _table([("기타포괄손익-공정가치측정금융자산평가손익", [3, 2])], note_title="범주별 금융상품", title="범주별 순손익",
+                   periods=("current_period", "prior_period"))
+        cov = coverage([t], self.concepts)["fvoci"]
+        self.assertEqual(cov["excluded_by_rule"], {"oci_flow_in_category_table": 1})
+
+    # R10: 정의 B 제외 규칙 이름·되돌린 값, 내재파생 문맥 없는 행은 미매칭으로 셈
+    def test_coverage_named_exclusions_and_restored(self):
+        t = _table([("전환권대가", [1, 2]), ("전환사채 이자비용", [3, 4]), ("유동파생상품부채(전환사채)", [1, 1])])
+        cov = coverage([t], self.concepts)["conversion"]
+        self.assertEqual((cov["kw_rows"], cov["kw_matched"]), (1, 1))
+        self.assertEqual((cov["kw_all_rows"], cov["kw_all_matched"]), (3, 1))
+        self.assertEqual(cov["excluded_by_rule"], {"flow_row": 1, "derivative_other_topic": 1})
+
+    def test_embedded_bare_derivative_counts_as_unmatched(self):
+        t = _table([("파생상품부채", [5, 6]), ("통화선도 파생상품부채", [1, 1])], note_title="금융상품",
+                   title="범주별 금융상품")
+        un = {}
+        cov = coverage([t], self.concepts, unmatched=un)["embedded"]
+        self.assertEqual((cov["kw_rows"], cov["kw_matched"]), (1, 0))
+        self.assertEqual(un["embedded"], Counter({"파생상품부채": 1}))
+        self.assertEqual(cov["excluded_by_rule"], {"hedging_derivative": 1})
+
+    def test_topic_exclusions_are_named_with_reasons(self):
+        topics = json.loads(CONCEPTS_PATH.read_text(encoding="utf-8"))["topics"]
+        for name, spec in topics.items():
+            for rule in spec.get("exclusions", []):
+                self.assertTrue(rule["name"] and rule["pattern"] and rule["why"], (name, rule))
+                self.assertIn(rule.get("on", "row"), ("row", "context"))
+            self.assertNotIn("kw_exclude", spec)
+            self.assertNotIn("require_context", spec)
+
+
 class RunnerTest(unittest.TestCase):
     def test_runner_outputs_and_no_overwrite(self):
         from dart_search_mcp.ledger.tables import write_filing
@@ -505,6 +734,10 @@ class RunnerTest(unittest.TestCase):
             self.assertIn("CONV_OPTION_EQUITY", {f["concept"] for f in facts})
             summary = json.loads((out / "facts.summary.json").read_text(encoding="utf-8"))
             self.assertEqual((summary["filings"], summary["facts"]), (1, len(facts)))
+            self.assertEqual(summary["filings_missing"], 1)
+            cov = summary["coverage"]["conversion"]
+            for k in ("ratio_all_rows", "ratio_keyword_rows", "ratio_keyword_restored", "excluded_by_rule"):
+                self.assertIn(k, cov)
             self.assertIn("conversion", summary["coverage"])
             self.assertTrue((out / "facts.unmatched.tsv").read_text(encoding="utf-8").startswith("count\tlabel"))
             # 다시 돌리면 덮지 않고 멈춘다
