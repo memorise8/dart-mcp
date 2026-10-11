@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from ._dart_agent import fs_table
+from .periods import ColumnInfo
 
 Kind = Literal["krw", "foreign", "shares", "percent", "count", "unknown"]
 
@@ -61,7 +62,15 @@ def table_unit(context: str, header_text: str, doc_default: Unit | None) -> tupl
     return (doc_default or UNKNOWN), False
 
 
-def column_units(columns, table_u: Unit) -> dict[int, Unit]:
+_QTY_WORDS = ("주식수", "주식의수", "수량", "발행주식수", "발행주식의수", "보유주식수", "주수")
+
+
+def _is_quantity_prefix(prefix: str) -> bool:
+    p = re.sub(r"\s+", "", prefix)
+    return p == "" or any(p.endswith(w) for w in _QTY_WORDS)
+
+
+def column_units(columns: list[ColumnInfo], table_u: Unit) -> dict[int, Unit]:
     """열 머리글 마지막 요소의 「(주)」·「(천원)」·「(%)」가 표 단위를 덮어쓴다."""
     out: dict[int, Unit] = {}
     for c in columns:
@@ -69,7 +78,10 @@ def column_units(columns, table_u: Unit) -> dict[int, Unit]:
         if c.header_path:
             m = _PAREN_RE.search(c.header_path[-1].strip())
             if m:
-                u = _parse(m.group(1), f"({m.group(1)})")
+                inner = m.group(1).strip()
+                # 「삼성전자(주)」의 (주)는 법인 표지이지 주식 수 단위가 아니다
+                if inner != "주" or _is_quantity_prefix(c.header_path[-1].strip()[:m.start()]):
+                    u = _parse(inner, f"({inner})")
         out[c.col] = u or table_u
     return out
 

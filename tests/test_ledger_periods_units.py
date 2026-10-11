@@ -97,6 +97,13 @@ class UnitTest(unittest.TestCase):
         self.assertEqual(cu[2].kind, "percent")
         self.assertEqual(cu[0].kind, "krw")
 
+    def test_corporate_marker_not_shares(self):
+        g = parse_table("<TABLE><THEAD><TR><TH>구분</TH><TH>삼성전자(주)</TH><TH>발행주식수(주)</TH></TR></THEAD><TBODY><TR><TD>a</TD><TD>5</TD><TD>7</TD></TR></TBODY></TABLE>")
+        cu = column_units(classify_columns(g, None, ""), Unit("(단위: 천원)", "krw", 1000, "KRW"))
+        self.assertEqual((cu[1].kind, cu[1].multiplier), ("krw", 1000))
+        self.assertEqual(value_krw(5, cu[1]), 5000)
+        self.assertEqual(cu[2].kind, "shares")
+
     def test_missing_uses_default(self):
         u, found = table_unit("", "", Unit("(단위: 천원)", "krw", 1000, "KRW"))
         self.assertEqual((u.multiplier, found), (1000, False))
