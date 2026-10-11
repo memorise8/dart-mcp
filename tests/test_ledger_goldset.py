@@ -266,7 +266,7 @@ class ScoreLayer3Test(unittest.TestCase):
 
     def test_statuses(self):
         gold = [
-            self._gold("pass", "A", CONV, ["EQUITY"]),
+            self._gold("pass", "A", CONV, ["EQUITY"], needs_accountant_confirm=True),
             self._gold("wrong", "B", CONV, ["EQUITY"]),                         # s015 유형: 부채가 나오면 틀림
             self._gold("miss", "C", EMB, ["SEPARATED"]),                        # 판단불가 = 재현율 놓침(틀림 아님)
             self._gold("und-ok", "D", FVOCI, ["UNDETERMINED"], held_reason="policy_only"),
@@ -284,6 +284,8 @@ class ScoreLayer3Test(unittest.TestCase):
             "und-alt": "pass", "split": "wrong", "scope": "pass", "held-diff": "pass", "no-row-und": "pass",
             "no-row-val": "miss"})
         self.assertEqual(res["wrong"]["got"], ["LIABILITY"])
+        self.assertTrue(res["pass"]["needs_accountant_confirm"])   # 회계사 확인 표시를 결과에 넘긴다
+        self.assertFalse(res["wrong"]["needs_accountant_confirm"])
         self.assertIn("no_facts", res["held-diff"]["detail"])   # 기대 사유와 다르면 적어 둔다
         self.assertIn("행 없음", res["no-row-val"]["detail"])
 
@@ -328,6 +330,14 @@ class GoldsetFileTest(unittest.TestCase):
         self.assertIn("UNDETERMINED", l3["s038"]["expect"])
         self.assertNotIn("NOT_SEPARATED", l3["s038"]["expect"])
         self.assertEqual(l3["s001"]["expect"], ["EQUITY"])     # ✓ → v1 값
+        # R26: 정책 문장뿐이던 v1 값 대신 사실 값(해당 없음)·판단불가, 전기 기준 분리, 회계사 재확인 표시
+        for case in ("s022", "s024", "s025", "s028"):
+            self.assertEqual(sorted(l3[case]["expect"]), ["NOT_APPLICABLE", "UNDETERMINED"], case)
+            self.assertIn("R26", l3[case]["comment"])
+        self.assertEqual(l3["s033"]["expect"], ["SEPARATED"])
+        self.assertIn("R26", l3["s033"]["comment"])
+        self.assertTrue(l3["s035"].get("needs_accountant_confirm"))
+        self.assertEqual(l3["s035"]["expect"], ["SEPARATED"])
         for g in gold:
             if g["layer"] == 3:
                 self.assertTrue(g.get("comment"), g["id"])     # 메모 읽기를 남긴다

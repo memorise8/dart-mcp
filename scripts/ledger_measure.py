@@ -238,7 +238,8 @@ def render_markdown(result: dict, gold_index: dict[str, dict]) -> str:
             for r in g3["items"]:
                 g = gold_index.get(r["id"], {})
                 rows.append([r["id"], g.get("corp", ""), g.get("topic", "")[:12], "/".join(r["expect"]),
-                             names[r["status"]], r["detail"][:120]])
+                             names[r["status"]] + (" (회계사 확인)" if r.get("needs_accountant_confirm") else ""),
+                             r["detail"][:120]])
             L += _md_table(["id", "회사", "주제", "기대", "결과", "v2"], rows) + [""]
     cmp_ = result.get("compare")
     if cmp_:

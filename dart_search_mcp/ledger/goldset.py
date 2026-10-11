@@ -18,6 +18,7 @@ read_failed 표는 세지 않는다(행·칸을 잡지 못한 표다).
 - pass: expect 에 든 판정 값이 있거나, 모두 판단불가이고 expect 에 UNDETERMINED 가 있다(행이 없어도 같다).
 - miss: 모두 판단불가(또는 행 없음)인데 expect 에 판정 값만 있다 — 재현율 놓침, 틀림이 아니다(R14).
 기대 held_reason 과 실제 사유가 다르면 pass 로 두고 detail 에 적는다.
+`needs_accountant_confirm: true`(R26) 항목은 결과에 같은 표시를 넘긴다(회계사 확인 페이지에 올릴 것).
 """
 from __future__ import annotations
 
@@ -226,7 +227,8 @@ def judge_item(item: dict, rows: list[dict]) -> dict:
     else:
         status = "miss"
     return {"id": item["id"], "status": status, "ok": status == "pass", "got": got,
-            "expect": sorted(expect), "detail": desc}
+            "expect": sorted(expect), "detail": desc,
+            "needs_accountant_confirm": bool(item.get("needs_accountant_confirm"))}
 
 
 def score_layer3(gold: list[dict], stance_path, rcepts=None) -> list[dict]:
