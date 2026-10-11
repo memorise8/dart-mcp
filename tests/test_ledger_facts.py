@@ -785,8 +785,8 @@ class T6bTest(unittest.TestCase):
     def facts(self, *tables, stats=None):
         return extract_facts(list(tables), self.concepts, stats=stats)
 
-    def test_version_c6(self):
-        self.assertEqual(self.concepts[0].version, "c6")
+    def test_version_c7(self):  # c6 = T6b, c7 = T6b 수정 1차(R25)
+        self.assertEqual(self.concepts[0].version, "c7")
 
     # ---- 1. FVOCI_EQUITY 표 제목 + 합계 행 ----
     def test_real_title_equity_total_row(self):
