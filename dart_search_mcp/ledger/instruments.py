@@ -1,4 +1,4 @@
-"""2층 ② 사채·우선주 기록 — 프롬프트(i2)·호출·캐시·공시 단위 실행(스펙 §5.3, 브리프 T9).
+"""2층 ② 사채·우선주 기록 — 프롬프트(i3)·호출·캐시·공시 단위 실행(스펙 §5.3, 브리프 T9).
 
 LLM 은 주입된 `complete_json(messages, schema) -> dict` 로 부른다(백엔드 이미지 안에서는
 scripts/ledger_instruments_in_backend.py 가 luna LLMClient 를 감싸 넘긴다). 표준 라이브러리와
@@ -19,7 +19,10 @@ from typing import Callable, Iterable
 from .instrument_input import build_input, input_scopes, needs_instruments
 from .instrument_validate import validate
 
-PROMPT_VERSION = "i2"  # i1 → i2: 2026-10-11 100건 측정(근거 통과 43.7%) 뒤 개정, 보고서 T9 측정 1회
+# i1 → i2: 2026-10-11 100건 측정(근거 통과 43.7%) 뒤 개정, 보고서 T9 측정 1회.
+# i2 → i3: fix round 4 — 검증기(R14·R15·기간 검사)와 맞춤. i2 가 가르치던 근거 중 검증기가 거부하는 것(파생상품부채 제목 표의
+# 회차 행, 열 머리글 없는 「기말」 행, 행사가격 조정 표의 내재파생상품 행, 「전환권을 금융부채로 분류」 문장)을 지웠다.
+PROMPT_VERSION = "i3"
 
 CompleteJson = Callable[[list, dict], dict]
 
@@ -50,53 +53,80 @@ OUTPUT_SCHEMA = {
         }}}},
 }
 
-_SYSTEM_I2 = (
+_SYSTEM_I3 = (
     "너는 감사보고서 주석에서 전환사채·신주인수권부사채·교환사채·상환전환우선주를 회차별로 기록한다. "
     "표 칸 id와 문장 id로만 근거를 댄다. 보이지 않는 값은 null 또는 unconfirmed로 둔다. "
-    "사채의 부채요소(주계약)와 전환권 파생상품부채는 다른 칸이다. JSON 객체 하나만 답한다."
+    "사채의 부채요소(주계약)와 전환권 파생상품부채는 다른 칸이다. option_class 는 전환권·신주인수권·교환권의 분류다. "
+    "JSON 객체 하나만 답한다."
 )
 
-_RULES_I2 = """규칙:
+_RULES_I3 = """규칙(근거는 코드가 아래 규칙 그대로 확인한다. 규칙에 맞지 않는 근거를 댄 값은 버려진다):
 1. 회차(상품)마다 한 줄. kind 는 CB(전환사채)·BW(신주인수권부사채)·EB(교환사채)·RCPS(상환전환우선주) 중 하나.
    series_key 는 「제3회」 같은 회차 번호와 종류로 만든다(예: "CB-3"). 회차 번호가 보이지 않으면 series_key 는
    빈 문자열 "" 로 두고, 발행일·액면으로 묶고, 못 묶으면 따로 둔다. 같은 회차의 당기말·전기말 잔액은 한 줄에 담는다.
 2. 금액은 칸에 인쇄된 숫자 그대로 적는다. 단위를 바꾸지 않는다: 표 단위가 천원이면 천원 숫자를 그대로 쓴다
    (「(단위: 천원)」 표의 1,499,943 → 1499943. 1499943000 이 아니다). 쉼표는 빼고, 괄호 (1,234) 는 -1234.
-   머리글 줄의 [current_end]·[prior_end] 는 그 열의 기간이다. current_end 금액은 당기말 열, prior_end 는 전기말 열에서.
-3. null 이 아닌 필드는 모두 evidence 에 근거 id 를 댄다(금액마다, option_class·embedded_separation 도).
+3. 기간: 머리글 줄의 [current_end]·[prior_end] 는 그 열의 기간이다.
+   - balance.current_end 금액은 [current_end] 열 칸에서, balance.prior_end 금액은 [prior_end] 열 칸에서 댄다.
+   - [current_period]·[prior_period] 열(「당기」·「전기」) 칸은 그 열 머리글이 장부금액·잔액·기말을 말하거나, 행이
+     「기말」·「장부가액」 행이거나, 표 제목이 「보고기간종료일 현재 …의 내역」 같은 시점 잔액 표(변동·손익·「당기 중」
+     표가 아님)일 때만 각각 current_end·prior_end 금액이 된다.
+   - [opening](기초) 열, 발행·상환·평가 같은 변동 열은 잔액 근거가 아니다.
+   - 기간 표시가 없는 칸(글 표의 v 칸 포함)은 그 표의 값 열(금액 자리)이 하나일 때만 쓴다. 발행조건 글 표에 회차 열이
+     여럿이면 그 v 칸으로 잔액을 대지 않는다(그 금액은 null).
+4. null 이 아닌 필드는 모두 evidence 에 근거 id 를 댄다(금액마다, option_class·embedded_separation 도).
    evidence 키는 필드 경로다: "balance.current_end.face", "balance.prior_end.equity_component" 처럼.
    댈 근거가 없으면 금액은 null, 분류는 "unconfirmed" 로 둔다.
-4. 근거 id 는 입력에 인쇄된 그대로만 쓴다: 칸 "<표 id>:r<행>:c<열>", 글 표의 금액 "<표 id>:r<행>:v<번호>",
+5. 근거 id 는 입력에 인쇄된 그대로만 쓴다: 칸 "<표 id>:r<행>:c<열>", 글 표의 금액 "<표 id>:r<행>:v<번호>",
    문장 "s<번호>"(예: "s494" — "s:494"·"<접수번호>:s494" 아님), 각주 "f:<표 id>:<번호>".
    표 id 만("<표 id>")이나 r0, 입력에 없는 열 번호는 쓰지 않는다. 만들어 내지 않는다.
-5. 필드 뜻:
-   - face: 액면(발행가액) 잔액. 그 금액이 적힌 칸(잔액 표의 「액면가액」·「전환사채」 행, 또는 발행조건 글 표의
-     「액면가액 | v1=…원」 금액)의 id 를 댄다.
-   - host_carrying: 사채의 부채요소(주계약) 장부금액. 인쇄된 장부금액·합계 칸 하나를 댄다. 그런 칸이 없고
-     같은 표·같은 열에 구성 칸(액면·상환할증금·전환권조정·사채할인발행차금)만 있으면 그 칸들을 모두 대고
-     인쇄된 값(차감은 음수)의 합을 적는다. 다른 열·다른 표 칸을 섞지 않는다. 우선주부채(주계약)도 여기.
-     상품 전체를 당기손익-공정가치로 측정하면 그 전체 장부금액도 여기에 둔다.
-   - derivative_liability: 전환권·상환권 등 옵션(내재파생상품)이 파생상품부채로 따로 잡힌 금액. 이런 칸만:
-     「파생상품부채」·「전환권부채」 행, 「…내재파생상품」·「전환권 및 조기상환권」 같은 옵션 행, 파생상품부채
-     변동표의 「기말」 행, 제목이 「파생상품부채의 내역」인 표의 회차 행. 아닌 것: 「전환권조정」·「전환권가치」 같은
-     차감 칸(괄호 음수), 「사채할인발행차금」·「상환할증금」·「합계」 행, 옵션 낱말 없이 상품 이름만 있는 행의
-     금액(상품 전체 장부금액), 「전환사채 및 조기상환권」처럼 상품과 옵션을 함께 적은 행.
-   - derivative_asset: 매도청구권 등이 파생상품자산으로 잡힌 금액(「파생상품자산」 행, 매도청구권 행, 파생상품자산
-     변동표의 「기말」 행).
+6. 필드 뜻:
+   - face: 액면(발행가액) 잔액. 그 금액이 적힌 칸(잔액 표의 「액면가액」·「전환사채」 행, 또는 규칙 3을 지키는 글 표 v 칸).
+   - host_carrying: 사채의 부채요소(주계약) 장부금액. 인쇄된 장부금액·합계 칸 하나를 댄다. 그런 칸이 없으면
+     같은 표·같은 열의 구성 칸(액면·원금·발행가액·사채할인발행차금·전환권조정·신주인수권조정·교환권조정·상환할증금·
+     현재가치할인차금)을 모두 대고 인쇄된 값(차감은 음수)의 합을 적는다. 구성 칸은 모두 같은 회차여야 한다(행 이름이나
+     위 묶음 행의 「제7회」·「제8회」가 섞이면 안 된다). 다른 열·다른 표·글 표 v 칸을 섞지 않는다. 우선주부채(주계약)도
+     여기. 상품 전체를 당기손익-공정가치로 측정하면 그 전체 장부금액도 여기에 둔다.
+   - derivative_liability: 옵션(내재파생상품)이 파생상품부채로 따로 잡힌 금액. 칸은 파생상품 칸이고 쪽(부채)이 명시돼야 한다:
+     · 행 이름에 파생 낱말이 있고 부채 쪽이 보이는 행: 「파생상품부채」·「전환사채파생부채(전환권)」·「파생상품부채(전환권 및
+       조기상환권)」, 또는 표·주석 제목이 「파생상품부채」만 말하는 표(「파생상품부채의 내역」)의 「…내재파생상품」 행.
+     · 옵션 이름 행(전환권·조기상환청구권·매도청구권·콜옵션 …): 열 머리글이나 표·주석 제목이 「파생상품부채」를 말할 때만.
+     · 「기말」 행·회차 행·상품 이름 행: 열 머리글이 「파생상품부채」를 말할 때만(제목만으로는 안 된다).
+     아닌 것: 제목·열 머리글이 두 쪽을 다 말하는 표(「파생상품자산 및 부채」·「파생상품 자산 및 부채」·「파생상품자산과
+     파생상품부채」) — 쪽을 모르므로 null. 「…부채로 분류된 금융부채의 장부금액」 같은 행사가격 조정 공시 표(파생상품부채를
+     명시하지 않음). 공정가치 수준 열(「수준1」·「수준 2」·「Level 3」·「공정가치 수준/합계」), 회계오류 수정·재작성 열
+     (「조정금액」·「수정금액」·「재작성금액」), 현금흐름표 줄(「파생상품자산의 정산」), 손익·변동·민감도·만기분석 칸
+     (평가이익·손실, 발행·행사·상환, 1% 증가, 1년 이내), 「전환권조정」·「전환권가치」 같은 차감 칸(괄호 음수),
+     「사채할인발행차금」·「상환할증금」·「합계」 행, 옵션 낱말 없이 상품 이름만 있는 행의 금액(상품 전체 장부금액),
+     「전환사채 및 조기상환권」처럼 상품과 옵션을 함께 적은 행, 「비파생금융부채」.
+   - derivative_asset: 같은 규칙으로 쪽이 자산인 칸(「파생상품자산」 행, 제목이 「파생상품자산의 내역」인 표의 매도청구권·
+     콜옵션 행). 이름(매도청구권·콜옵션)만으로 자산이라고 정하지 않는다.
    - equity_component: 전환권대가·신주인수권대가 등 자본요소(「전환사채의 자본요소」·「전환권대가」 행).
-6. option_class: 전환권(신주인수권·교환권)이 자본이면 "equity". 전환권 자체가 (파생상품)부채로 잡힌 근거
-   (위 derivative_liability 칸이나 「전환권을 금융부채로 분류」 같은 문장)가 있을 때만 "derivative_liability".
-   사채 부채요소나 전환권조정 칸만 있으면 derivative_liability 가 아니다. 「…경우 부채로 분류한다」 같은 조건부
-   회계정책 문장만으로는 정하지 않는다. 상품 전체를 당기손익-공정가치로 지정했다는 문장만 있으면 "unconfirmed".
-   모르면 "unconfirmed".
-7. embedded_separation: 내재파생상품을 주계약과 분리했으면 "separated"(separated_targets 에 분리한 것:
+7. option_class: 전환권·신주인수권·교환권의 분류만 뜻한다. 조기상환청구권·매도청구권·풋옵션·콜옵션 근거는 option_class 의
+   근거가 아니다(그런 행·문장은 embedded_separation 과 derivative_liability·derivative_asset 금액에만 쓴다).
+   - "equity": 전환권대가·신주인수권대가 등 자본요소 칸이나 전환권(의 가치)을 자본으로 계상했다는 문장.
+   - "derivative_liability": 아래 근거가 있을 때만.
+     (가) 규칙 6의 derivative_liability 칸이면서 그 행 이름이나 열 머리글이 전환권·신주인수권·교환권을 말하는 칸
+          (「파생상품부채(전환권 및 조기상환권)」, 「파생상품부채의 내역」 표의 「전환권」·「제3회 전환사채 전환권 등」 행).
+          일반 「파생상품부채」 행, 「…내재파생상품」 행, 「조기상환청구권」 행은 금액 근거는 되지만 option_class 근거는 아니다.
+     (나) 전환권·신주인수권·교환권(이 든 옵션 목록)이 주어·목적어로 바로 조사를 받고 「파생상품부채로」·「파생상품으로」
+          분류·인식·계상·회계처리했다는 문장: 「전환권 및 조기상환권은 파생상품부채로 인식하였습니다」, 「전환권을 부채로
+          분류하고 파생상품으로 회계처리」, 또는 그 목록을 담은 내재파생상품이 주어인 문장: 「전환권, 조기상환청구권 및
+          매도청구권이 포함된 내재파생상품은 … 내재파생상품으로 회계처리」, 「내재파생상품(조기상환청구권, 전환권 등)을 …
+          파생상품부채로 인식」.
+     근거가 아닌 문장: 「조기상환청구권 및 매도청구권은 … 파생상품으로 회계처리」(전환권이 없음), 「내재파생상품은 …」만 있는
+     문장, 「전환권을 금융부채로 분류」·「유동부채로 분류」·「부채요소는 금융부채」(파생상품부채·파생상품이라고 하지 않음),
+     「…경우 부채로 분류한다」 같은 조건부·부정 문장, 전환권을 자본(기타자본잉여금)으로 옮겼다는 문장, 「전환권 및 상환권이
+     없는 …」, 상품 전체를 당기손익-공정가치로 지정했다는 문장.
+   - 사채 부채요소·전환권조정 칸만 있으면 derivative_liability 가 아니다. 근거가 없으면 "unconfirmed".
+8. embedded_separation: 내재파생상품을 주계약과 분리했으면 "separated"(separated_targets 에 분리한 것:
    "conversion"·"redemption"), 분리하지 않았으면 "not_separated", 상품 전체를 당기손익-공정가치로 측정하면
    "whole_fvpl", 모르면 "unconfirmed". 근거는 그렇게 말하는 문장 id 가 가장 좋다.
-8. movement: 그 기간에 있었던 일 — issued(발행)·converted(전환)·redeemed(상환)·matured(만기)·
+9. movement: 그 기간에 있었던 일 — issued(발행)·converted(전환)·redeemed(상환)·matured(만기)·
    extinguished(소멸)·modified(조건 변경)·none(변동 없음). 모르면 빈 목록.
-9. 대상 상품이 없으면 {"instruments": []}."""
+10. 대상 상품이 없으면 {"instruments": []}."""
 
-_EXAMPLE_I2 = """예시 입력(일동홀딩스, 천원 표):
+_EXAMPLE_I3 = """예시 입력 1(일동홀딩스, 천원 표):
 [T7] (consolidated) / 제목: 당기말과 전기말 현재 전환사채의 세부내역 / 단위: (단위: 천원)
 머리글 | c1=당기말 [current_end] | c2=전기말 [prior_end]
 r2 전환사채의 부채요소
@@ -105,7 +135,7 @@ r4 전환사채상환할증금 | c1=- | c2=7,511,222
 r5 전환권조정 | c1=(103,911) | c2=(30,905,828)
 r6 합 계 | c1=896,089 | c2=59,520,394
 r7 전환사채의 자본요소 | c1=121,352 | c2=519,263
-예시 출력:
+예시 출력 1:
 {"instruments": [{"instrument": "전환사채", "series_key": "", "kind": "CB",
  "balance": {"current_end": {"face": 1000000, "host_carrying": 896089, "derivative_liability": null,
                              "derivative_asset": null, "equity_component": 121352},
@@ -119,12 +149,12 @@ r7 전환사채의 자본요소 | c1=121,352 | c2=519,263
               "balance.prior_end.face": ["T7:r3:c2"], "balance.prior_end.host_carrying": ["T7:r6:c2"],
               "balance.prior_end.equity_component": ["T7:r7:c2"]}}]}
 (표에 회차 번호가 없으므로 series_key 는 "". 자본요소 행이 있으므로 option_class 는 equity.
- 파생상품부채 칸이 없으므로 derivative_liability 는 null. 천원 숫자를 그대로 적었다.)
+ 파생상품부채 칸이 없으므로 derivative_liability 는 null. 천원 숫자를 그대로, 당기말 열은 current_end, 전기말 열은 prior_end.)
 
-예시 입력 2(행사가격 조정 공시 표, 원 단위가 아닌 천원 표):
-[T9] (separate) / 주석: 상환전환우선주 / 제목: 발행자의 주가 변동에 따라 행사가격이 조정되는 조건으로 인해 부채로 분류된 금융부채의 장부금액 / 단위: (단위: 천원)
+예시 입력 2(파생상품부채 표, 천원):
+[T9] (separate) / 주석: 파생상품 / 제목: 당기말과 전기말 현재 파생상품부채의 내역은 다음과 같습니다. / 단위: (단위: 천원)
 머리글 | c1=당기말 [current_end] | c2=전기말 [prior_end]
-r2 제7회 상환전환우선주 내재파생상품 | c1=2,500,419 | c2=4,084,843
+r2 제7회 상환전환우선주 전환권 및 조기상환권 | c1=2,500,419 | c2=4,084,843
 s12: 상환전환우선주의 전환권 및 조기상환권은 자본요소에 해당하지 않으므로 주계약에서 분리하여 파생상품부채로 인식하였습니다.
 예시 출력 2(그 회차 줄의 일부):
  "series_key": "RCPS-7", "kind": "RCPS", "balance": {"current_end": {"derivative_liability": 2500419, ...},
@@ -132,9 +162,25 @@ s12: 상환전환우선주의 전환권 및 조기상환권은 자본요소에 �
  "embedded_separation": "separated", "separated_targets": ["conversion", "redemption"],
  "evidence": {"balance.current_end.derivative_liability": ["T9:r2:c1"],
               "balance.prior_end.derivative_liability": ["T9:r2:c2"], "option_class": ["T9:r2:c1", "s12"],
-              "embedded_separation": ["s12"]}"""
+              "embedded_separation": ["s12"]}
+(행 이름이 전환권을 말하고 제목이 파생상품부채만 말하므로 금액과 option_class 근거가 된다.)
 
-_USER_I2 = """{rules}
+예시 입력 3(풋·콜만 파생상품, 전환권은 자본):
+[T5] (separate) / 주석: 파생상품 / 제목: (1) 당기말 현재 파생상품부채의 내역은 다음과 같습니다. / 단위: (단위: 원)
+머리글 | c1=당기말 [current_end]
+r1 제2회 전환사채 조기상환청구권 | c1=300,000,000
+s20: 전환사채에 내재된 조기상환청구권 및 매도청구권은 내재파생상품의 분리조건을 모두 충족하므로 주계약에서 분리하여 별도의 파생상품으로 회계처리하고 있습니다.
+s21: 발행가액에서 부채요소를 차감하고 매도청구권과 조기상환청구권을 가감한 잔여가치는 전환권의 가치에 해당하며, 세효과 차감후 금액을 자본으로 계상하였습니다.
+예시 출력 3(그 회차 줄의 일부):
+ "series_key": "CB-2", "kind": "CB", "balance": {"current_end": {"derivative_liability": 300000000, ...}},
+ "option_class": "equity", "embedded_separation": "separated", "separated_targets": ["redemption"],
+ "evidence": {"balance.current_end.derivative_liability": ["T5:r1:c1"], "option_class": ["s21"],
+              "embedded_separation": ["s20"]}
+(조기상환청구권 행은 파생상품부채 금액의 근거지만 option_class 근거가 아니다. 전환권은 s21 에서 자본이다.
+ 「파생상품자산 및 부채」처럼 두 쪽을 다 말하는 제목의 표였다면 금액은 null 이다.)"""
+
+
+_USER_I3 = """{rules}
 
 출력 형식(JSON):
 {schema}
@@ -148,16 +194,76 @@ _USER_I2 = """{rules}
 입력 문장(id: 글):
 {sentences}"""
 
-PROMPT_I2 = {"version": PROMPT_VERSION, "system": _SYSTEM_I2, "rules": _RULES_I2, "example": _EXAMPLE_I2,
-             "user": _USER_I2}
+PROMPT_I3 = {"version": PROMPT_VERSION, "system": _SYSTEM_I3, "rules": _RULES_I3, "example": _EXAMPLE_I3,
+             "user": _USER_I3}
+
+
+def _example_cell(value, label, *, path=None, col, period, tt, nt=None, multiplier=1, n_value_cols=2):
+    return {"raw": f"{value:,}", "value": value, "unit_kind": "krw", "multiplier": multiplier, "period": period,
+            "label": label, "label_path": path or [label], "col_header": col, "table_title": tt, "note_title": nt,
+            "n_value_cols": n_value_cols, "region_kind": "note"}
+
+
+def _example_cases() -> list[tuple[dict, dict]]:
+    """프롬프트 예시의 (입력 묶음, 기록) — 예시가 검증기를 통과하는지 테스트가 확인한다(예시가 거부되는 근거를 가르치지 않게)."""
+    t7 = "당기말과 전기말 현재 전환사채의 세부내역"
+    rows7 = {3: ("전환사채", 1000000, 82915000), 5: ("전환권조정", -103911, -30905828), 6: ("합 계", 896089, 59520394),
+             7: ("전환사채의 자본요소", 121352, 519263)}
+    cells1 = {}
+    for r, (label, cur, pri) in rows7.items():
+        cells1[f"T7:r{r}:c1"] = _example_cell(cur, label, col="당기말", period="current_end", tt=t7, multiplier=1000)
+        cells1[f"T7:r{r}:c2"] = _example_cell(pri, label, col="전기말", period="prior_end", tt=t7, multiplier=1000)
+    rec1 = {"instrument": "전환사채", "series_key": "", "kind": "CB",
+            "balance": {"current_end": {"face": 1000000, "host_carrying": 896089, "derivative_liability": None,
+                                        "derivative_asset": None, "equity_component": 121352},
+                        "prior_end": {"face": 82915000, "host_carrying": 59520394, "derivative_liability": None,
+                                      "derivative_asset": None, "equity_component": 519263}},
+            "movement": {"current": [], "prior": []}, "option_class": "equity", "embedded_separation": "unconfirmed",
+            "separated_targets": [],
+            "evidence": {"option_class": ["T7:r7:c1"], "balance.current_end.face": ["T7:r3:c1"],
+                         "balance.current_end.host_carrying": ["T7:r6:c1"],
+                         "balance.current_end.equity_component": ["T7:r7:c1"], "balance.prior_end.face": ["T7:r3:c2"],
+                         "balance.prior_end.host_carrying": ["T7:r6:c2"],
+                         "balance.prior_end.equity_component": ["T7:r7:c2"]}}
+    t9 = "당기말과 전기말 현재 파생상품부채의 내역은 다음과 같습니다."
+    lab9 = "제7회 상환전환우선주 전환권 및 조기상환권"
+    inp2 = {"rcept_no": "EX2", "tables_text": "", "cells": {
+        "T9:r2:c1": _example_cell(2500419, lab9, col="당기말", period="current_end", tt=t9, nt="파생상품", multiplier=1000),
+        "T9:r2:c2": _example_cell(4084843, lab9, col="전기말", period="prior_end", tt=t9, nt="파생상품", multiplier=1000)},
+        "sentences": {"s12": "상환전환우선주의 전환권 및 조기상환권은 자본요소에 해당하지 않으므로 주계약에서 분리하여 "
+                             "파생상품부채로 인식하였습니다."}}
+    rec2 = {"instrument": "제7회 상환전환우선주", "series_key": "RCPS-7", "kind": "RCPS",
+            "balance": {"current_end": {"derivative_liability": 2500419}, "prior_end": {"derivative_liability": 4084843}},
+            "option_class": "derivative_liability", "embedded_separation": "separated",
+            "separated_targets": ["conversion", "redemption"],
+            "evidence": {"balance.current_end.derivative_liability": ["T9:r2:c1"],
+                         "balance.prior_end.derivative_liability": ["T9:r2:c2"], "option_class": ["T9:r2:c1", "s12"],
+                         "embedded_separation": ["s12"]}}
+    inp3 = {"rcept_no": "EX3", "tables_text": "", "cells": {
+        "T5:r1:c1": _example_cell(300000000, "제2회 전환사채 조기상환청구권", col="당기말", period="current_end",
+                                  tt="(1) 당기말 현재 파생상품부채의 내역은 다음과 같습니다.", nt="파생상품", n_value_cols=1)},
+        "sentences": {
+            "s20": "전환사채에 내재된 조기상환청구권 및 매도청구권은 내재파생상품의 분리조건을 모두 충족하므로 주계약에서 "
+                   "분리하여 별도의 파생상품으로 회계처리하고 있습니다.",
+            "s21": "발행가액에서 부채요소를 차감하고 매도청구권과 조기상환청구권을 가감한 잔여가치는 전환권의 가치에 "
+                   "해당하며, 세효과 차감후 금액을 자본으로 계상하였습니다."}}
+    rec3 = {"instrument": "제2회 전환사채", "series_key": "CB-2", "kind": "CB",
+            "balance": {"current_end": {"derivative_liability": 300000000}}, "option_class": "equity",
+            "embedded_separation": "separated", "separated_targets": ["redemption"],
+            "evidence": {"balance.current_end.derivative_liability": ["T5:r1:c1"], "option_class": ["s21"],
+                         "embedded_separation": ["s20"]}}
+    return [({"rcept_no": "EX1", "tables_text": "", "cells": cells1, "sentences": {}}, rec1), (inp2, rec2), (inp3, rec3)]
+
+
+_EXAMPLE_CASES_I3 = _example_cases()
 
 
 def build_messages(inp: dict) -> list[dict]:
     sentences = "\n".join(f"{sid}: {text}" for sid, text in (inp.get("sentences") or {}).items()) or "(없음)"
-    user = _USER_I2.format(rules=_RULES_I2, schema=json.dumps(OUTPUT_SCHEMA, ensure_ascii=False),
-                           example=_EXAMPLE_I2, tables_text=inp.get("tables_text") or "(없음)",
+    user = _USER_I3.format(rules=_RULES_I3, schema=json.dumps(OUTPUT_SCHEMA, ensure_ascii=False),
+                           example=_EXAMPLE_I3, tables_text=inp.get("tables_text") or "(없음)",
                            sentences=sentences)
-    return [{"role": "system", "content": _SYSTEM_I2}, {"role": "user", "content": user}]
+    return [{"role": "system", "content": _SYSTEM_I3}, {"role": "user", "content": user}]
 
 
 def cache_key(inp: dict) -> str:

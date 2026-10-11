@@ -153,7 +153,13 @@ def _render_table(t: dict, cells: dict) -> tuple[list[str], list[tuple[str, str,
     text_table = _is_text_table(t)
     if text_table and len(t.get("columns") or []) > 1:
         lines.append("열 | " + " | ".join(_header_label(c) for c in t.get("columns") or []))
-    meta = {"table_title": t.get("title"), "note_title": region.get("note_title")}
+    # 검증기용 표 모양: 값 열 수(기간 모르는 칸은 값 열이 하나인 표에서만 받는다), 영역 종류(현금흐름표 줄 제외).
+    # 글 표는 금액이 놓인 자리(v 번호) 수가 값 열 수다.
+    n_value_cols = len(value_cols) if value_cols else len({
+        k for r in t.get("rows") or [] if not r.get("cells")
+        for k, p in enumerate((r.get("label_path") or [])[1:], start=1) if _text_amount(p)})
+    meta = {"table_title": t.get("title"), "note_title": region.get("note_title"), "n_value_cols": n_value_cols,
+            "region_kind": region.get("kind")}
     for r in t.get("rows") or []:
         path = r.get("label_path") or [r.get("label") or ""]
         if text_table and not r.get("cells") and len(path) > 1:
