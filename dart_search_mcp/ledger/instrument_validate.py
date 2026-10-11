@@ -49,6 +49,8 @@
    기타포괄손익-공정가치측정금융자산)은 확인 쪽만 막고 막는 쪽(섞인 부정·모순 검사)은 이전 낱말로 읽는다. 보유자 공시에서
    「발행회사」는 자기 회사가 아니다. 「상환전환우선주당사가 발행한」처럼 제목이 붙은 주어는 자기 회사다. 제3자 지정 콜을
    자산으로 분리했다는 문장은 separated 확인 근거가 아니다(_third_party_call_only).
+   fix round 1: 「지정한 자」·「제3자를 지정」도 제3자 지정 콜이다. 「내재파생상품이 아닌」 문장은 확인 쪽에서 분리 진술이 아니다.
+   not_separated·whole_fvpl 확인 문장(분리하지 않음·상각후원가·전체 FVPL 지정)도 동사 마디 종류 규칙을 쓴다.
 """
 from __future__ import annotations
 
@@ -881,9 +883,17 @@ def _separation_spans(text: str) -> list[tuple[int, int]]:
     return spans if kind == "sep" else []
 
 
+# T9c fix round 1: 「…내재파생상품이 아닌 … 독립된 파생상품자산으로 분리」 — 그 옵션은 내재파생상품이 아니라고 말하므로
+# 내재파생상품 분리 진술이 아니다. 확인 쪽(holder_rx 기본)에서만 None 으로 본다. 「분리하지 않았다」(not)로 바꾸지는 않는다
+# (not_separated 확인 근거가 새로 생기지 않게). 막는 쪽(_HOLDER_BASE_RE)은 이전 그대로 분리 문장으로 센다.
+_NOT_EMBEDDED_RE = re.compile(r"내재\s*파생\s*(?:금융)?상품\s*(?:이|은|는)?\s*(?:아닌|아니)")
+
+
 def _separation_scan(text: str, holder_rx: re.Pattern | None) -> tuple[str | None, list[tuple[int, int]]]:
     text = text or ""
     if (holder_rx or _HOLDER_RE).search(text) or _SEP_CONDITIONAL_RE.search(text):
+        return None, []
+    if holder_rx is None and _NOT_EMBEDDED_RE.search(text):
         return None, []
     neg_spans = [m.span() for m in _NEG_SEP_RE.finditer(text)]
     pos = False
@@ -1001,7 +1011,7 @@ def _holder_filing(cells: dict, sentences: dict) -> bool:
 # 파생상품자산 및 주계약과 분리한 후 파생상품부채로 회계처리」). 「조기상환청구권과 발행자(또는 발행자가 지정하는 제3자)
 # 매도청구권을 … 분리하여 별도의 파생상품으로 분류」처럼 풋도 함께 분리하는 문장도 그대로 본다.
 _THIRD_PARTY_CALL_RE = re.compile(r"제\s*3\s*자\s*(?:가\s*)?지정|제삼자\s*지정|지정권자|지정하는\s*(?:제\s*3\s*)?자"
-                                  r"|제\s*3\s*자에게\s*(?:매도|매각|양도)")
+                                  r"|지정한\s*자|제\s*3\s*자를\s*지정|제\s*3\s*자에게\s*(?:매도|매각|양도)")
 _LIAB_SIDE_RE = re.compile(r"(?<!비)파생[가-힣]{0,6}부채|금융부채")
 _CALL_RE = re.compile(r"매도청구권|콜\s*옵션|[Cc]all\s*[Oo]ption")
 _NON_CALL_OPTION_RE = re.compile(r"조기상환청구권|조기상환권|상환청구권|상환권|풋\s*옵션|[Pp]ut\s*[Oo]ption|전환권|신주인수권(?!부)"
@@ -1034,7 +1044,9 @@ def _issuer_sep_sentence(text: str, kind: str, series: str | None, holder_filing
 
 
 def _input_kinds(cells: dict, sentences: dict) -> set[str]:
-    """입력 전체(문장, 칸의 행 이름·열 머리글·표 제목·주석 제목)가 말하는 상품 종류."""
+    """입력 전체(문장, 칸의 행 이름·열 머리글·표 제목·주석 제목)가 말하는 상품 종류.
+    주의: build_input 이 넘긴 문장·칸만 본다. 문장은 MAX_SENTENCES(200)·대상 주석으로 잘리므로 잘린 곳에만 있는 종류는
+    세지 않는다 — 그만큼 option_class 의 「입력 단일 종류」 경로가 넓어질 수 있다(최선 노력 검사이지 보증이 아니다)."""
     out: set[str] = set()
     for t in sentences.values():
         out |= _text_kinds(t)
@@ -1171,8 +1183,17 @@ def _separation_supported(claim: str, ids: list[str], rec: dict, cells: dict, se
     # 막는 쪽(분리하지 않았다는 문장 섞임·분리 문장 모순)은 넓게(_sentence_fits, _HOLDER_BASE_RE), 확인하는 쪽은
     # 좁게(_strict_fits, fix round 5; 새 증권 보유자 낱말 _HOLDER_RE, T9c)
     sent = [sentences[i] for i in ids if i in sentences and _sentence_fits(sentences[i], kind, series)]
-    strict = [sentences[i] for i in ids if i in sentences and not _non_self_issuer(sentences[i], holder=holder_filing)
-              and _strict_fits(sentences[i], kind, series, _prev_sentence(i, sentences), holder=holder_filing)]
+    # T9c fix round 1: not_separated·whole_fvpl 확인 문장도 동사 마디 종류 규칙 — 「분리하지 않」·상각후원가·전체 FVPL 지정
+    # 일치가 든 마디(와 동사 바로 앞 주어)의 종류로 묶는다.
+    def confirm(test, spans_of) -> bool:
+        for i in ids:
+            t = sentences.get(i)
+            if t is None or not test(t) or _non_self_issuer(t, holder=holder_filing):
+                continue
+            spans = spans_of(t)
+            if spans and _strict_fits(t, kind, series, _prev_sentence(i, sentences), spans, holder_filing):
+                return True
+        return False
     ev_cells = [(i, cells[i]) for i in ids if i in cells]
     kinds = [_separation_kind(t, _HOLDER_BASE_RE) for t in sent]
     if claim == "separated":
@@ -1194,12 +1215,20 @@ def _separation_supported(claim: str, ids: list[str], rec: dict, cells: dict, se
                   for t in sentences.values())
     if any_sep or any(_separation_cell(i, c, kind, series, nb, contradiction=True) for i, c in cells.items()):
         return False
-    fvpl = any(_fvpl_designation(t) for t in strict) or any(
+    fvpl = confirm(_fvpl_designation, lambda t: _flat_spans(t, _FVPL_DESIGNATION_RE)) or any(
         _measured_cell(i, c, kind, series, nb, _FVPL_LIAB_RE) for i, c in ev_cells)
     if claim == "whole_fvpl":
         return fvpl
-    return fvpl or any(_separation_kind(t) == "not" for t in strict) or any(_amortised_sentence(t) for t in strict) or any(
-        _measured_cell(i, c, kind, series, nb, _AMORTISED_RE) for i, c in ev_cells)
+    return (fvpl or confirm(lambda t: _separation_kind(t) == "not", lambda t: [m.span() for m in _NEG_SEP_RE.finditer(t)])
+            or confirm(_amortised_sentence, lambda t: [m.span() for m in _AMORTISED_RE.finditer(t)])
+            or any(_measured_cell(i, c, kind, series, nb, _AMORTISED_RE) for i, c in ev_cells))
+
+
+def _flat_spans(text: str, rx: re.Pattern) -> list[tuple[int, int]]:
+    """공백을 뺀 글에서 찾은 rx 일치를 원문 위치로 돌린다(_FVPL_DESIGNATION_RE 는 공백 없는 글에 쓴다)."""
+    pos = [i for i, ch in enumerate(text or "") if not ch.isspace()]
+    flat = "".join(text[i] for i in pos)
+    return [(pos[m.start()], pos[m.end() - 1] + 1) for m in rx.finditer(flat) if m.end() > m.start()]
 
 def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = None) -> tuple[dict | None, list[str]]:
     """근거를 확인한 기록(사본)과 버린 사유 목록. kind 가 틀리면 (None, [사유]).

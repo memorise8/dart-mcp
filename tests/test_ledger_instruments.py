@@ -18,7 +18,7 @@ from dart_search_mcp.ledger.instrument_input import (
 from dart_search_mcp.ledger import instruments as instruments_mod
 from dart_search_mcp.ledger.instruments import (
     OUTPUT_SCHEMA,
-    PROMPT_I8,
+    PROMPT_I9,
     PROMPT_VERSION,
     Cache,
     build_messages,
@@ -562,7 +562,7 @@ class ExtractInstrumentsTest(unittest.TestCase):
         inp["tables_text"] = "[T1] (separate) / 단위: (단위: 천원)\nr3 전환사채 | c1=1,000,000"
         msgs = build_messages(inp)
         self.assertEqual([m["role"] for m in msgs], ["system", "user"])
-        self.assertEqual(msgs[0]["content"], PROMPT_I8["system"])
+        self.assertEqual(msgs[0]["content"], PROMPT_I9["system"])
         for phrase in ("전환사채·신주인수권부사채·교환사채·상환전환우선주", "표 칸 id와 문장 id로만",
                        "null 또는 unconfirmed", "부채요소(주계약)와 전환권 파생상품부채는 다른 칸"):
             self.assertIn(phrase, msgs[0]["content"])
@@ -831,8 +831,8 @@ class ModelUsedTest(unittest.TestCase):
 
 class PromptExampleTest(unittest.TestCase):
     def test_example_has_no_synthetic_series_key(self):
-        self.assertNotIn("CB-?", PROMPT_I8["example"])
-        self.assertIn('"series_key": ""', PROMPT_I8["example"])
+        self.assertNotIn("CB-?", PROMPT_I9["example"])
+        self.assertIn('"series_key": ""', PROMPT_I9["example"])
         self.assertNotIn("CB-?", build_messages(_inp())[1]["content"])
 
 
@@ -1532,7 +1532,7 @@ class NonBalanceCellsTest(unittest.TestCase):
 
 class PromptI3Test(unittest.TestCase):
     def test_i3_version_and_rules(self):
-        self.assertEqual(PROMPT_VERSION, "i8")  # i3 규칙 문구는 i8 에도 남는다
+        self.assertEqual(PROMPT_VERSION, "i9")  # i3 규칙 문구는 i9 에도 남는다
         user = build_messages(_inp())[1]["content"]
         for phrase in ("1499943000 이 아니다", '"s:494"', "<표 id>:r<행>:v<번호>", "[current_end]",
                        "null 이 아닌 필드는 모두 evidence", "「전환권가치」", "「전환사채 및 조기상환권」",
@@ -1546,7 +1546,7 @@ class PromptI3Test(unittest.TestCase):
 
     def test_prompt_examples_pass_validator(self):
         """프롬프트 예시 출력이 지금 검증기를 통과한다(예시가 거부되는 근거를 가르치지 않는다)."""
-        for inp, rec in instruments_mod._EXAMPLE_CASES_I8:
+        for inp, rec in instruments_mod._EXAMPLE_CASES_I9:
             out, reasons = validate(copy.deepcopy(rec), inp)
             self.assertEqual(reasons, [], rec.get("series_key"))
             for f, ids in rec["evidence"].items():
@@ -1773,7 +1773,7 @@ class HolderSideSentenceTest(unittest.TestCase):
 
 class PromptI4Test(unittest.TestCase):
     def test_i4_version_and_rules(self):
-        self.assertEqual(PROMPT_VERSION, "i8")  # i8 이 i4 문구를 그대로 담는다
+        self.assertEqual(PROMPT_VERSION, "i9")  # i9 이 i4 문구를 그대로 담는다
         user = build_messages(_inp())[1]["content"]
         for phrase in ("equity_conflict", "자본요소", "회차가 다르", "만기", "이연법인세", "현금유입", "거래상대방",
                        "파생금융자산(부채)", "발행시", "비파생"):
@@ -2534,7 +2534,7 @@ class T9bFixRound4Test(unittest.TestCase):
         self.assertNotIn("not_balance:balance.current_end.face", reasons)
 
     def test_prompt_i6(self):
-        self.assertEqual(PROMPT_VERSION, "i8")  # i8 이 i6 문구를 그대로 담는다
+        self.assertEqual(PROMPT_VERSION, "i9")  # i9 이 i6 문구를 그대로 담는다
         user = build_messages(_inp())[1]["content"]
         for phrase in ("발행회사에 대하여", "행사할 수 있는 권리", "매매목적으로 보유", "당사가 발행한", "부채 칸도",
                        "종속회사", "전환가치", "발행자의 매도청구권", "전환상환우선주-투자자 상환전환권",
@@ -2730,7 +2730,7 @@ class T9bFixRound5Test(unittest.TestCase):
                                           "해당 파생상품을 별도로 분리하여 공시하지 않았습니다."), "sep")
 
     def test_prompt_i7(self):
-        self.assertEqual(PROMPT_VERSION, "i8")
+        self.assertEqual(PROMPT_VERSION, "i9")
         user = build_messages(_inp())[1]["content"]
         for phrase in ("바로 앞 문장", "부채요소와 자본요소로 분리", "분리하여 공시하지 않", "오스틴제약(주)가 발행한",
                        "종속기업", "지배력을 취득", "option_class 근거도", "취득(취득시점·취득한·취득하여·지배력을 취득 등 「취득」이 든 모든 말)"):
@@ -2739,7 +2739,7 @@ class T9bFixRound5Test(unittest.TestCase):
 
 class PromptI5Test(unittest.TestCase):
     def test_i5_version_and_rules(self):
-        self.assertEqual(PROMPT_VERSION, "i8")  # i8 이 i5 문구를 그대로 담는다
+        self.assertEqual(PROMPT_VERSION, "i9")  # i9 이 i5 문구를 그대로 담는다
         user = build_messages(_inp())[1]["content"]
         for phrase in ("계약상현금흐름", "합계 열", "취득일 현재", "발행조건", "자본금", "상각후원가측정금융부채",
                        "신주인수권부사채", "no_separation_ref", "분리하여", "자본부분", "당기손익-공정가치 측정 금융부채로 지정",
@@ -3011,7 +3011,7 @@ class T9cPrecisionTest(unittest.TestCase):
         self.assertEqual((out["embedded_separation"], reasons), ("separated", []))
 
     def test_prompt_i8(self):
-        self.assertEqual(PROMPT_VERSION, "i8")
+        self.assertEqual(PROMPT_VERSION, "i9")
         user = build_messages(_inp())[1]["content"]
         for phrase in ("상환권·조기상환·콜·풋 같은 일반 옵션 낱말은 option_class 를 어느 종류에도 묶지 않는다",
                        "입력 전체(문장, 칸의 행 이름·열 머리글·표 제목·주석 제목)에 그 옵션 낱말이 가리키는 종류가 하나뿐일",
@@ -3022,6 +3022,63 @@ class T9cPrecisionTest(unittest.TestCase):
                        "보유자 공시에서는 「발행회사」",
                        "상환전환우선주당사가 발행한",
                        "제3자 지정 콜옵션을 별도의 파생상품자산으로 분리하여 인식", "지정권자", "제3자에게 매도"):
+            self.assertIn(phrase, user)
+
+
+class T9cFixRound1Test(unittest.TestCase):
+    """T9c fix round 1: 「지정한 자」·「제3자를 지정」 제3자 지정 콜, 「내재파생상품이 아닌」은 분리 진술이 아님, not_separated·
+    whole_fvpl 확인 문장에도 동사 마디 종류 규칙, 프롬프트 i9."""
+
+    # 20260323000887:00760 s588 — 이전에는 이 문장 하나로 CB separated 가 확인됐다
+    S588 = ("콜옵션은 발행회사 또는 발행회사가 지정한 자가 매입할 수 있는 권리이며, 전환사채 내재파생상품이 아닌전환사채를 "
+            "기초자산으로 하는 독립된 파생상품자산으로 분리하였습니다.")
+
+    def _sep(self, kind, sid, sents):
+        return validate(_rec_emb("separated", [sid], kind=kind, series_key=""), _inp9b({}, sents))
+
+    def test_real_designee_call_not_separated(self):
+        from dart_search_mcp.ledger.instrument_validate import _separation_kind
+        for kind in KINDS_ALL:
+            out, reasons = self._sep(kind, "s588", {"s588": self.S588})
+            self.assertEqual((out["embedded_separation"], reasons), ("unconfirmed", ["no_separation_ref"]), kind)
+        self.assertIsNone(_separation_kind(self.S588))
+        # 「내재파생상품이 아닌」만으로도 분리 진술이 아니다(제3자 낱말 없이)
+        t = "전환사채의 콜옵션은 내재파생상품이 아니므로 주계약과 분리하여 독립된 파생상품부채로 인식하였습니다."
+        self.assertIsNone(_separation_kind(t))
+        self.assertEqual(self._sep("CB", "s1", {"s1": t})[1], ["no_separation_ref"])
+        # 막는 쪽은 이전 그대로 분리 문장으로 센다(not_separated 모순)
+        out, reasons = validate(_rec_emb("not_separated", ["s13"], series_key=""),
+                                _inp9b({}, {"s13": "전환사채에 내재된 조기상환청구권은 분리하지 않았습니다.", "s588": self.S588}))
+        self.assertEqual(reasons, ["no_separation_ref"])
+
+    def test_third_party_designation_spellings(self):
+        t = "전환사채의 매도청구권은 제3자를 지정하여 행사할 수 있으므로 주계약과 분리하여 파생상품자산으로 인식하였습니다."
+        self.assertEqual(self._sep("CB", "s1", {"s1": t})[1], ["no_separation_ref"])
+        t = "전환사채의 매도청구권은 회사가 지정한 자가 행사할 수 있으므로 주계약과 분리하여 파생상품자산으로 인식하였습니다."
+        self.assertEqual(self._sep("CB", "s1", {"s1": t})[1], ["no_separation_ref"])
+
+    def test_not_separated_and_fvpl_use_verb_clause(self):
+        def chk(claim, text, kind, ok):
+            out, reasons = validate(_rec_emb(claim, ["s1"], kind=kind, series_key=""), _inp9b({}, {"s1": text}))
+            self.assertEqual(out["embedded_separation"], claim if ok else "unconfirmed", (claim, kind))
+        t = "전환사채는 모두 상환되었으며, 상환전환우선주의 조기상환청구권은 분리하지 않았습니다."
+        chk("not_separated", t, "CB", False)
+        chk("not_separated", t, "RCPS", True)
+        t = "전환사채는 모두 상환되었으며, 상환전환우선주 전체를 당기손익-공정가치 측정 금융부채로 지정하였습니다."
+        chk("whole_fvpl", t, "CB", False)
+        chk("not_separated", t, "CB", False)
+        chk("whole_fvpl", t, "RCPS", True)
+        t = "전환사채는 모두 상환되었으며, 상환전환우선주부채는 상각후원가로 측정하고 있습니다."
+        chk("not_separated", t, "CB", False)
+        chk("not_separated", t, "RCPS", True)
+
+    def test_prompt_i9(self):
+        self.assertEqual(PROMPT_VERSION, "i9")
+        user = build_messages(_inp())[1]["content"]
+        self.assertNotIn("이 규칙은 separated·\n   not_separated·whole_fvpl 근거 문장 모두에 적용된다", user)
+        for phrase in ("지정한 자", "제3자를 지정", "내재파생상품이 아닌",
+                       "separated·not_separated·whole_fvpl 근거 문장과 option_class (나) 문장 모두에 쓴다",
+                       "발행회사가 지정한 자가 매입할 수 있는 권리이며"):
             self.assertIn(phrase, user)
 
 
