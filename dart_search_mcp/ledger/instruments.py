@@ -58,8 +58,8 @@ _SYSTEM_I1 = (
 
 _RULES_I1 = """규칙:
 1. 회차(상품)마다 한 줄. kind 는 CB(전환사채)·BW(신주인수권부사채)·EB(교환사채)·RCPS(상환전환우선주) 중 하나.
-   series_key 는 「제3회」 같은 회차 번호와 종류로 만든다(예: "CB-3"). 회차 번호가 없으면 발행일·액면으로 묶고,
-   못 묶으면 따로 둔다. 같은 회차의 당기말·전기말 잔액은 한 줄에 담는다.
+   series_key 는 「제3회」 같은 회차 번호와 종류로 만든다(예: "CB-3"). 회차 번호가 보이지 않으면 series_key 는
+   빈 문자열 "" 로 두고, 발행일·액면으로 묶고, 못 묶으면 따로 둔다. 같은 회차의 당기말·전기말 잔액은 한 줄에 담는다.
 2. 금액은 칸에 인쇄된 원래 단위 그대로 적는다. 표 단위가 천원이면 천원 숫자를 그대로 쓴다(원으로 바꾸지 않는다).
    쉼표는 빼고, 괄호 (1,234) 는 -1234 로 적는다. 금액마다 그 값이 적힌 칸 id 를 evidence 에 댄다.
    evidence 키는 필드 경로다: "balance.current_end.face", "balance.prior_end.equity_component" 처럼.
@@ -69,7 +69,9 @@ _RULES_I1 = """규칙:
    - host_carrying: 사채의 부채요소(주계약) 장부금액 — 액면에서 전환권조정·사채할인발행차금을 빼고
      상환할증금을 더한 금액. 우선주부채(주계약)도 여기.
    - derivative_liability: 전환권·상환권 등이 파생상품부채로 따로 잡힌 금액. 행 이름이 「파생상품부채」·
-     「전환권부채」인 칸만. 「전환권조정」·「사채할인발행차금」·「상환할증금」·「합계」 행은 파생상품이 아니다.
+     「전환권부채」인 칸, 또는 제목이 「파생상품부채」인 표 안의 옵션 행(「전환권(상환전환우선주부채)」·
+     「조기상환권」·「교환사채 조기상환권」 등). 「전환권조정」·「사채할인발행차금」·「상환할증금」·「합계」 행은
+     파생상품이 아니다.
    - derivative_asset: 매도청구권·조기상환권 등이 파생상품자산으로 잡힌 금액(「파생상품자산」 행).
    - equity_component: 전환권대가·신주인수권대가 등 자본요소(「전환사채의 자본요소」·「전환권대가」 행).
 5. option_class: 전환권(신주인수권·교환권)이 자본이면 "equity", 전환권 자체가 파생상품부채로 잡힌 근거
@@ -93,7 +95,7 @@ r5 전환권조정 | c1=(103,911) | c2=(30,905,828)
 r6 합 계 | c1=896,089 | c2=59,520,394
 r7 전환사채의 자본요소 | c1=121,352 | c2=519,263
 예시 출력:
-{"instruments": [{"instrument": "전환사채", "series_key": "CB-?1", "kind": "CB",
+{"instruments": [{"instrument": "전환사채", "series_key": "", "kind": "CB",
  "balance": {"current_end": {"face": 1000000, "host_carrying": 896089, "derivative_liability": null,
                              "derivative_asset": null, "equity_component": 121352},
              "prior_end": {"face": 82915000, "host_carrying": 59520394, "derivative_liability": null,
@@ -105,7 +107,8 @@ r7 전환사채의 자본요소 | c1=121,352 | c2=519,263
               "balance.current_end.equity_component": ["T7:r7:c1"],
               "balance.prior_end.face": ["T7:r3:c2"], "balance.prior_end.host_carrying": ["T7:r6:c2"],
               "balance.prior_end.equity_component": ["T7:r7:c2"]}}]}
-(자본요소 행이 있으므로 option_class 는 equity. 파생상품부채 칸이 없으므로 derivative_liability 는 null.)"""
+(표에 회차 번호가 없으므로 series_key 는 "". 자본요소 행이 있으므로 option_class 는 equity.
+ 파생상품부채 칸이 없으므로 derivative_liability 는 null.)"""
 
 _USER_I1 = """{rules}
 
@@ -139,7 +142,7 @@ def cache_key(inp: dict) -> str:
 
 
 class Cache:
-    """키 → 원 응답. jsonl append(한 줄 {"key", "response"}). 스레드 안전."""
+    """키 → 원 응답. jsonl append(한 줄 {"key", "response", "model_used"}). 스레드 안전."""
 
     def __init__(self, path: Path | str):
         self.path = Path(path)
@@ -153,9 +156,15 @@ class Cache:
                     except ValueError:
                         continue  # 끊긴 마지막 줄
                     if isinstance(row, dict) and "key" in row:
-                        self._data[row["key"]] = row.get("response")
+                        self._data[row["key"]] = {"response": row.get("response"),
+                                                  "model_used": row.get("model_used")}
 
     def get(self, key: str):
+        """원 응답(없으면 None)."""
+        with self._lock:
+            return (self._data.get(key) or {}).get("response")
+
+    def entry(self, key: str) -> dict | None:
         with self._lock:
             return self._data.get(key)
 
@@ -163,12 +172,13 @@ class Cache:
         with self._lock:
             return key in self._data
 
-    def put(self, key: str, response) -> None:
+    def put(self, key: str, response, model_used: str | None = None) -> None:
         with self._lock:
-            self._data[key] = response
+            self._data[key] = {"response": response, "model_used": model_used}
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps({"key": key, "response": response}, ensure_ascii=False) + "\n")
+                fh.write(json.dumps({"key": key, "response": response, "model_used": model_used},
+                                    ensure_ascii=False) + "\n")
 
 
 def _parse(response) -> list | None:
@@ -184,38 +194,50 @@ def _parse(response) -> list | None:
 
 
 def extract_instruments(inp: dict, complete_json: CompleteJson, cache: Cache | None = None, *,
-                        model: str = "") -> dict:
-    """입력 묶음 하나 → {"rcept_no", "records", "dropped", "prompt_version", "model", "cached"}.
+                        model: str = "", usage_getter: Callable[[], dict | None] | None = None) -> dict:
+    """입력 묶음 하나 → {"rcept_no", "records", "dropped", "prompt_version", "model", "model_used", "usage",
+    "cached"}.
 
     records 는 검증을 거친 기록(필드별 사유는 record["issues"]), dropped 는 버린 기록·호출의 사유다.
     호출이 실패하면 dropped=["llm_error"], 응답 JSON 이 깨지면 ["bad_json"]. 실패 응답은 캐시하지 않는다.
+    기록 하나의 검증이 예외를 내면 그 기록만 "bad_record" 로 버린다(캐시된 응답으로 이어 해도 멈추지 않게).
+    model_used 는 실제로 답한 모델(usage_getter 의 model_used, 없으면 model)이고 캐시에도 남는다.
     """
     out = {"rcept_no": inp.get("rcept_no"), "records": [], "dropped": [], "prompt_version": PROMPT_VERSION,
-           "model": model, "cached": False}
+           "model": model, "model_used": None, "usage": None, "cached": False}
     if inp.get("fs_scope") is not None:
         out["fs_scope"] = inp["fs_scope"]
     key = cache_key(inp)
-    if cache is not None and key in cache:
-        response = cache.get(key)
+    entry = cache.entry(key) if cache is not None else None
+    if entry is not None:
+        response = entry["response"]
         out["cached"] = True
+        out["model_used"] = entry.get("model_used")
     else:
         try:
             response = complete_json(build_messages(inp), OUTPUT_SCHEMA)
         except Exception as exc:  # noqa: BLE001 — 공시 하나가 실행 전체를 멈추지 않게
             out["dropped"] = ["llm_error"]
             out["error"] = f"{type(exc).__name__}: {exc}"[:200]
+            out["usage"] = usage_getter() if usage_getter else None
             return out
+        out["usage"] = usage_getter() if usage_getter else None
+        out["model_used"] = (out["usage"] or {}).get("model_used") or model or None
     items = _parse(response)
     if items is None:
         out["dropped"] = ["bad_json"]
         return out
     if cache is not None and not out["cached"]:
-        cache.put(key, response)
+        cache.put(key, response, out["model_used"])
     for seq, item in enumerate(items, start=1):
         if not isinstance(item, dict):
             out["dropped"].append("bad_record")
             continue
-        rec, reasons = validate(item, inp, seq=seq)
+        try:
+            rec, reasons = validate(item, inp, seq=seq)
+        except Exception:  # noqa: BLE001
+            out["dropped"].append("bad_record")
+            continue
         if rec is None:
             out["dropped"].extend(reasons)
             continue
@@ -252,24 +274,32 @@ def _load_filing(path: Path) -> dict:
         return json.load(fh)
 
 
-def list_needs(tables_dir: Path, facts: dict[str, list[dict]], rcepts: Iterable[str]) -> list[tuple[str, list[str]]]:
-    """LLM 없이 대상 공시와 입력 범위(fs_scope) 목록만 센다. 범위가 빈 공시는 표 0개(no_tables)다."""
+def list_needs(tables_dir: Path, facts: dict[str, list[dict]], rcepts: Iterable[str],
+               stats: Counter | None = None) -> list[tuple[str, list[str]]]:
+    """LLM 없이 대상 공시와 입력 범위(fs_scope) 목록만 센다. 범위가 빈 공시는 표 0개(no_tables)다.
+    stats 를 주면 missing(파일 없음)·unreadable(읽기 실패) 수를 센다."""
+    stats = stats if stats is not None else Counter()
     out = []
     for rcept in rcepts:
         path = Path(tables_dir) / f"{rcept}.json.gz"
         if not path.exists():
+            stats["missing"] += 1
             continue
         try:
             tables = _load_filing(path).get("tables") or []
         except Exception:  # noqa: BLE001
+            stats["unreadable"] += 1
             continue
         if needs_instruments(facts.get(rcept, []), tables):
             out.append((rcept, input_scopes(tables)))
     return out
 
 
+_RETRY_DROPS = {"llm_error", "bad_json", "input_error"}
+
+
 def read_done(out_path: Path) -> set[tuple[str, str | None]]:
-    """이미 끝낸 (rcept_no, fs_scope). 끊긴 마지막 줄과 llm_error 줄은 빼서 다음 실행이 다시 부르게 한다
+    """이미 끝낸 (rcept_no, fs_scope). 끊긴 마지막 줄과 llm_error·bad_json·input_error 줄은 빼서 다음 실행이 다시 부르게 한다
     (그래서 같은 키가 여러 줄일 수 있다 — 읽는 쪽은 마지막 줄을 쓴다)."""
     done: set[tuple[str, str | None]] = set()
     if not out_path.exists():
@@ -280,7 +310,7 @@ def read_done(out_path: Path) -> set[tuple[str, str | None]]:
                 row = json.loads(line)
             except ValueError:
                 continue
-            if "llm_error" in (row.get("dropped") or []):
+            if _RETRY_DROPS & set(row.get("dropped") or []):
                 continue
             done.add((row.get("rcept_no"), row.get("fs_scope")))
     return done
@@ -378,8 +408,7 @@ def run_filings(*, tables_dir: Path, facts: dict[str, list[dict]], out_path: Pat
             with lock:
                 counts["dropped:input_error"] += 1
             return
-        res = extract_instruments(inp, complete_json, cache, model=model)
-        res["usage"] = None if res["cached"] or usage_getter is None else usage_getter()
+        res = extract_instruments(inp, complete_json, cache, model=model, usage_getter=usage_getter)
         res.update({"n_cells": len(inp["cells"]), "n_sentences": len(inp["sentences"]),
                     "elapsed_sec": round(time.time() - start, 2)})
         write(res)
@@ -414,3 +443,55 @@ def run_filings(*, tables_dir: Path, facts: dict[str, list[dict]], out_path: Pat
     summary = dict(sorted(counts.items()))
     summary.update({"prompt_version": PROMPT_VERSION, "model": model, "elapsed_sec": round(time.time() - t0, 1)})
     return summary
+
+
+def summarize_out(out_path: Path) -> dict:
+    """출력 jsonl 을 (rcept_no, fs_scope) 마다 마지막 줄만으로 다시 센다(이어 하기 뒤 측정용).
+
+    evidence_pass_rate = 필드 사유(issues)가 하나도 없는 기록 / 전체 기록.
+    """
+    last: dict[tuple, dict] = {}
+    lines = 0
+    with Path(out_path).open(encoding="utf-8") as fh:
+        for line in fh:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            lines += 1
+            last[(row.get("rcept_no"), row.get("fs_scope"))] = row
+    issues: Counter = Counter()
+    issue_fields: Counter = Counter()
+    dropped: Counter = Counter()
+    models: Counter = Counter()
+    usage: Counter = Counter()
+    records = all_pass = skipped = cached = 0
+    for row in last.values():
+        if row.get("skipped"):
+            skipped += 1
+            continue
+        cached += int(bool(row.get("cached")))
+        if row.get("model_used"):
+            models[row["model_used"]] += 1
+        for k, v in (row.get("usage") or {}).items():
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                usage[k] += v
+        for d in row.get("dropped") or []:
+            dropped[str(d).split(":")[0]] += 1
+        for rec in row.get("records") or []:
+            records += 1
+            rs = rec.get("issues") or []
+            all_pass += int(not rs)
+            for r in rs:
+                issues[str(r).split(":")[0]] += 1
+                issue_fields[str(r)] += 1
+    return {
+        "lines": lines, "keys": len(last), "filings": len({k[0] for k in last}),
+        "skipped_no_tables": skipped, "cached": cached, "records": records, "records_all_pass": all_pass,
+        "evidence_pass_rate": round(all_pass / records, 4) if records else None,
+        "issues": dict(sorted(issues.items())), "issue_fields": dict(issue_fields.most_common(30)),
+        "dropped": dict(sorted(dropped.items())), "model_used": dict(models), "usage": dict(usage),
+        "prompt_version": PROMPT_VERSION,
+    }

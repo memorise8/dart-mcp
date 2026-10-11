@@ -8,6 +8,8 @@
    부정하지 않는 「파생…부채」 문장이 근거에 있어야 한다. 「파생상품자산」 칸, 「…파생상품부채로 분류하지 않…」
    문장은 근거가 아니다. 근거 칸이 부채요소(HOST) 행뿐이면 `host_only`, 그 밖은 `no_derivative_ref` 로 unconfirmed.
    balance.*.derivative_liability·derivative_asset 금액은 같은 쪽(부채·자산) 파생상품 칸과 맞아야 한다.
+   행 이름이 옵션 낱말(전환권·상환권·조기상환·매도청구권·콜옵션·풋옵션·신주인수권·교환권)뿐이고 HOST·대가 행이
+   아니면, 표 제목·주석 제목의 「파생상품부채」·「파생상품자산」(둘 중 하나만 있을 때)으로 쪽을 정한다.
    맞은 칸이 HOST 행이면 `host_only:<field>`, 그 밖(합계·자본요소 등)은 `not_derivative:<field>` 로 null.
 4. kind 가 CB|BW|EB|RCPS 가 아니면 기록을 버린다(None, [`bad_kind:<kind>`]).
 5. series_key 가 비면 instrument 의 「제 n 회」로 `<kind>-<n>`, 없으면 `<kind>-?<seq>`.
@@ -27,7 +29,10 @@ MOVEMENTS = ("issued", "converted", "redeemed", "matured", "extinguished", "modi
 UNCONFIRMED = "unconfirmed"
 AMOUNT_TOLERANCE = 1
 
-_HOST_RE = re.compile(r"^전환사채$|사채할인발행차금|전환권조정|상환할증금")
+_HOST_RE = re.compile(r"^전환사채$|사채할인발행차금|전환권조정|신주인수권조정|교환권조정|상환할증금")
+_OPTION_RE = re.compile(r"전환권|상환권|조기상환|매도청구권|콜옵션|풋옵션|신주인수권|교환권")
+_OPTION_EXCLUDE_RE = re.compile(r"대가|자본")
+_TITLE_SIDE_RE = re.compile(r"파생\s*상품\s*(부채|자산)")
 _DERIV_RE = re.compile(r"파생|전환권\s*\(?\s*부채")
 _DERIV_LIAB_SENT_RE = re.compile(r"파생[^.,。]{0,30}?부채|전환권\s*\(?\s*부채")
 _NEGATION_RE = re.compile(r"^[^.,。]{0,25}?(않|아니|없)")
@@ -44,11 +49,22 @@ def _is_host_cell(cell: dict) -> bool:
     return bool(_HOST_RE.search(_norm_label(cell.get("label"))))
 
 
+def _title_side(cell: dict) -> str | None:
+    sides = {m.group(1) for k in ("table_title", "note_title")
+             for m in _TITLE_SIDE_RE.finditer(re.sub(r"\s+", "", cell.get(k) or ""))}
+    if len(sides) != 1:
+        return None
+    return "liability" if sides == {"부채"} else "asset"
+
+
 def _deriv_side(cell: dict) -> str | None:
     """파생상품 칸이면 "liability"·"asset", 쪽을 모르거나 파생상품 칸이 아니면 None."""
     parts = [p or "" for p in (cell.get("label_path") or [cell.get("label") or ""])]
     deriv = [p for p in parts if _DERIV_RE.search(p)]
     if not deriv:
+        label = _norm_label(cell.get("label"))
+        if _OPTION_RE.search(label) and not _is_host_cell(cell) and not _OPTION_EXCLUDE_RE.search(label):
+            return _title_side(cell)
         return None
     for group in (deriv, parts):
         text = " ".join(group)
@@ -92,8 +108,25 @@ def _num(v) -> float | None:
 
 
 def _series_key(rec: dict, seq: int) -> str:
-    m = _SERIES_RE.search(rec.get("instrument") or "")
+    name = rec.get("instrument")
+    m = _SERIES_RE.search(name if isinstance(name, str) else "")
     return f"{rec['kind']}-{m.group(1)}" if m else f"{rec['kind']}-?{seq}"
+
+
+def _coerce_shapes(rec: dict) -> None:
+    """LLM 이 형을 틀리게 준 칸을 안전한 빈 형으로 바꾼다(값이 틀린 것은 아래 규칙이 다룬다)."""
+    if not isinstance(rec.get("evidence"), dict):
+        rec["evidence"] = {}
+    if not isinstance(rec.get("movement"), dict):
+        rec["movement"] = {}
+    bal = rec.get("balance")
+    rec["balance"] = {k: v if isinstance(v, dict) else {} for k, v in bal.items()} if isinstance(bal, dict) else {}
+    if "separated_amount" in rec and not isinstance(rec["separated_amount"], dict):
+        del rec["separated_amount"]
+    if not isinstance(rec.get("separated_targets"), list):
+        rec["separated_targets"] = []
+    if not isinstance(rec.get("series_key"), str):
+        rec["series_key"] = ""
 
 
 def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = None) -> tuple[dict | None, list[str]]:
@@ -110,7 +143,8 @@ def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = N
     sentences = inp.get("sentences") or {}
     want_unit = rec.get("unit_kind") or unit_kind or "krw"
 
-    evidence_in = rec.get("evidence") or {}
+    _coerce_shapes(rec)
+    evidence_in = rec.get("evidence")
     evidence: dict[str, list[str]] = {}
     for field, ids in evidence_in.items():
         ids = ids if isinstance(ids, list) else [ids]
@@ -125,9 +159,8 @@ def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = N
             rec[field] = UNCONFIRMED
             reasons.append(f"bad_value:{field}")
     for period in ("current", "prior"):
-        mv = (rec.get("movement") or {}).get(period)
-        if isinstance(mv, list):
-            rec["movement"][period] = [m for m in mv if m in MOVEMENTS]
+        mv = rec["movement"].get(period)
+        rec["movement"][period] = [m for m in mv if isinstance(m, str) and m in MOVEMENTS] if isinstance(mv, list) else []
 
     # 규칙 1·2·3·6 — 금액 필드
     matched: dict[str, str] = {}
@@ -192,6 +225,6 @@ def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = N
     rec["matched_multiplier"] = matched_mult
 
     # 규칙 5
-    if not (rec.get("series_key") or "").strip():
+    if not rec["series_key"].strip():
         rec["series_key"] = _series_key(rec, seq)
     return rec, reasons

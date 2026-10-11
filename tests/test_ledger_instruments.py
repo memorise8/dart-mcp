@@ -15,6 +15,7 @@ from dart_search_mcp.ledger.instrument_input import (
     input_scopes,
     needs_instruments,
 )
+from dart_search_mcp.ledger import instruments as instruments_mod
 from dart_search_mcp.ledger.instruments import (
     OUTPUT_SCHEMA,
     PROMPT_I1,
@@ -23,6 +24,7 @@ from dart_search_mcp.ledger.instruments import (
     cache_key,
     extract_instruments,
     run_filings,
+    summarize_out,
 )
 from dart_search_mcp.ledger.instrument_validate import validate
 from dart_search_mcp.ledger.tables import build_filing
@@ -664,6 +666,215 @@ class BackendScriptDryTest(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual((d / "needs.tsv").read_text(encoding="utf-8").splitlines(),
                              [f"{ILDONG}\tconsolidated", "Z\t", "B\tconsolidated,separate"])
+
+
+def _option_table_input():
+    """20260331002536:00760:t108(파생상품 주석 「20.2 … 파생상품부채의 내역」)·20250822000274 t178·
+    파생상품자산 표·전환사채 표를 본뜬 손 표 → build_input."""
+    liab = _table([(["파생상품부채(주주간약정)(*)"], [14075409, 31265969]),
+                   (["전환권(상환전환우선주부채)"], [None, 1042788774]),
+                   (["조기상환권(상환전환우선주부채)"], [None, 2112984200]),
+                   (["전환권조정"], [-5, -6]),
+                   (["합 계"], [14075409, 3187038943])],
+                  note_title="파생상품", title="20.2 보고기간종료일 현재 파생상품부채의 내역은 다음과 같습니다.",
+                  tid="R:00760:t108")
+    eb = _table([(["교환사채 조기상환권"], [None, 1551072])], note_title="파생상품부채",
+                title="(1) 당기말 및 전기말 현재 파생상품부채의 내역은 다음과 같습니다.", tid="R:00760:t178")
+    asset = _table([(["매도청구권"], [700, 800])], note_title="파생상품",
+                   title="파생상품자산의 내역", tid="R:00760:t200")
+    both = _table([(["전환권"], [900, 901])], note_title="파생상품",
+                  title="파생상품자산 및 파생상품부채의 내역", tid="R:00760:t201")
+    cb = _table([(["전환권"], [300, 301])], note_title="전환사채", title="전환사채 내역", tid="R:00760:t202")
+    return build_input("R", [liab, eb, asset, both, cb], [])
+
+
+class OptionRowInDerivativeTableTest(unittest.TestCase):
+    """fix round 1-1: 파생상품부채 표 안의 옵션 이름 행(「전환권(…)」·「조기상환권」)은 표 제목으로 쪽을 정한다."""
+
+    def _amount(self, inp, key, value, cid):
+        rec = _record()
+        rec["balance"]["current_end"][key] = value
+        rec["evidence"][f"balance.current_end.{key}"] = [cid]
+        return validate(rec, inp)
+
+    def test_cells_carry_titles(self):
+        inp = _option_table_input()
+        c = inp["cells"]["R:00760:t108:r2:c2"]
+        self.assertEqual(c["table_title"], "20.2 보고기간종료일 현재 파생상품부채의 내역은 다음과 같습니다.")
+        self.assertEqual(c["note_title"], "파생상품")
+
+    def test_option_rows_in_liability_table(self):
+        inp = _option_table_input()
+        for value, cid in ((1042788774, "R:00760:t108:r2:c2"), (2112984200, "R:00760:t108:r3:c2"),
+                           (1551072, "R:00760:t178:r1:c2")):
+            out, reasons = self._amount(inp, "derivative_liability", value, cid)
+            self.assertEqual(out["balance"]["current_end"]["derivative_liability"], value, cid)
+            self.assertEqual([r for r in reasons if "derivative" in r], [], cid)
+            self.assertEqual(out["matched"]["balance.current_end.derivative_liability"], cid)
+            rec = _record(option_class="derivative_liability")
+            rec["evidence"]["option_class"] = [cid]
+            out, reasons = validate(rec, inp)
+            self.assertEqual(out["option_class"], "derivative_liability", cid)
+
+    def test_option_rows_excluded_cases(self):
+        inp = _option_table_input()
+        cases = [("derivative_liability", -5, "R:00760:t108:r4:c1", "host_only"),        # 전환권조정
+                 ("derivative_liability", 14075409, "R:00760:t108:r5:c1", "not_derivative"),  # 합 계
+                 ("derivative_liability", 700, "R:00760:t200:r1:c1", "not_derivative"),  # 자산 표
+                 ("derivative_liability", 900, "R:00760:t201:r1:c1", "not_derivative"),  # 쪽 모름
+                 ("derivative_liability", 300, "R:00760:t202:r1:c1", "not_derivative")]  # 파생 표 아님
+        for key, value, cid, reason in cases:
+            out, reasons = self._amount(inp, key, value, cid)
+            self.assertIsNone(out["balance"]["current_end"][key], cid)
+            self.assertIn(f"{reason}:balance.current_end.{key}", reasons, cid)
+        out, reasons = self._amount(inp, "derivative_asset", 700, "R:00760:t200:r1:c1")
+        self.assertEqual(out["balance"]["current_end"]["derivative_asset"], 700)
+        for cid in ("R:00760:t108:r4:c1", "R:00760:t200:r1:c1", "R:00760:t202:r1:c1"):
+            rec = _record(option_class="derivative_liability")
+            rec["evidence"]["option_class"] = [cid]
+            out, _ = validate(rec, inp)
+            self.assertEqual(out["option_class"], "unconfirmed", cid)
+
+
+class MalformedRecordTest(unittest.TestCase):
+    """fix round 1-2: 형이 틀린 LLM 기록이 실행을 멈추지 않는다."""
+
+    def test_validate_tolerates_wrong_types(self):
+        bad = [_record(movement=["issued"]), _record(evidence=["T1:r3:c1"]), _record(series_key=3),
+               _record(balance=["x"]), _record(balance={"current_end": [1, 2]}), _record(separated_targets="x"),
+               _record(evidence={"option_class": "T1:r7:c1"}), _record(movement={"current": "issued"}),
+               _record(instrument=None, series_key=None)]
+        for rec in bad:
+            out, reasons = validate(rec, _inp())
+            self.assertIsNotNone(out)
+            self.assertIsInstance(out["series_key"], str)
+            self.assertIsInstance(out["evidence"], dict)
+            self.assertIsInstance(out["movement"], dict)
+        out, _ = validate(_record(evidence=["T1:r3:c1"]), _inp())
+        self.assertIsNone(out["balance"]["current_end"]["face"])
+        out, _ = validate(_record(movement=["issued"]), _inp())
+        self.assertEqual(out["movement"], {"current": [], "prior": []})
+
+    def test_extract_drops_crashing_record_and_resume_does_not_crash(self):
+        resp = {"instruments": [_record(movement=["issued"], evidence=["T1:r3:c1"]), _record()]}
+        with tempfile.TemporaryDirectory() as d:
+            cache = Cache(Path(d) / "c.jsonl")
+            out = extract_instruments(_inp(), FakeLLM(resp), cache)
+            self.assertEqual(len(out["records"]), 2)
+            orig = instruments_mod.validate
+
+            def boom(rec, inp, **kw):
+                if rec.get("series_key") == "CB-3" and rec.get("movement") == ["issued"]:
+                    raise AttributeError("x")
+                return orig(rec, inp, **kw)
+            instruments_mod.validate = boom
+            try:
+                out = extract_instruments(_inp(), FakeLLM(exc=AssertionError("must not call")), Cache(Path(d) / "c.jsonl"))
+            finally:
+                instruments_mod.validate = orig
+            self.assertTrue(out["cached"])
+            self.assertEqual(out["dropped"], ["bad_record"])
+            self.assertEqual(len(out["records"]), 1)
+
+
+class ModelUsedTest(unittest.TestCase):
+    def test_cache_keeps_model_used(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "c.jsonl"
+            usage = lambda: {"prompt_tokens": 5, "model_used": "gpt-5.6-luna"}  # noqa: E731
+            first = extract_instruments(_inp(), FakeLLM({"instruments": []}), Cache(path), model="luna",
+                                        usage_getter=usage)
+            self.assertEqual(first["usage"], {"prompt_tokens": 5, "model_used": "gpt-5.6-luna"})
+            self.assertEqual(first["model_used"], "gpt-5.6-luna")
+            second = extract_instruments(_inp(), FakeLLM(exc=AssertionError("no")), Cache(path), model="luna",
+                                         usage_getter=usage)
+            self.assertTrue(second["cached"])
+            self.assertIsNone(second["usage"])
+            self.assertEqual(second["model_used"], "gpt-5.6-luna")
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["model_used"], "gpt-5.6-luna")
+
+    def test_model_used_defaults_to_model(self):
+        out = extract_instruments(_inp(), FakeLLM({"instruments": []}), None, model="luna")
+        self.assertEqual(out["model_used"], "luna")
+
+
+class PromptExampleTest(unittest.TestCase):
+    def test_example_has_no_synthetic_series_key(self):
+        self.assertNotIn("CB-?", PROMPT_I1["example"])
+        self.assertIn('"series_key": ""', PROMPT_I1["example"])
+        self.assertNotIn("CB-?", build_messages(_inp())[1]["content"])
+
+
+class ResumeAndSummaryTest(unittest.TestCase):
+    def test_bad_json_rows_retried(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            tables_dir, facts, _ = _run_dir(d)
+            out = d / "i.jsonl"
+            run_filings(tables_dir=tables_dir, facts=facts, out_path=out, rcepts=[ILDONG],
+                        complete_json=FakeLLM("{broken"), model="m", workers=1)
+            llm = FakeLLM({"instruments": []})
+            run_filings(tables_dir=tables_dir, facts=facts, out_path=out, rcepts=[ILDONG],
+                        complete_json=llm, model="m", workers=1)
+            self.assertEqual(len(llm.calls), 1)
+
+    def test_summarize_last_line_per_key(self):
+        rec_ok = {"series_key": "CB-1", "issues": []}
+        rec_bad = {"series_key": "CB-2", "issues": ["missing_ref:option_class", "amount_mismatch:balance.x"]}
+        rows = [
+            {"rcept_no": "A", "fs_scope": "separate", "records": [], "dropped": ["llm_error"], "model_used": None},
+            {"rcept_no": "A", "fs_scope": "separate", "records": [rec_ok, rec_bad], "dropped": ["bad_kind:BOND"],
+             "model_used": "gpt-5.6-luna", "usage": {"prompt_tokens": 10, "completion_tokens": 3}},
+            {"rcept_no": "A", "fs_scope": "consolidated", "records": [rec_ok], "dropped": [],
+             "model_used": "gpt-5.6-luna", "cached": True},
+            {"rcept_no": "B", "fs_scope": None, "skipped": "no_tables", "records": [], "dropped": []},
+            {"rcept_no": "C", "fs_scope": "separate", "records": [], "dropped": ["bad_json"]},
+        ]
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "i.jsonl"
+            out.write_text("".join(json.dumps(r) + "\n" for r in rows) + '{"cut', encoding="utf-8")
+            s = summarize_out(out)
+        self.assertEqual(s["lines"], 5)
+        self.assertEqual(s["keys"], 4)
+        self.assertEqual(s["filings"], 3)
+        self.assertEqual(s["skipped_no_tables"], 1)
+        self.assertEqual(s["records"], 3)
+        self.assertEqual(s["records_all_pass"], 2)
+        self.assertEqual(s["evidence_pass_rate"], round(2 / 3, 4))
+        self.assertEqual(s["issues"], {"amount_mismatch": 1, "missing_ref": 1})
+        self.assertEqual(s["dropped"], {"bad_json": 1, "bad_kind": 1})
+        self.assertEqual(s["model_used"], {"gpt-5.6-luna": 2})
+        self.assertEqual(s["usage"]["prompt_tokens"], 10)
+        self.assertEqual(s["cached"], 1)
+
+    def test_script_summarize_and_needs_unreadable(self):
+        path = Path(__file__).resolve().parent.parent / "scripts" / "ledger_instruments_in_backend.py"
+        spec = importlib.util.spec_from_file_location("ledger_instruments_in_backend_s", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            tables_dir, facts, rcepts = _run_dir(d)
+            (tables_dir / "BROKEN.json.gz").write_bytes(b"not gzip")
+            ledger = d / "ledger"
+            ledger.mkdir()
+            (ledger / "facts.jsonl").write_text("", encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                mod.main(["--tables", str(tables_dir), "--ledger", str(ledger), "--out", str(d / "o.jsonl"),
+                          "--needs-out", str(d / "needs.tsv")])
+            self.assertEqual(json.loads(buf.getvalue().strip().splitlines()[-1])["unreadable"], 1)
+            out = d / "o.jsonl"
+            out.write_text(json.dumps({"rcept_no": "A", "fs_scope": "separate", "records": [{"issues": []}],
+                                       "dropped": []}) + "\n", encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = mod.main(["--out", str(out), "--summarize"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(json.loads(buf.getvalue().strip().splitlines()[-1])["evidence_pass_rate"], 1.0)
+            self.assertTrue((d / "o.jsonl.measure.json").exists())
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,7 +14,9 @@
   캐시를 쓰지 않는다.
 - 요약: <out>.summary.json
 - --needs-out FILE: LLM 없이 대상 공시를 세어 「접수번호<TAB>범위,범위」 줄로 쓰고 끝낸다(무작위 표본 뽑기용,
-  범위가 빈 줄 = 표 0개). 수집기 venv 에서도 돈다.
+  범위가 빈 줄 = 표 0개). 수집기 venv 에서도 돈다. missing·unreadable 수도 알린다.
+- --summarize: --out 만 읽어 (rcept_no, fs_scope)마다 마지막 줄로 측정 요약(근거 통과율·issue·dropped·모델)을
+  계산해 출력하고 <out>.measure.json 에 쓴다(LLM 없음, 이어 하기 뒤 측정은 이것을 쓴다).
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ import json
 import sys
 import threading
 import types
+from collections import Counter
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent  # 수집기 루트(/c)
@@ -98,8 +101,8 @@ def _backend_complete_json():
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--tables", required=True, type=Path, help="1층 표 파일 디렉터리(<접수번호>.json.gz)")
-    ap.add_argument("--ledger", required=True, type=Path, help="2층 ① 출력 디렉터리(facts.jsonl)")
+    ap.add_argument("--tables", type=Path, help="1층 표 파일 디렉터리(<접수번호>.json.gz)")
+    ap.add_argument("--ledger", type=Path, help="2층 ① 출력 디렉터리(facts.jsonl)")
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--rcept-list", type=Path, help="접수번호 한 줄에 하나(이 순서로)")
     ap.add_argument("--limit", type=int, help="이번 실행에서 새로 처리할 대상 공시 수 상한")
@@ -108,21 +111,34 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-cache", action="store_true")
     ap.add_argument("--dry", action="store_true", help="LLM 없이 가짜(빈 목록)로 배선만 확인")
     ap.add_argument("--needs-out", type=Path, help="대상 공시 목록만 쓰고 끝낸다(LLM 없음)")
+    ap.add_argument("--summarize", action="store_true", help="--out 의 마지막 줄 기준 측정 요약만(LLM 없음)")
     args = ap.parse_args(argv)
 
     mod = _load_instruments()
+    if args.summarize:
+        summary = mod.summarize_out(args.out)
+        path = args.out.with_name(args.out.name + ".measure.json")
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+        print(json.dumps(summary, ensure_ascii=False), flush=True)
+        return 0
+    if args.tables is None or args.ledger is None:
+        ap.error("--tables 와 --ledger 가 필요하다(--summarize 제외)")
     if args.rcept_list:
         rcepts = [ln.strip() for ln in args.rcept_list.read_text(encoding="utf-8").splitlines() if ln.strip()]
     else:
         rcepts = sorted(p.name[: -len(".json.gz")] for p in args.tables.glob("*.json.gz"))
 
     if args.needs_out:
-        needs = mod.list_needs(args.tables, mod.load_instrument_facts(args.ledger / "facts.jsonl"), rcepts)
+        stats = Counter()
+        needs = mod.list_needs(args.tables, mod.load_instrument_facts(args.ledger / "facts.jsonl"), rcepts, stats)
         args.needs_out.parent.mkdir(parents=True, exist_ok=True)
         args.needs_out.write_text("".join(f"{r}\t{','.join(s)}\n" for r, s in needs), encoding="utf-8")
         print(json.dumps({"scanned": len(rcepts), "needs": len(needs),
                           "no_tables": sum(1 for _r, s in needs if not s),
-                          "two_scopes": sum(1 for _r, s in needs if len(s) > 1)}), flush=True)
+                          "two_scopes": sum(1 for _r, s in needs if len(s) > 1),
+                          "missing": stats["missing"], "unreadable": stats["unreadable"]}), flush=True)
         return 0
     if args.dry:
         complete_json, usage_getter, info = mod.dry_complete_json, None, {"model": "dry", "reasoning_effort": None}

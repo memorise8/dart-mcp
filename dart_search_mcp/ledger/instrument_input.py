@@ -125,6 +125,7 @@ def _render_table(t: dict, cells: dict) -> tuple[list[str], list[tuple[str, str,
                 "raw": raw, "value": c.get("value"), "unit_kind": u.get("kind"),
                 "multiplier": u.get("multiplier"), "period": col.get("period"),
                 "label": r.get("label"), "label_path": list(path),
+                "table_title": t.get("title"), "note_title": region.get("note_title"),
             }
         lines.append(" | ".join(parts))
     notes = [(fid, f"{fid} {mark} {text}".replace("  ", " "), text) for fid, mark, text in _footnotes(t)]
