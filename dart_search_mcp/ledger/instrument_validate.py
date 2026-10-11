@@ -31,6 +31,11 @@
 6. 확인된 금액 필드는 `matched[field] = 칸 id`, `matched_multiplier[field] = 그 칸 배수`(원 환산용)를 남기고,
    그 필드의 evidence 는 그 칸 하나만 둔다. null 이 된 필드의 evidence 는 빈 목록이다.
 7. option_class·embedded_separation 이 null·없음이면 사유 없이 unconfirmed.
+8. T9b: 만기 구간·계약상현금흐름 열의 칸, 그런 열이 있는 표의 장부금액 아닌 열(합계 열)은 모든 금액 필드에서 not_balance.
+   기간 모르는 칸의 current_end 허용은 취득일 등 사건 날짜·발행조건·발행내역·자본금·(보통)주식 표, 「전기말 현재」만 말하는
+   표에서 쓰지 않는다. 범주 행렬의 다른 범주 열(상각후원가·기타포괄 …)은 파생상품 칸이 아니다. 회차 일치는 칸이 말하는
+   상품 종류(전환사채·신주인수권부사채·교환사채·우선주)도 본다. embedded_separation 은 뜻이 맞는 근거(_separation_supported)가
+   있어야 하고, 아니면 `no_separation_ref` 로 unconfirmed.
 """
 from __future__ import annotations
 
@@ -92,7 +97,10 @@ _END_ROW_RE = re.compile(r"^(?:당?기말|전기말|기말(?:잔액|금액)?|당
 # 「보고기간종료일 현재 …의 내역」처럼 한 시점의 잔액 표(변동·손익 표 아님) — 당기·전기 열이 곧 당기말·전기말이다.
 _STATUS_TITLE_RE = re.compile(r"현재")
 _UNKNOWN_OK_RE = re.compile(r"당기말|현재")
-_EVENT_TITLE_RE = re.compile(r"발행시|전환시|행사시|최초|평가|가치평가")
+# 사건 시점·평가·발행조건·자본금·주식 표(T9b): 「취득일 현재」 이전대가, 「…의 (주요) 발행조건」·「발행내역」 글 표의 권면총액·
+# 발행가액, 자본금·(보통)주식 표는 잔액 표가 아니다. 「우선주식(부채)」는 상품 이름이라 막지 않는다.
+_EVENT_TITLE_RE = re.compile(r"발행시|전환시|행사시|최초|평가|가치평가|(?:취득|부여|발행|전환|행사|측정)일"
+                             r"|발행조건|주요조건|발행내역|발행내용|자본금|(?<!우선)주식")
 _FLOW_TITLE_RE = re.compile(r"변동|증감|손익|발생|거래|현금흐름|[당전]기\s*중|기중")
 
 
@@ -108,6 +116,9 @@ _HOST_COMPONENT_RE = re.compile(
 _NOT_BALANCE_RE = re.compile(r"평가|손익|이익|손실|비용|수익|민감|%|증가|감소|증감|변동|행사|취득|처분|대체|발생|신규|이동|최초"
                              r"|매입|매도(?!청구)|결제|정산")
 _OTHER_COL_RE = re.compile(r"^기타(?:\(.*\))?$")  # 변동표의 「기타(*)」 열
+# 범주 행렬(T9b): 파생상품 행은 자기 범주 열(당기손익-공정가치·파생·위험회피)에서만 파생상품 칸이다.
+_OTHER_CATEGORY_RE = re.compile(r"상각후원가|기타포괄|매도가능|만기보유|대여금|수취채권|금융보증")
+_OWN_CATEGORY_RE = re.compile(r"당기손익|파생|위험회피")
 # 열 머리글만 파생을 말하는 칸은 행이 잔액 행(기말)·상품·회차 행일 때만(범주 행렬의 「유가증권 × 파생상품자산」 같은 칸 제외).
 _COL_ROW_RE = re.compile(r"^(?:당?기말|전기말|기말(?:잔액|금액)?|당기말잔액|전기말잔액|보고기간종료일(?:현재)?(?:장부금액|잔액)?)$"
                          r"|신주인수권부사채|전환사채|교환사채|우선주|Series|시리즈|^제?\d+(?:-\d+)?(?:회차|회|차|종)", re.I)
@@ -129,16 +140,49 @@ def _title_core(title: str | None) -> str:
     return parts[-1] if parts else (title or "")
 
 
+# 만기 구간·계약상 현금흐름 열(T9b): 「3개월 미만」·「1년 이내」·「1년~5년」·「5년 초과」·「계약상현금흐름」·「잔존계약만기」.
+# 「2025년 12월 31일」 같은 날짜 머리글은 아니다(구간 낱말이 붙어야 한다).
+_MATURITY_BUCKET_RE = re.compile(r"\d+(?:개월|년|일)(?:이내|미만|이하|초과|이상)|\d+(?:개월|년|일)?[~∼\-–]\d+(?:개월|년|일)"
+                                 r"|계약상(?:의)?현금흐름|잔존(?:계약)?만기|요구불")
+_CARRYING_COL_RE = re.compile(r"장부금액|장부가액")
+
+
+def _col_segments(cell: dict) -> list[str]:
+    return [seg for seg in re.sub(r"\s+", "", cell.get("col_header") or "").split("/") if seg]
+
+
+def _maturity_bucket_cell(cell: dict) -> bool:
+    """열이 만기 구간·계약상 현금흐름인 칸. 행 묶음의 만기 서술(차입금·사채 내역 표의 「2025년~2026년」·「1년이내」 칸)은
+    보지 않는다 — 그것은 내역 표의 설명 열이지 만기분석 구간이 아니다."""
+    return any(_MATURITY_BUCKET_RE.search(seg) for seg in _col_segments(cell))
+
+
 def _non_balance_cell(cell: dict) -> bool:
-    """잔액 표가 아닌 표의 칸인가(만기분석·유동성위험·신용위험·이연법인세·상계·담보 제목, 현금유입·유출·거래상대방 머리글)."""
+    """잔액 표가 아닌 표의 칸인가(만기분석·유동성위험·신용위험·이연법인세·상계·담보 제목, 현금유입·유출·거래상대방 머리글,
+    만기 구간·계약상 현금흐름 열). 표 전체를 보는 규칙(만기 구간 열이 있는 표의 합계 열)은 _non_balance_ids."""
     ctx = re.sub(r"\s+", "", _title_core(cell.get("table_title")) + "|" + (cell.get("note_title") or ""))
     if _NON_BALANCE_TITLE_RE.search(ctx):
+        return True
+    if _maturity_bucket_cell(cell):
         return True
     col = re.sub(r"\s+", "", cell.get("col_header") or "")
     labels = [_norm_label(p) for p in (cell.get("label_path") or [])] + [_norm_label(cell.get("label"))]
     if _NON_BALANCE_COL_RE.search(col) or any(_NON_BALANCE_ROW_RE.search(t) for t in labels):
         return True
     return any(_COUNTERPARTY_COL_RE.match(seg) for seg in col.split("/"))
+
+
+def _table_of(cid: str) -> str:
+    return cid.rsplit(":r", 1)[0]
+
+
+def _non_balance_ids(cells: dict) -> set[str]:
+    """잔액이 아닌 칸 id. 칸 하나로 보는 규칙(_non_balance_cell)에 더해, 만기 구간 열이 하나라도 있는 표는 장부금액
+    열이 아닌 모든 칸(「합계」 열 = 할인하지 않은 현금흐름 합)을 뺀다."""
+    maturity_tables = {_table_of(i) for i, c in cells.items() if _maturity_bucket_cell(c)}
+    return {i for i, c in cells.items()
+            if _non_balance_cell(c) or (_table_of(i) in maturity_tables
+                                        and not any(_CARRYING_COL_RE.search(seg) for seg in _col_segments(c)))}
 
 
 _MATURITY_COL_RE = re.compile(r"개월|\d+년|만기|현금흐름|이내|초과")  # 만기분석 열은 장부금액이 아니다
@@ -231,6 +275,8 @@ def _deriv_side(cell: dict) -> str | None:
     if (_JOINED_INSTRUMENT_RE.search(col) or _LEVEL_OR_RESTATE_COL_RE.search(col)
             or any(_OTHER_COL_RE.match(seg) for seg in col.split("/"))):
         return None  # 상품과 파생을 합친 열, 공정가치 수준 열, 회계오류 수정·재작성 열
+    if any(_OTHER_CATEGORY_RE.search(seg) and not _OWN_CATEGORY_RE.search(seg) for seg in col.split("/")):
+        return None  # 범주 행렬의 다른 범주 열(「파생상품부채」 × 「상각후원가측정금융부채」)
     tt, nt = cell.get("table_title") or "", cell.get("note_title") or ""
     title_deriv = _deriv_title_side(tt) or _deriv_title_side(nt)
     col_side = _deriv_title_side(col) or (_words_side(col) if _DERIV_RE.search(col) else None)
@@ -297,6 +343,8 @@ def _period_ok(cell: dict, target: str, n_value_cols: int | None = None) -> bool
         if target != "current_end" or (cell.get("n_value_cols") if n_value_cols is None else n_value_cols) != 1:
             return False
         ctx = re.sub(r"\s+", "", (cell.get("table_title") or "") + "|" + (cell.get("note_title") or ""))
+        if "전기말" in ctx and "당기말" not in ctx:
+            return False  # 「전기말 현재 …」 표는 current_end 가 아니다
         return bool(_UNKNOWN_OK_RE.search(ctx)) and not _EVENT_TITLE_RE.search(ctx)
     if p == target.replace("_end", "_period"):
         col = re.sub(r"\s+", "", cell.get("col_header") or "")
@@ -321,8 +369,33 @@ def _record_series(rec: dict) -> str | None:
     return m.group(1) if m else None
 
 
-def _series_fits(cell: dict, series: str | None) -> bool:
-    """칸의 회차(행 이름·label_path)가 없거나 기록 회차와 같으면 True. 기록 회차를 모르면 회차가 붙은 칸은 맞지 않는다."""
+# 상품 종류 낱말(T9b). 「신주인수권부사채」·「교환사채」·「전환사채」·「우선주」(상환전환·전환상환·전환우선주 모두 RCPS).
+_KIND_WORD_RES = (("CB", re.compile(r"전환사채|(?<![A-Za-z])CB(?![A-Za-z])")),
+                  ("BW", re.compile(r"신주인수권부사채|(?<![A-Za-z])BW(?![A-Za-z])")),
+                  ("EB", re.compile(r"교환사채|(?<![A-Za-z])EB(?![A-Za-z])")),
+                  ("RCPS", re.compile(r"우선주|(?<![A-Za-z])(?:RCPS|CPS|RPS)(?![A-Za-z])")))
+
+
+def _text_kinds(text: str | None) -> set[str]:
+    text = re.sub(r"\s+", "", text or "")
+    return {k for k, rx in _KIND_WORD_RES if rx.search(text)}
+
+
+def _cell_kinds(cell: dict) -> set[str]:
+    """칸의 행 이름(어느 층이든)·열 머리글이 말하는 상품 종류."""
+    out: set[str] = set()
+    for t in [*(cell.get("label_path") or []), cell.get("label") or "", cell.get("col_header") or ""]:
+        out |= _text_kinds(t)
+    return out
+
+
+def _series_fits(cell: dict, series: str | None, kind: str | None = None) -> bool:
+    """칸의 회차(행 이름·label_path)가 없거나 기록 회차와 같으면 True. 기록 회차를 모르면 회차가 붙은 칸은 맞지 않는다.
+    칸의 행 이름·열 머리글이 상품 종류를 말하면 기록 종류도 그 안에 있어야 한다(T9b; 말하지 않으면 번호만 본다)."""
+    if kind is not None:
+        kinds = _cell_kinds(cell)
+        if kinds and kind not in kinds:
+            return False
     tags = _cell_series(cell)
     return not tags or (series is not None and series in tags)
 
@@ -445,6 +518,179 @@ def _host_sum(ids: list[str], cells: dict, amount: float, want_unit: str) -> lis
     return [i for i, _c in cs]
 
 
+
+# ---- 규칙 8: embedded_separation 근거(T9b, R14) ----
+# 분리하지 않았다는 말: 「분리하지 않」·「분리되지 않」·「분리요건을 (모두) 충족하지 못」·「분리하여 계상하고 있지 않」·「비분리」
+# (「비분리형 신주인수권부사채」는 신주인수권 분리 여부를 말하는 상품 이름이라 아니다).
+_NEG_SEP_RE = re.compile(
+    r"분리\s*(?:하지|되지|할\s*수\s*없|대상이\s*아니|되는\s*것이\s*아니)"
+    r"|분리\s*(?:요건|조건)[^.。]{0,10}?(?:충족|만족)\s*(?:하지|되지|시키지)\s*(?:못|않)"
+    r"|분리\s*(?:하여|해서)?\s*(?:별도로?\s*)?(?:계상|인식|회계처리|평가)\s*(?:하고\s*있)?지\s*(?:않|아니)"
+    r"|비분리(?!형)")
+# 분리했다는 동사 꼴만(「분리하여」·「분리하였」·「분리되는」 …). 「분리요건을 만족하는 …」·「분리금액」은 분리 진술이 아니다.
+_SEP_WORD_RE = re.compile(r"분리\s*(?:하여|해서|하고|하였|했|하며|한|된|되어|되었|되며|되는|처리)")
+_SEP_NEAR_RE = re.compile(r"파생|공정가치")
+_EQUITY_SPLIT_RE = re.compile(r"자본부분|자본요소|전환권대가|신주인수권대가|교환권대가|자본으로|자본잉여금")
+# 보유자 쪽(취득한 상품의 옵션, 금융자산)은 회사 자신의 상품 분리가 아니다. 제3자 지정 콜을 파생상품자산으로 잡은 문장은
+# 분리 동사가 없고(「구분 계상」) 옵션 경로가 자산 끝을 받지 않으므로 따로 막지 않는다(「…풋과 (제3자) 콜을 분리하여」는 분리).
+_HOLDER_RE = re.compile(r"금융자산|취득한|취득하여|투자한")
+_SEP_CONDITIONAL_RE = re.compile(r"경우|때에는|때는|라면")
+# 옵션(풋·콜 포함) 목록이 주어로 바로 조사를 받고 「파생상품(부채)로 분류·인식·계상·회계처리」 — 분리했다는 뜻이다.
+# 파생상품자산으로 잡았다는 문장(제3자 지정 콜 등)은 분리 근거로 쓰지 않는다(그런 분리는 「분리하여」 문장이나 칸으로).
+_OPT_LIST_ANY = rf"(?:{_OPT_ANY}{_JOIN})*{_OPT_ANY}(?:\s*등)?"
+_DERIV_LIAB_END = (r"(?<!비)(?:파생상품부채|파생금융부채|파생상품금융부채|파생금융상품부채|파생상품|파생금융상품)(?!\s*자산)"
+                   r"\s*(?:으로|로)\s*(?:분류|인식|계상|회계처리)")
+_OPTION_DERIV_SENT_RES = (
+    re.compile(_OPT_LIST_ANY + _MARK + _GAP + _DERIV_LIAB_END),
+    re.compile(r"내재파생상품\s*\(\s*" + _OPT_LIST_ANY + r"\s*\)" + _MARK + _GAP + _DERIV_LIAB_END),
+)
+# 상품 전체를 당기손익-공정가치 측정 금융부채로 지정(d8). 「지정」이 아니면(계상·분류 …) 「전체」·「하나의」·「분리하지 않」이
+# 같은 문장에 있어야 한다(옵션만 FVPL 부채로 분류한 문장은 분리다).
+_FVPL_LIAB_RE = re.compile(r"당기손익[-‐–·]?(?:인식|공정가치)(?:로)?(?:측정|지정)?(?:하는|된)?(?:금융)?부채")
+_FVPL_DESIGNATION_RE = re.compile(_FVPL_LIAB_RE.pattern + r"(?:로|으로)[^.。]{0,20}?(지정|분류|계상|인식|측정)")
+_WHOLE_RE = re.compile(r"전체|하나의|분리하지않|분리되지않")
+_AMORTISED_RE = re.compile(r"상각후원가")
+_SENT_SERIES_RE = re.compile(r"제\s*(\d+(?:-\d+)?)\s*(?:회차|회|차|종)(?![계사])|(?<!\d)(\d+(?:-\d+)?)회차")
+_OPTION_KIND_RES = ((re.compile(r"전환권"), {"CB", "RCPS"}), (re.compile(r"신주인수권(?!부)"), {"BW"}),
+                    (re.compile(r"교환권"), {"EB"}))
+_GENERIC_OPTION_RE = re.compile(r"조기상환|상환청구권|상환권|매도청구권|콜옵션|풋옵션|[Cc]all\s*[Oo]ption|[Pp]ut\s*[Oo]ption")
+
+
+def _ties(texts: list[str], kind: str) -> bool | None:
+    """글들이 이 종류의 상품을 말하는가. 상품 종류 낱말이 있으면 그 안에 있어야 하고, 없으면 옵션 낱말
+    (전환권 → CB·RCPS, 신주인수권 → BW, 교환권 → EB, 풋·콜·조기상환은 어느 종류든)로 본다. 둘 다 없으면 None."""
+    kinds: set[str] = set()
+    for t in texts:
+        kinds |= _text_kinds(t)
+    if kinds:
+        return kind in kinds
+    opt: set[str] = set()
+    for t in texts:
+        t = _INSTRUMENT_RE.sub("", re.sub(r"\s+", "", t or ""))
+        for rx, ks in _OPTION_KIND_RES:
+            if rx.search(t):
+                opt |= ks
+        if _GENERIC_OPTION_RE.search(t):
+            opt |= set(KINDS)
+    return (kind in opt) if opt else None
+
+
+def _sentence_fits(text: str, kind: str, series: str | None) -> bool:
+    """문장이 이 기록의 상품(종류·회차)을 말하는가. 회차가 적혀 있으면 기록 회차가 그 안에 있어야 한다."""
+    if _ties([text], kind) is not True:
+        return False
+    tags = {m.group(1) or m.group(2) for m in _SENT_SERIES_RE.finditer(text)}
+    return not tags or (series is not None and series in tags)
+
+
+def _separation_kind(text: str) -> str | None:
+    """문장 하나가 말하는 분리 여부: "sep"(분리함), "not"(분리 안 함), None(어느 쪽도 아니거나 둘 다)."""
+    text = text or ""
+    if _HOLDER_RE.search(text) or _SEP_CONDITIONAL_RE.search(text):
+        return None
+    neg_spans = [m.span() for m in _NEG_SEP_RE.finditer(text)]
+    pos = False
+    for m in _SEP_WORD_RE.finditer(text):
+        if any(a <= m.start() < b for a, b in neg_spans) or text[max(0, m.start() - 1):m.start()] == "비":
+            continue
+        window = text[max(0, m.start() - 40):m.end() + 60]
+        if not _SEP_NEAR_RE.search(window):
+            continue
+        if _EQUITY_SPLIT_RE.search(window) and "파생" not in window:
+            continue  # 부채부분·자본부분(전환권대가) 분리는 내재파생상품 분리가 아니다
+        pos = True
+    if not pos:
+        # 겹친 후보도 본다(「전환권은 자본으로 분류되지 않았으며, 전환권과 …을 파생상품부채로 분류」의 둘째 주어)
+        starts = sorted({m.start() for m in re.finditer(_OPT_ANY + r"|내재파생상품", text)})
+        for m in (m for rx in _OPTION_DERIV_SENT_RES for p in starts for m in [rx.match(text, p)] if m):
+            if (_NEGATION_RE.search(text[m.end():]) or _GAP_OTHER_SUBJECT_RE.search(m.group("gap"))
+                    or any(a < m.end() and m.start() < b for a, b in neg_spans)):
+                continue  # 「…분리요건을 충족하지 못하여 주계약에 포함된 내재파생금융부채로 인식」은 분리가 아니다
+            pos = True
+            break
+    if pos and neg_spans:
+        return None
+    return "sep" if pos else ("not" if neg_spans else None)
+
+
+def _fvpl_designation(text: str) -> bool:
+    """상품 전체를 당기손익-공정가치 측정 금융부채로 지정했다는 문장(부채; 보유자·조건·부정 아님)."""
+    if _HOLDER_RE.search(text or "") or _SEP_CONDITIONAL_RE.search(text or ""):
+        return False
+    flat = re.sub(r"\s+", "", text or "")
+    for m in _FVPL_DESIGNATION_RE.finditer(flat):
+        if _NEGATION_RE.search(flat[m.end():]):
+            continue
+        if m.group(1) == "지정" or _WHOLE_RE.search(flat):
+            return True
+    return False
+
+
+def _amortised_sentence(text: str) -> bool:
+    """상품(부채요소)을 상각후원가로 측정했다는 문장 — 파생·공정가치·분리·옵션 낱말 없이."""
+    t = text or ""
+    if _HOLDER_RE.search(t) or _SEP_CONDITIONAL_RE.search(t) or not _AMORTISED_RE.search(t):
+        return False
+    return not re.search(r"파생|공정가치|분리|" + _OPT_ANY, t)
+
+
+def _cell_tied(cell: dict, kind: str) -> bool:
+    """칸이 이 종류의 상품 것인가: 행 이름·열 머리글(종류·옵션 낱말), 없으면 표 끝 문장·주석 제목(종류·옵션 낱말)."""
+    r = _ties([*(cell.get("label_path") or []), cell.get("label") or "", cell.get("col_header") or ""], kind)
+    if r is None:
+        r = _ties([_title_core(cell.get("table_title")), cell.get("note_title") or ""], kind)
+    return r is True
+
+
+def _separation_cell(cid: str, cell: dict, kind: str, series: str | None, nb: set) -> bool:
+    """이 상품의 분리 파생상품 금액 칸(쪽이 정해진 파생상품 잔액 칸, 0 아님, 잔액 표, 종류·회차가 맞음)."""
+    return (cid not in nb and _deriv_side(cell) is not None and bool(_num(cell.get("value")))
+            and _series_fits(cell, series, kind) and _cell_tied(cell, kind))
+
+
+def _measured_cell(cid: str, cell: dict, kind: str, series: str | None, nb: set, rx: re.Pattern) -> bool:
+    """상품 행(종류 낱말, 파생·옵션 행 아님)이 rx(상각후원가·당기손익-공정가치 측정 금융부채) 열·묶음 행·표 끝 문장에 있는 칸."""
+    if cid in nb or not _num(cell.get("value")) or not _series_fits(cell, series, kind):
+        return False
+    labels = [_norm_label(p) for p in (cell.get("label_path") or [])] + [_norm_label(cell.get("label"))]
+    own = [t for t in labels if _text_kinds(t)]
+    if not own or kind not in set().union(*(_text_kinds(t) for t in own)):
+        return False
+    if any(_DERIV_RE.search(t) or _option_term(t) or "자산" in t for t in labels):
+        return False
+    texts = _col_segments(cell) + labels + [re.sub(r"\s+", "", _title_core(cell.get("table_title")))]
+    return any(rx.search(t) and "자산" not in t for t in texts)
+
+
+def _separation_supported(claim: str, ids: list[str], rec: dict, cells: dict, sentences: dict, nb: set,
+                          has_deriv_amount: bool) -> bool:
+    """embedded_separation 값이 근거로 뒷받침되는가(R14: 없거나 어긋나면 False).
+    - separated: 그 상품(종류·회차)의 분리 파생상품 금액 칸, 또는 그 상품의 분리 문장(「분리하여 … 파생상품/공정가치」,
+      옵션 목록이 「파생상품(부채)로 인식」). 근거 중 분리하지 않았다는 문장이 있으면 아니다. 자본요소 분리는 아니다.
+    - not_separated: 분리하지 않았다는 문장, 상각후원가로만 측정한다는 문장·칸, 또는 전체 FVPL 지정(d8).
+    - whole_fvpl: 전체 FVPL 지정 문장이나 당기손익-공정가치 측정 금융부채 칸의 그 상품 행.
+    not_separated·whole_fvpl 은 기록에 확인된 파생상품 금액이 없고, 입력에 그 상품의 분리 파생상품 칸·분리 문장이 없을 때만."""
+    kind, series = rec.get("kind"), _record_series(rec)
+    sent = [sentences[i] for i in ids if i in sentences and _sentence_fits(sentences[i], kind, series)]
+    ev_cells = [(i, cells[i]) for i in ids if i in cells]
+    kinds = [_separation_kind(t) for t in sent]
+    if claim == "separated":
+        if "not" in kinds:
+            return False
+        return "sep" in kinds or any(_separation_cell(i, c, kind, series, nb) for i, c in ev_cells)
+    if has_deriv_amount or "sep" in kinds:
+        return False
+    if any(_separation_cell(i, c, kind, series, nb) for i, c in cells.items()):
+        return False
+    if any(_separation_kind(t) == "sep" and _sentence_fits(t, kind, series) for t in sentences.values()):
+        return False
+    fvpl = any(_fvpl_designation(t) for t in sent) or any(
+        _measured_cell(i, c, kind, series, nb, _FVPL_LIAB_RE) for i, c in ev_cells)
+    if claim == "whole_fvpl":
+        return fvpl
+    return fvpl or "not" in kinds or any(_amortised_sentence(t) for t in sent) or any(
+        _measured_cell(i, c, kind, series, nb, _AMORTISED_RE) for i, c in ev_cells)
+
 def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = None) -> tuple[dict | None, list[str]]:
     """근거를 확인한 기록(사본)과 버린 사유 목록. kind 가 틀리면 (None, [사유]).
 
@@ -488,6 +734,7 @@ def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = N
     matched: dict[str, str] = {}
     matched_mult: dict[str, object] = {}
     series = _record_series(rec)
+    nb = _non_balance_ids(cells)
     for field, holder, key in _amount_fields(rec):
         value = holder[key]
         if value is None:
@@ -511,8 +758,8 @@ def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = N
             if amount is not None and cv is not None and abs(cv - amount) <= AMOUNT_TOLERANCE:
                 value_hits.append(i)
         hits = [i for i in value_hits if target is None or _period_ok(cells[i], target)]
-        fit = [i for i in hits if _series_fits(cells[i], series)]
-        bal = [i for i in fit if not _non_balance_cell(cells[i])]
+        fit = [i for i in hits if _series_fits(cells[i], series, kind)]
+        bal = [i for i in fit if i not in nb]
         side = _DERIV_AMOUNT_KEYS.get(key)
         good = [i for i in bal if side is None or _deriv_side(cells[i]) == side]
         sum_reason = None
@@ -520,9 +767,9 @@ def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = N
             summed = _host_sum(ids, cells, amount, want_unit)
             if summed and target is not None and not all(_period_ok(cells[i], target) for i in summed):
                 summed, sum_reason = None, "period_mismatch"
-            elif summed and not all(_series_fits(cells[i], series) for i in summed):
+            elif summed and not all(_series_fits(cells[i], series, kind) for i in summed):
                 summed, sum_reason = None, "series_mismatch"
-            elif summed and any(_non_balance_cell(cells[i]) for i in summed):
+            elif summed and any(i in nb for i in summed):
                 summed, sum_reason = None, "not_balance"
             if summed:
                 matched[field] = "+".join(summed)
@@ -562,9 +809,8 @@ def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = N
     # 규칙 3 — 전환권 파생상품부채
     if rec.get("option_class") == "derivative_liability":
         ids = evidence.get("option_class") or []
-        ev_cells = [cells[i] for i in ids if i in cells]
-        series = _record_series(rec)
-        has_deriv = any(_deriv_side(c) == "liability" and _names_conversion_option(c) and _series_fits(c, series)
+        ev_cells = [cells[i] for i in ids if i in cells and i not in nb]
+        has_deriv = any(_deriv_side(c) == "liability" and _names_conversion_option(c) and _series_fits(c, series, kind)
                         for c in ev_cells) or any(
             _positive_deriv_liability_sentence(sentences[i]) for i in ids if i in sentences)
         if not has_deriv:
@@ -574,6 +820,17 @@ def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = N
         elif _equity_conflict(rec, cells):
             rec["option_class"] = UNCONFIRMED
             reasons.append("equity_conflict")
+
+    # 규칙 8 — 내재파생상품 분리(T9b): 뜻이 맞는 근거가 있어야 한다
+    claim = rec.get("embedded_separation")
+    if claim not in (None, UNCONFIRMED):
+        has_deriv_amount = any(holder[key] is not None for f, holder, key in _amount_fields(rec)
+                               if key in _DERIV_AMOUNT_KEYS or f.startswith("separated_amount."))
+        if not _separation_supported(claim, evidence.get("embedded_separation") or [], rec, cells, sentences, nb,
+                                     has_deriv_amount):
+            rec["embedded_separation"] = UNCONFIRMED
+            evidence["embedded_separation"] = []
+            reasons.append("no_separation_ref")
 
     # 확인된 근거만 남긴다(비어 버린 필드는 빈 목록)
     rec["evidence"] = evidence
