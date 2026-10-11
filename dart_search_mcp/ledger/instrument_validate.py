@@ -31,8 +31,21 @@ AMOUNT_TOLERANCE = 1
 
 _HOST_RE = re.compile(r"^전환사채$|사채할인발행차금|전환권조정|신주인수권조정|교환권조정|상환할증금")
 _OPTION_RE = re.compile(r"전환권|상환권|조기상환|매도청구권|콜옵션|풋옵션|신주인수권|교환권")
-_OPTION_EXCLUDE_RE = re.compile(r"대가|자본")
-_TITLE_SIDE_RE = re.compile(r"파생\s*상품\s*(부채|자산)")
+_OPTION_EXCLUDE_RE = re.compile(r"대가|자본|조정")
+_SIDE_DERIV_RE = re.compile(r"파생(?:상품|금융상품|금융)?(부채|자산)")
+_JOINED_GAP = 6  # 「파생상품자산 및 파생상품부채」의 「및」 같은 짧은 이음
+_TOTAL_RE = re.compile(r"^(합계|총계|계|소계)$")
+_CLOSING_RE = re.compile(r"^(당?기말|전기말|기말(잔액|금액)?|당기말잔액|전기말잔액|보고기간종료일(현재)?(장부금액|잔액)?)$")
+_INSTRUMENT_RE = re.compile(r"전환사채|신주인수권부사채|교환사채|우선주")
+_JOINED_INSTRUMENT_RE = re.compile(r"(전환사채|신주인수권부사채|교환사채|우선주|우선주부채)(및|과|와|,|·)")
+_DEFAULT_ASSET_RE = re.compile(r"매도청구권")      # 발행자 콜옵션 — 발행자에게 언제나 자산
+_DEFAULT_LIAB_RE = re.compile(r"조기상환청구권|풋옵션|PutOption", re.I)  # 투자자 풋옵션 — 발행자에게 언제나 부채
+_OPTION_LIAB_SENT_RE = re.compile(
+    r"(?:전환권|신주인수권|교환권|상환권)(?!조정|대가)[^.。]{0,40}?"
+    r"(?:파생상품부채|파생금융부채|파생상품|금융부채|부채)\s*(?:으로|로)\s*(?:분류|인식|계상|회계처리)")
+_CONDITIONAL_RE = re.compile(r"경우|때에는|때는")
+_EQUITY_RE = re.compile(r"자본|대가")
+_SENT_ID_RE = re.compile(r"(?:^|:)s:?(\d+)$")
 _DERIV_RE = re.compile(r"파생|전환권\s*\(?\s*부채")
 _DERIV_LIAB_SENT_RE = re.compile(r"파생[^.,。]{0,30}?부채|전환권\s*\(?\s*부채")
 _NEGATION_RE = re.compile(r"^[^.,。]{0,25}?(않|아니|없)")
@@ -49,29 +62,79 @@ def _is_host_cell(cell: dict) -> bool:
     return bool(_HOST_RE.search(_norm_label(cell.get("label"))))
 
 
-def _title_side(cell: dict) -> str | None:
-    sides = {m.group(1) for k in ("table_title", "note_title")
-             for m in _TITLE_SIDE_RE.finditer(re.sub(r"\s+", "", cell.get(k) or ""))}
-    if len(sides) != 1:
+def _words_side(text: str) -> str | None:
+    liab, asset = "부채" in text, "자산" in text
+    if liab == asset:
         return None
-    return "liability" if sides == {"부채"} else "asset"
+    return "liability" if liab else "asset"
+
+
+def _deriv_title_side(text: str | None) -> str | None:
+    """「…파생상품부채의 내역」처럼 파생(상품|금융상품|금융)?(부채|자산)의 마지막 언급으로 쪽을 정한다(제목 앞에 문단이
+    붙어 와도 표 바로 앞 문장이 이긴다). 「파생상품자산 및 파생상품부채」처럼 둘이 바로 이어 나오면 모른다."""
+    text = re.sub(r"\s+", "", text or "")
+    found = list(_SIDE_DERIV_RE.finditer(text))
+    if not found:
+        return None
+    last = found[-1]
+    for prev in found[-2::-1]:
+        if prev.group(1) != last.group(1) and last.start() - prev.end() <= _JOINED_GAP:
+            return None
+    return "liability" if last.group(1) == "부채" else "asset"
+
+
+def _option_term(text: str) -> bool:
+    return bool(_OPTION_RE.search(text or "")) and not _OPTION_EXCLUDE_RE.search(text or "")
 
 
 def _deriv_side(cell: dict) -> str | None:
-    """파생상품 칸이면 "liability"·"asset", 쪽을 모르거나 파생상품 칸이 아니면 None."""
-    parts = [p or "" for p in (cell.get("label_path") or [cell.get("label") or ""])]
-    deriv = [p for p in parts if _DERIV_RE.search(p)]
-    if not deriv:
-        label = _norm_label(cell.get("label"))
-        if _OPTION_RE.search(label) and not _is_host_cell(cell) and not _OPTION_EXCLUDE_RE.search(label):
-            return _title_side(cell)
+    """파생상품 칸이면 "liability"·"asset", 쪽을 모르거나 파생상품 칸이 아니면 None.
+
+    부채요소(HOST) 행·합계 행은 언제나 None(Review Focus 3). 그 밖에는 행 종류마다 쪽을 찾는 곳이 다르다.
+    - 행 이름에 「파생」: 행 이름 → 열 머리글 → 표·주석 제목의 파생…(부채|자산) → 제목의 부채/자산 낱말.
+    - 옵션 낱말 행(행 이름 어느 층이든 전환권·조기상환권·매도청구권 …, 조정·대가·자본 제외): 열 머리글 → 제목 파생 쪽
+      → 제목 낱말 → 이름 기본값(매도청구권 = 발행자 콜 = 자산, 조기상환청구권·풋옵션 = 투자자 풋 = 부채; 둘 다면 모름).
+    - 기말 행(변동표의 기말·「보고기간종료일 장부금액」): 열 머리글이 파생·옵션이면 그 쪽, 아니면 표·주석 제목의
+      파생…(부채|자산).
+    - 회차 이름 행(「4회차 전환상환우선주」): 표 제목이 파생…(부채|자산)을 말할 때만.
+    """
+    label = _norm_label(cell.get("label"))
+    if _is_host_cell(cell) or _TOTAL_RE.match(label):
         return None
-    for group in (deriv, parts):
-        text = " ".join(group)
-        liab, asset = "부채" in text, "자산" in text
-        if liab != asset:
-            return "liability" if liab else "asset"
+    parts = [p or "" for p in (cell.get("label_path") or [cell.get("label") or ""])]
+    if any(_JOINED_INSTRUMENT_RE.search(_norm_label(p)) for p in parts):
+        return None  # 「제13회 전환사채 및 조기상환권」 — 상품 전체와 옵션을 함께 적은 행(옵션만의 금액이 아니다)
+    col = re.sub(r"\s+", "", cell.get("col_header") or "")
+    tt, nt = cell.get("table_title") or "", cell.get("note_title") or ""
+    title_deriv = _deriv_title_side(tt) or _deriv_title_side(nt)
+    title_words = _words_side(re.sub(r"\s+", "", tt)) or _words_side(re.sub(r"\s+", "", nt))
+    deriv_parts = [p for p in parts if _DERIV_RE.search(p)]
+    col_side = _deriv_title_side(col) or (_words_side(col) if (_DERIV_RE.search(col) or _option_term(col)) else None)
+    names = " ".join([label, *map(_norm_label, parts), col])
+    asset_d, liab_d = bool(_DEFAULT_ASSET_RE.search(names)), bool(_DEFAULT_LIAB_RE.search(names))
+    default = None if asset_d == liab_d else ("asset" if asset_d else "liability")
+    if deriv_parts:
+        return (_words_side(" ".join(deriv_parts)) or _words_side(" ".join(parts)) or col_side or title_deriv
+                or title_words)
+    if _option_term(label) or any(_option_term(_norm_label(p)) for p in parts if not _INSTRUMENT_RE.search(p)):
+        return col_side or title_deriv or title_words or default
+    if _CLOSING_RE.match(label):
+        if _DERIV_RE.search(col) or _option_term(col):
+            return col_side or title_deriv or default
+        return title_deriv
+    if _INSTRUMENT_RE.search(label):
+        return _deriv_title_side(tt)
     return None
+
+
+def _option_liability_sentence(text: str) -> bool:
+    """전환권(신주인수권·교환권·상환권) 자체를 (파생상품)부채로 분류·인식했다는 문장. 조건문(「…경우」)·부정은 아니다."""
+    text = text or ""
+    for m in _OPTION_LIAB_SENT_RE.finditer(text):
+        if _NEGATION_RE.search(text[m.end():]) or _CONDITIONAL_RE.search(text[:m.end()]):
+            continue
+        return True
+    return False
 
 
 def _positive_deriv_liability_sentence(text: str) -> bool:
@@ -79,7 +142,7 @@ def _positive_deriv_liability_sentence(text: str) -> bool:
         if "자산" in m.group(0) or _NEGATION_RE.search(text[m.end():]):
             continue
         return True
-    return False
+    return _option_liability_sentence(text)
 
 
 def _amount_fields(rec: dict) -> list[tuple[str, dict, str]]:
@@ -129,6 +192,40 @@ def _coerce_shapes(rec: dict) -> None:
         rec["series_key"] = ""
 
 
+def _canonical_id(i, cells: dict, sentences: dict) -> str | None:
+    """입력에 있는 id 면 그대로. 문장 id 를 「s:494」·「<접수번호>:00761:s997」처럼 적은 것은 「s494」·「s997」이
+    입력에 있을 때만 그 id 로 읽는다(없는 id 를 만들지 않는다)."""
+    if not isinstance(i, str):
+        return None
+    if i in cells or i in sentences:
+        return i
+    m = _SENT_ID_RE.search(i)
+    if m and f"s{m.group(1)}" in sentences:
+        return f"s{m.group(1)}"
+    return None
+
+
+def _host_sum(ids: list[str], cells: dict, amount: float, want_unit: str) -> list[str] | None:
+    """host_carrying 이 인쇄된 칸 하나가 아니라 부채요소 구성 칸(액면·상환할증금·전환권조정 …)의 합일 때.
+    댄 근거 id 가 모두 입력에 있고(하나라도 없으면 합으로 보지 않는다), 칸이 2개 이상, 모두 같은 표·같은 열·같은
+    단위·같은 배수이고, 파생상품·자본요소 칸이 없으며,
+    인쇄된 값(차감 항목은 괄호 음수 그대로)의 합이 금액과 같아야 한다(허용 오차 1)."""
+    cs = [(i, cells[i]) for i in ids if i in cells]
+    if len(cs) < 2 or len(cs) != len(ids):
+        return None
+    groups = {(i.rsplit(":r", 1)[0], i.rsplit(":", 1)[1]) for i, _c in cs}
+    if len(groups) != 1 or any(c.get("unit_kind") != want_unit for _i, c in cs):
+        return None
+    if len({c.get("multiplier") for _i, c in cs}) != 1:
+        return None
+    if any(_deriv_side(c) or _EQUITY_RE.search(_norm_label(c.get("label"))) for _i, c in cs):
+        return None
+    vals = [_num(c.get("value")) for _i, c in cs]
+    if any(v is None for v in vals) or abs(sum(vals) - amount) > AMOUNT_TOLERANCE:
+        return None
+    return [i for i, _c in cs]
+
+
 def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = None) -> tuple[dict | None, list[str]]:
     """근거를 확인한 기록(사본)과 버린 사유 목록. kind 가 틀리면 (None, [사유]).
 
@@ -146,9 +243,15 @@ def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = N
     _coerce_shapes(rec)
     evidence_in = rec.get("evidence")
     evidence: dict[str, list[str]] = {}
+    cited: dict[str, int] = {}
     for field, ids in evidence_in.items():
         ids = ids if isinstance(ids, list) else [ids]
-        good = [i for i in ids if isinstance(i, str) and (i in cells or i in sentences)]
+        cited[field] = len(ids)
+        good = []
+        for i in ids:
+            i = _canonical_id(i, cells, sentences)
+            if i is not None and i not in good:
+                good.append(i)
         evidence[field] = good
 
     # 값 이름이 틀린 필드
@@ -186,6 +289,13 @@ def validate(record: dict, inp: dict, *, seq: int = 1, unit_kind: str | None = N
                 hits.append(i)
         side = _DERIV_AMOUNT_KEYS.get(key)
         good = [i for i in hits if side is None or _deriv_side(cells[i]) == side]
+        if not good and key == "host_carrying" and amount is not None and len(ids) == cited.get(field):
+            summed = _host_sum(ids, cells, amount, want_unit)
+            if summed:
+                matched[field] = "+".join(summed)
+                matched_mult[field] = cells[summed[0]].get("multiplier")
+                evidence[field] = summed
+                continue
         if not good:
             holder[key] = None
             evidence[field] = []

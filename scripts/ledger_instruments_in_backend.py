@@ -1,4 +1,4 @@
-"""2층 ② 사채·우선주 기록을 TEMIS 백엔드 이미지 안에서 luna로 돌린다(프롬프트 i1).
+"""2층 ② 사채·우선주 기록을 TEMIS 백엔드 이미지 안에서 luna로 돌린다(프롬프트 버전은 instruments.PROMPT_VERSION).
 
 백엔드 소스(/w)와 수집기 소스(/c)를 PYTHONPATH에 두고 실행한다. env는 `--env-file`로만 넘긴다
 (이 스크립트는 env 값을 읽어 출력하지 않는다). 1층 결과 파일만 읽으므로 dart-agent는 필요 없다.
@@ -9,7 +9,7 @@
 - 대상: --ledger/facts.jsonl 의 사채·우선주 개념 사실이나 주석 제목으로 needs_instruments 인 공시.
 - 출력: 공시·fs_scope 마다 한 줄 {rcept_no, fs_scope, records, dropped, prompt_version, model, usage, ...}.
   이어 하기 — 이미 있는 (rcept_no, fs_scope)는 건너뛴다(llm_error 줄은 다시 부른다).
-- 캐시: 기본 <out>.cache.jsonl(키 = sha256(i1 + 입력 묶음), 값 = 원 응답). --no-cache 면 쓰지 않는다
+- 캐시: 기본 <out>.cache.jsonl(키 = sha256(PROMPT_VERSION + 입력 묶음), 값 = 원 응답). --no-cache 면 쓰지 않는다
   (같은 100건 재현율 측정용). --dry 는 LLM 없이 {"instruments": []} 를 돌려주는 가짜로 배선만 확인하고
   캐시를 쓰지 않는다.
 - 요약: <out>.summary.json

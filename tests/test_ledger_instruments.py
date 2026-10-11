@@ -18,7 +18,8 @@ from dart_search_mcp.ledger.instrument_input import (
 from dart_search_mcp.ledger import instruments as instruments_mod
 from dart_search_mcp.ledger.instruments import (
     OUTPUT_SCHEMA,
-    PROMPT_I1,
+    PROMPT_I2,
+    PROMPT_VERSION,
     Cache,
     build_messages,
     cache_key,
@@ -463,7 +464,7 @@ class ExtractInstrumentsTest(unittest.TestCase):
         out = extract_instruments(_inp(), llm, None, model="luna")
         self.assertEqual(len(llm.calls), 1)
         self.assertEqual(out["rcept_no"], "R")
-        self.assertEqual(out["prompt_version"], "i1")
+        self.assertEqual(out["prompt_version"], PROMPT_VERSION)
         self.assertEqual(out["model"], "luna")
         self.assertEqual([r["series_key"] for r in out["records"]], ["CB-3", "CB-4"])
         self.assertEqual(out["records"][0]["issues"], [])
@@ -535,7 +536,7 @@ class ExtractInstrumentsTest(unittest.TestCase):
         inp["tables_text"] = "[T1] (separate) / 단위: (단위: 천원)\nr3 전환사채 | c1=1,000,000"
         msgs = build_messages(inp)
         self.assertEqual([m["role"] for m in msgs], ["system", "user"])
-        self.assertEqual(msgs[0]["content"], PROMPT_I1["system"])
+        self.assertEqual(msgs[0]["content"], PROMPT_I2["system"])
         for phrase in ("전환사채·신주인수권부사채·교환사채·상환전환우선주", "표 칸 id와 문장 id로만",
                        "null 또는 unconfirmed", "부채요소(주계약)와 전환권 파생상품부채는 다른 칸"):
             self.assertIn(phrase, msgs[0]["content"])
@@ -543,7 +544,7 @@ class ExtractInstrumentsTest(unittest.TestCase):
         self.assertIn(inp["tables_text"], user)
         self.assertIn("s11: 전환권은 자본으로 분류하였습니다.", user)
         self.assertIn("f:T2:1: ", user)
-        for phrase in ("천원 숫자를 그대로", "「전환권조정」·「사채할인발행차금」", "만들어 내지 않는다",
+        for phrase in ("천원 숫자를 그대로", "「사채할인발행차금」·「상환할증금」·「합계」", "만들어 내지 않는다",
                        '"option_class": "equity"', "derivative_liability", "whole_fvpl"):
             self.assertIn(phrase, user)
         self.assertEqual(OUTPUT_SCHEMA["required"], ["instruments"])
@@ -590,7 +591,7 @@ class RunFilingsTest(unittest.TestCase):
             z = next(r for r in rows if r["rcept_no"] == "Z")
             self.assertEqual(z["skipped"], "no_tables")
             il = next(r for r in rows if r["rcept_no"] == ILDONG)
-            self.assertEqual((il["prompt_version"], il["model"], il["records"], il["dropped"]), ("i1", "dry", [], []))
+            self.assertEqual((il["prompt_version"], il["model"], il["records"], il["dropped"]), (PROMPT_VERSION, "dry", [], []))
             self.assertEqual(il["usage"], {"prompt_tokens": 1})
             self.assertGreater(il["n_cells"], 0)
             self.assertEqual(len(llm.calls), 3)
@@ -800,8 +801,8 @@ class ModelUsedTest(unittest.TestCase):
 
 class PromptExampleTest(unittest.TestCase):
     def test_example_has_no_synthetic_series_key(self):
-        self.assertNotIn("CB-?", PROMPT_I1["example"])
-        self.assertIn('"series_key": ""', PROMPT_I1["example"])
+        self.assertNotIn("CB-?", PROMPT_I2["example"])
+        self.assertIn('"series_key": ""', PROMPT_I2["example"])
         self.assertNotIn("CB-?", build_messages(_inp())[1]["content"])
 
 
@@ -875,6 +876,238 @@ class ResumeAndSummaryTest(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual(json.loads(buf.getvalue().strip().splitlines()[-1])["evidence_pass_rate"], 1.0)
             self.assertTrue((d / "o.jsonl.measure.json").exists())
+
+
+def _dcell(label, *, path=None, col="당기말", tt="", nt="", value=100, multiplier=1000, unit_kind="krw"):
+    return {"raw": f"{value:,}", "value": value, "unit_kind": unit_kind, "multiplier": multiplier,
+            "period": "current_end", "label": label, "label_path": path or [label], "col_header": col,
+            "table_title": tt, "note_title": nt}
+
+
+_EXERCISE_TT = "(3) 발행자의 주가 변동에 따라 행사가격이 조정되는 조건으로 인해 부채로 분류된 각 금융부채의 장부금액은 다음과 같습니다."
+
+
+class MeasuredDerivativeRowsTest(unittest.TestCase):
+    """측정 1회(100건)에서 거짓 거부였던 실제 행 모양(괄호는 출처 공시·표)."""
+
+    def test_accepted_sides(self):
+        from dart_search_mcp.ledger.instrument_validate import _deriv_side
+        cases = [
+            # 20260403002153 t137 — 행사가격 조정 표의 「…내재파생상품」 행
+            (_dcell("제7회 상환전환우선주 내재파생상품", tt=_EXERCISE_TT, nt="상환전환우선주"), "liability"),
+            # 20260319001119 t136 — 회차 이름 아래 「전환권/조기상환권」 둘째 칸
+            (_dcell("제3회 무기명식 무이권부 무보증 사모 전환사채",
+                    path=["제3회 무기명식 무이권부 무보증 사모 전환사채", "전환권/조기상환권"],
+                    tt="(4) 발행자의 주가변동에 따라 행사가격 조정되는 조건으로 인해 부채로 분류된 금융부채는 다음과 같습니다.",
+                    nt="전환사채"), "liability"),
+            # 20260319001010 t062·t061 — 파생상품부채/자산 변동표의 기말 행(앞 문단이 제목에 붙어 옴)
+            (_dcell("기말", col="당기", tt="(2) 보고기간 종료일 현재 파생상품부채의 변동내역은 다음과 같습니다.",
+                    nt="파생상품"), "liability"),
+            (_dcell("기말", col="당기", nt="파생상품",
+                    tt="18. 파생상품자산 및 파생상품부채 전환권(투자자 Call Option)과 조기상환청구권을 파생상품부채로, "
+                       "매도청구권은 파생상품자산으로 분류하였습니다.(1) 보고기간 종료일 현재 파생상품자산의 변동내역은 다음과 같습니다."),
+             "asset"),
+            # 20260403002552 t103 — 자산·부채 두 열 변동표: 열 머리글이 쪽을 정한다
+            (_dcell("기말", col="전기/파생상품자산",
+                    tt="(5) 당기 및 전기의 전환사채와 관련된 파생상품자산과 파생상품부채의 변동내역은 다음과 같습니다."),
+             "asset"),
+            # 20260319000983 t130 — 열 머리글의 매도청구권(발행자 콜) = 자산
+            (_dcell("당기말", col="제4회 전환사채 매도청구권(Call Option)/당 기",
+                    tt="21.4 보고기간말 현재 전환사채관련 파생상품의 변동내역은 다음과 같습니다.", nt="전환사채"), "asset"),
+            # 20260319000725 t074 — 「보고기간종료일 장부금액」 행, 제목이 파생상품부채로 인식된 내재파생상품
+            (_dcell("보고기간종료일 장부금액", path=["제6차 전환상환우선주", "보고기간종료일 장부금액"], col="전기",
+                    tt="보통주의 주가 변동에 따라 파생상품부채로 인식된 전환상환우선주의 내재파생상품이 당기손익에 미치는 영향은 다음과 같습니다.",
+                    nt="금융부채"), "liability"),
+            # 20260403001578 t071 — 제목이 「파생상품부채의 내역」인 표의 회차 행
+            (_dcell("4회차 전환상환우선주", tt="다. 당기말과 전기말 현재 파생상품부채의 내역은 다음과 같습니다(단위: 천원).",
+                    nt="전환상환우선주"), "liability"),
+            # 20260319000958 t090 — 조기상환청구권(투자자 풋) = 부채
+            (_dcell("조기상환청구권(주2)", tt="(3) 전환사채1) 전환사채의 내용은 다음과 같습니다.", nt="차입금"), "liability"),
+            # 20260401005132 t057 — 주석 제목이 자산
+            (_dcell("조기매도청구권1차", tt="(3) 보고기간 종료일 현재 공정가치로 측정하는 파생상품의 내역은 다음과 같습니다.",
+                    nt="공정가치측정금융자산"), "asset"),
+        ]
+        for cell, side in cases:
+            self.assertEqual(_deriv_side(cell), side, cell["label_path"])
+
+    def test_still_rejected(self):
+        """Review Focus 3: 부채요소·합계·상품 전체 금액·쪽 모름은 파생상품 칸이 아니다."""
+        from dart_search_mcp.ledger.instrument_validate import _deriv_side
+        cases = [
+            # 20251002000318 t112 — 행사가격 표의 상품 이름만 있는 행(상품 전체 장부금액)
+            _dcell("제1종 전환상환우선주", tt=_EXERCISE_TT, nt="금융부채"),
+            _dcell("제13회 전환사채 및 조기상환권", tt=_EXERCISE_TT),
+            # 20260403001154 t041 — 「전환권가치」 열의 차감(괄호 음수)
+            _dcell("제1회 기명식 무보증 사모 전환사채", col="전환권가치", value=-9641342,
+                   tt="(3) 보고기간 종료일 현재 전환사채의 세부내역은 다음과 같습니다.(당 기)", nt="전환사채"),
+            _dcell("전환권조정", tt="파생상품부채의 내역"),
+            _dcell("합 계", tt="파생상품부채의 내역"),
+            # 20260402001825 t058 — 내재파생상품이지만 쪽을 알 수 있는 곳이 없다
+            _dcell("상환전환우선주 내재파생상품", col="공정가치", tt="① 당기말", nt="금융상품 공정가치"),
+            _dcell("매도청구권 및 조기상환청구권", tt="전환사채의 내용"),
+            _dcell("기말", col="당기", tt="(5) 전환사채와 관련된 파생상품자산과 파생상품부채의 변동내역"),
+            _dcell("기말", col="당기", tt="전환사채의 변동내역", nt="전환사채"),
+            _dcell("전환권대가", tt="파생상품부채의 내역"),
+        ]
+        for cell in cases:
+            self.assertIsNone(_deriv_side(cell), cell["label_path"])
+
+    def test_option_liability_sentences(self):
+        from dart_search_mcp.ledger.instrument_validate import _positive_deriv_liability_sentence as pos
+        yes = ["전환상환우선주에 내재된 전환권 및 조기상환권은 자본요소에 해당하지 않으므로 금융부채로 분류하였으며",
+               "주계약은 상각후원가로 평가되고, 조기상환권 및 전환권은 파생상품으로 인식하였습니다.",
+               "(4) 전환상환우선주는 회사의 주가 변동에 따라 행사격이 조정되는 조건이 있어 전환권을 금융부채로 분류하고 있으며",
+               "전환권은 파생상품부채로 분류하였습니다."]
+        no = ["전환상환우선주의 전환권이 자본요소를 만족하지 못할 경우 전환권과 조기상환권을 부채로 분류하며",
+              "동 복합금융상품에 대하여 회사는 주계약과 내재파생상품을 포함한 전환상환우선주 전체를 당기손익-공정가치 측정 금융부채로 지정하였습니다.",
+              "전환권은 파생상품부채로 분류하지 않고 자본으로 분류하였습니다.",
+              "내재파생상품은 상환전환우선주에 대한 전환권 및 조기상환권에 대한 공정가치 평가액입니다.",
+              "전환권대가는 자본으로 분류하였습니다.",
+              "전환권조정은 전환사채에서 차감하는 형식으로 부채로 분류하였습니다."]
+        for t in yes:
+            self.assertTrue(pos(t), t)
+        for t in no:
+            self.assertFalse(pos(t), t)
+
+    def test_option_class_by_new_rows_and_sentence(self):
+        inp = _inp()
+        inp["cells"]["T5:r2:c1"] = _dcell("제7회 상환전환우선주 내재파생상품", tt=_EXERCISE_TT)
+        inp["sentences"]["s30"] = "조기상환권 및 전환권은 파생상품으로 인식하였습니다."
+        for ids in (["T5:r2:c1"], ["s30"]):
+            rec = _record(option_class="derivative_liability")
+            rec["evidence"]["option_class"] = ids
+            out, reasons = validate(rec, inp)
+            self.assertEqual(out["option_class"], "derivative_liability", ids)
+        rec = _record()
+        rec["balance"]["current_end"]["derivative_liability"] = 100
+        rec["evidence"]["balance.current_end.derivative_liability"] = ["T5:r2:c1"]
+        out, reasons = validate(rec, inp)
+        self.assertEqual(out["balance"]["current_end"]["derivative_liability"], 100)
+        self.assertEqual(out["matched_multiplier"]["balance.current_end.derivative_liability"], 1000)
+
+
+def _host_inp():
+    """20250728000410 t165 「8회차 비유동전환사채의 변동내역」(천원)을 본뜬 칸."""
+    tt = "18.4.1 8회차 비유동전환사채의 변동내역은 다음과 같습니다."
+    cells = {
+        "H:r1:c1": _dcell("액면금액", value=3500000, tt=tt, nt="사채"),
+        "H:r2:c1": _dcell("전환권조정", value=-1581021, tt=tt, nt="사채"),
+        "H:r3:c1": _dcell("상환할증금", value=0, tt=tt, nt="사채"),
+        "H:r1:c2": _dcell("액면금액", value=3000000, tt=tt, nt="사채"),
+        "H:r4:c1": _dcell("전환사채의 자본요소", value=1000, tt=tt, nt="사채"),
+        "D:r1:c1": _dcell("파생상품부채", value=1000, tt="파생상품부채"),
+        "U:r1:c1": _dcell("액면금액", value=3500000, multiplier=1, tt=tt),
+    }
+    return {"rcept_no": "R", "cells": cells, "tables_text": "", "sentences": {"s11": "x"}}
+
+
+def _host_record(value, ids, key="host_carrying"):
+    rec = {"instrument": "제8회 전환사채", "series_key": "CB-8", "kind": "CB",
+           "balance": {"prior_end": {key: value}}, "option_class": None, "embedded_separation": None,
+           "evidence": {f"balance.prior_end.{key}": ids}}
+    return rec
+
+
+class HostSumTest(unittest.TestCase):
+    def test_component_sum_accepted(self):
+        ids = ["H:r1:c1", "H:r2:c1", "H:r3:c1"]
+        out, reasons = validate(_host_record(1918979, ids), _host_inp())
+        self.assertEqual(reasons, [])
+        self.assertEqual(out["balance"]["prior_end"]["host_carrying"], 1918979)
+        self.assertEqual(out["matched"]["balance.prior_end.host_carrying"], "H:r1:c1+H:r2:c1+H:r3:c1")
+        self.assertEqual(out["matched_multiplier"]["balance.prior_end.host_carrying"], 1000)
+        self.assertEqual(out["evidence"]["balance.prior_end.host_carrying"], ids)
+
+    def test_component_sum_rejected(self):
+        bad = [(1918979, ["H:r1:c1", "H:r2:c1", "H:r3:c1", "T9:r1:c1"]),   # 없는 칸 섞임
+               (1918978 - 5, ["H:r1:c1", "H:r2:c1", "H:r3:c1"]),             # 합이 다름
+               (-1581021 + 3000000, ["H:r1:c2", "H:r2:c1"]),                 # 다른 열
+               (3500000 - 1581021 + 1000, ["H:r1:c1", "H:r2:c1", "H:r4:c1"]),  # 자본요소 섞임
+               (3500000 - 1581021 + 1000, ["H:r1:c1", "H:r2:c1", "D:r1:c1"]),  # 다른 표·파생 칸
+               (3500000 - 1581021, ["U:r1:c1", "H:r2:c1"]),                  # 다른 표·배수
+               (3500000, ["H:r1:c1"] * 1 + ["H:r3:c1"] * 0)]                  # 칸 하나면 그 칸 값 그대로(합 아님)
+        for value, ids in bad[:-1]:
+            out, reasons = validate(_host_record(value, ids), _host_inp())
+            self.assertIsNone(out["balance"]["prior_end"]["host_carrying"], ids)
+            self.assertIn("amount_mismatch:balance.prior_end.host_carrying", reasons)
+
+    def test_sum_only_for_host_carrying(self):
+        for key in ("face", "derivative_liability", "equity_component"):
+            out, reasons = validate(_host_record(1918979, ["H:r1:c1", "H:r2:c1", "H:r3:c1"], key), _host_inp())
+            self.assertIsNone(out["balance"]["prior_end"][key], key)
+
+
+class SentenceIdFormatTest(unittest.TestCase):
+    def test_canonical_sentence_ids(self):
+        for given in ("s:11", "R:00761:s11", "20260319001119:00761:s11"):
+            rec = _record()
+            rec["evidence"]["option_class"] = [given]
+            out, reasons = validate(rec, _inp())
+            self.assertEqual(out["option_class"], "equity", given)
+            self.assertEqual(out["evidence"]["option_class"], ["s11"], given)
+        for given in ("s:999", "T1", "T1:r0", "T1:r7"):
+            rec = _record()
+            rec["evidence"]["option_class"] = [given]
+            out, reasons = validate(rec, _inp())
+            self.assertEqual(out["option_class"], "unconfirmed", given)
+
+
+class TextTableCellsTest(unittest.TestCase):
+    """20250910000615 t061 「전환사채의 주요 발행조건」 — 값 열 없는 글 표의 금액에 v id 를 준다."""
+
+    def _terms(self):
+        t = _table([("x", [1])], note_title="차입금", title="(5) 전환사채의 주요 발행조건은 다음과 같습니다.",
+                   tid="R:00760:t061")
+        t["columns"] = [{"col": 0, "header_path": ["구분"], "role": "label"},
+                        {"col": 1, "header_path": ["구분"], "role": "label"},
+                        {"col": 2, "header_path": ["제1회 전환사채"], "role": "label"},
+                        {"col": 3, "header_path": ["제2회 전환사채"], "role": "label"}]
+        t["unit"] = {"raw": "(단위: 천원)", "kind": "krw", "multiplier": 1000, "currency": "KRW"}
+        t["rows"] = [
+            {"row": 2, "label": "2027년 2월 26일", "label_path": ["만기일", "2026년 9월 5일", "2027년 2월 26일"], "cells": []},
+            {"row": 3, "label": "35,000,000,000원", "label_path": ["액면가액", "20,000,000,000원", "35,000,000,000원"],
+             "cells": []},
+            {"row": 12, "label": "9,269,068주", "label_path": ["주식수", "5,997,001주", "9,269,068주"], "cells": []},
+            {"row": 13, "label": "x", "label_path": ["발행가액", "(1,000)천원"], "cells": []},
+        ]
+        return t
+
+    def test_v_cells(self):
+        inp = build_input("R", [self._terms()], [])
+        c = inp["cells"]["R:00760:t061:r3:v2"]
+        self.assertEqual((c["value"], c["unit_kind"], c["multiplier"], c["label"]), (35000000000, "krw", 1, "액면가액"))
+        self.assertEqual(inp["cells"]["R:00760:t061:r3:v1"]["value"], 20000000000)
+        self.assertEqual(inp["cells"]["R:00760:t061:r13:v1"]["value"], -1000)
+        self.assertEqual(inp["cells"]["R:00760:t061:r13:v1"]["multiplier"], 1000)
+        self.assertFalse([k for k in inp["cells"] if ":r12:" in k or ":r2:" in k])
+        self.assertIn("r3 액면가액 | v1=20,000,000,000원 | v2=35,000,000,000원", inp["tables_text"])
+        self.assertIn("r2 만기일 | 2026년 9월 5일 | 2027년 2월 26일", inp["tables_text"])
+        self.assertIn("열 | 구분 | 구분 | 제1회 전환사채 | 제2회 전환사채", inp["tables_text"])
+        rec = _record()
+        rec["balance"] = {"current_end": {"face": 35000000000}}
+        rec["evidence"] = {"balance.current_end.face": ["R:00760:t061:r3:v2"]}
+        out, reasons = validate(rec, inp)
+        self.assertEqual(out["balance"]["current_end"]["face"], 35000000000)
+        self.assertEqual(out["matched_multiplier"]["balance.current_end.face"], 1)
+
+    def test_text_table_counts_as_having_cells(self):
+        from dart_search_mcp.ledger.instrument_input import _has_cells
+        self.assertTrue(_has_cells(self._terms()))
+
+    def test_period_tag_in_header(self):
+        t = _table([("전환사채", [1, 2])], note_title="전환사채", tid="R:00760:t001")
+        inp = build_input("R", [t], [])
+        self.assertIn("머리글 | c1=current_end [current_end] | c2=prior_end [prior_end]", inp["tables_text"])
+
+
+class PromptI2Test(unittest.TestCase):
+    def test_i2_rules(self):
+        self.assertEqual(PROMPT_VERSION, "i2")
+        user = build_messages(_inp())[1]["content"]
+        for phrase in ("1499943000 이 아니다", '"s:494"', "<표 id>:r<행>:v<번호>", "[current_end]",
+                       "null 이 아닌 필드는 모두 evidence", "같은 표·같은 열에 구성 칸", "「전환권가치」",
+                       "조건부", "전체 장부금액도 여기에", "「전환사채 및 조기상환권」"):
+            self.assertIn(phrase, user)
 
 if __name__ == "__main__":
     unittest.main()

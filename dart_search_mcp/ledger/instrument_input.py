@@ -21,6 +21,9 @@ _ROW_RE = re.compile(r"전환|신주인수권|교환사채|교환권|우선주|�
 _NOTE_BLOCK_RE = re.compile(r"법인세|이연|현금흐름|주당")
 _HEADING_RE = re.compile(r"^\s*\d{1,3}\s*\.\s*(\S.{0,40})$")
 _UNIT_HEAD_RE = re.compile(r"^\(?\s*단위\s*[:：]")
+# 발행조건 같은 글 표(값 열 없음)의 「35,000,000,000원」 — 통화 낱말이 붙은 금액만 칸으로 낸다.
+_TEXT_AMOUNT_RE = re.compile(r"^\s*(\()?\s*(-)?\s*(\d{1,3}(?:,\d{3})+|\d+)\s*(\))?\s*(원|천원|백만원)\s*$")
+_TEXT_MULT = {"원": 1, "천원": 1000, "백만원": 1_000_000}
 
 
 def needs_instruments(facts: list[dict], tables: list[dict]) -> bool:
@@ -77,6 +80,12 @@ def _header_label(col: dict) -> str:
     return "/".join(dict.fromkeys(parts))
 
 
+def _period_tag(col: dict) -> str:
+    """머리글 줄에 열 기간 코드를 붙인다(「c1=당기말 [current_end]」). 모르면 붙이지 않는다."""
+    p = col.get("period")
+    return f" [{p}]" if p and p != "unknown" else ""
+
+
 def _unit_label(unit: dict) -> str:
     return (unit or {}).get("raw") or (unit or {}).get("kind") or ""
 
@@ -91,6 +100,37 @@ def _footnotes(t: dict) -> list[tuple[str, str, str]]:
         seen.add(text)
         out.append((f"f:{t['table_id']}:{k}", fn.get("mark") or "", text))
     return out
+
+
+def _text_amount(text: str) -> tuple[int, int] | None:
+    """「35,000,000,000원」 → (35000000000, 1). 통화 낱말이 없거나 금액이 아니면 None."""
+    m = _TEXT_AMOUNT_RE.match(text or "")
+    if not m:
+        return None
+    value = int(m.group(3).replace(",", ""))
+    if m.group(2) or (m.group(1) and m.group(4)):
+        value = -value
+    return value, _TEXT_MULT[m.group(5)]
+
+
+def _is_text_table(t: dict) -> bool:
+    return not any(c.get("role") == "value" for c in t.get("columns") or [])
+
+
+def _render_text_row(t: dict, r: dict, path: list[str], cells: dict, meta: dict) -> str:
+    """값 열 없는 글 표의 행: 첫 칸은 행 이름, 그 뒤 칸 중 통화 금액은 `<표 id>:r<행>:v<k>` 칸으로 낸다
+    (k = 행 이름 다음부터 1, 2, …; 병합 칸이 줄어 있어 열 번호와 맞지 않으므로 c 대신 v)."""
+    parts = [f"r{r['row']} {path[0]}".rstrip()]
+    for k, text in enumerate(path[1:], start=1):
+        amt = _text_amount(text)
+        if amt is None:
+            parts.append(text)
+            continue
+        vid = f"{t['table_id']}:r{r['row']}:v{k}"
+        parts.append(f"v{k}={text.strip()}")
+        cells[vid] = {"raw": text.strip(), "value": amt[0], "unit_kind": "krw", "multiplier": amt[1],
+                      "period": None, "label": path[0], "label_path": [path[0]], **meta}
+    return " | ".join(parts)
 
 
 def _render_table(t: dict, cells: dict) -> tuple[list[str], list[tuple[str, str, str]]]:
@@ -109,9 +149,16 @@ def _render_table(t: dict, cells: dict) -> tuple[list[str], list[tuple[str, str,
     cols = {c["col"]: c for c in t.get("columns") or []}
     value_cols = [c for c in t.get("columns") or [] if c.get("role") == "value"]
     if value_cols:
-        lines.append("머리글 | " + " | ".join(f"c{c['col']}={_header_label(c)}" for c in value_cols))
+        lines.append("머리글 | " + " | ".join(f"c{c['col']}={_header_label(c)}{_period_tag(c)}" for c in value_cols))
+    text_table = _is_text_table(t)
+    if text_table and len(t.get("columns") or []) > 1:
+        lines.append("열 | " + " | ".join(_header_label(c) for c in t.get("columns") or []))
+    meta = {"table_title": t.get("title"), "note_title": region.get("note_title")}
     for r in t.get("rows") or []:
         path = r.get("label_path") or [r.get("label") or ""]
+        if text_table and not r.get("cells") and len(path) > 1:
+            lines.append(_render_text_row(t, r, path, cells, meta))
+            continue
         label = " > ".join(path) if len(path) > 1 else (r.get("label") or path[-1])
         parts = [f"r{r['row']} {label}".rstrip()]
         for c in r.get("cells") or []:
@@ -124,8 +171,8 @@ def _render_table(t: dict, cells: dict) -> tuple[list[str], list[tuple[str, str,
             cells[_cell_id(tid, r["row"], c["col"])] = {
                 "raw": raw, "value": c.get("value"), "unit_kind": u.get("kind"),
                 "multiplier": u.get("multiplier"), "period": col.get("period"),
-                "label": r.get("label"), "label_path": list(path),
-                "table_title": t.get("title"), "note_title": region.get("note_title"),
+                "label": r.get("label"), "label_path": list(path), "col_header": _header_label(col),
+                **meta,
             }
         lines.append(" | ".join(parts))
     notes = [(fid, f"{fid} {mark} {text}".replace("  ", " "), text) for fid, mark, text in _footnotes(t)]
@@ -133,7 +180,9 @@ def _render_table(t: dict, cells: dict) -> tuple[list[str], list[tuple[str, str,
 
 
 def _has_cells(t: dict) -> bool:
-    return any((c.get("raw") or "").strip() for r in t.get("rows") or [] for c in r.get("cells") or [])
+    if any((c.get("raw") or "").strip() for r in t.get("rows") or [] for c in r.get("cells") or []):
+        return True
+    return _is_text_table(t) and any(_text_amount(p) for r in t.get("rows") or [] for p in (r.get("label_path") or [])[1:])
 
 
 def _select_tables(tables: list[dict]) -> list[dict]:
