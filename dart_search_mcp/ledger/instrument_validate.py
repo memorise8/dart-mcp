@@ -159,9 +159,22 @@ def _maturity_bucket_cell(cell: dict) -> bool:
 
 # 상품 이름 뒤에 변동 낱말이 오는 행(fix round 3): 「전환사채 상환」·「전환사채 전환」·「상환전환우선주 발행」은 변동 행이다.
 # 옵션·구성 낱말(전환권·조기상환청구권·상환할증금·행사가격·발행가액·미상환잔액 …)은 아니다.
-_KIND_MOVEMENT_RE = re.compile(r"(?:전환사채|신주인수권부사채|교환사채|우선주)[^/]*?(?<!미)(?<!조기)"
-                               r"(?:상환|전환|행사|발행|증가|감소|취득|처분|대체)"
-                               r"(?!권|청구|할증|가격|가액|금액|차금|우선주|사채|잔액|조건|일|예정|기간|비율)")
+# fix round 4: 상품 낱말 뒤 꼬리에서 옵션 복합어(상환전환권·투자자 상환전환권·조기상환청구권·매도청구권 …)와
+# 상품 복합어(전환상환우선주·상환전환우선주), 「(발행)」 표기를 먼저 지우고 본다. 전환가치·발행자·발행회사는 변동이 아니다.
+_KIND_WORD_ROW_RE = re.compile(r"전환사채|신주인수권부사채|교환사채|우선주")
+_MOVE_TAIL_STRIP_RE = re.compile(r"(?:상환전환|전환상환|조기상환|상환|전환|신주인수|교환|매도|매수)(?:청구)?권"
+                                 r"|(?:상환전환|전환상환|상환|전환)우선주|\(발행\)")
+_MOVE_WORD_RE = re.compile(r"(?<!미)(?<!조기)(?:상환|전환|행사|발행|증가|감소|취득|처분|대체)"
+                           r"(?!권|청구|할증|가격|가액|금액|차금|우선주|사채|잔액|조건|일|예정|기간|비율|가치|자|회사)")
+
+
+def _kind_movement(text: str) -> bool:
+    """행 이름 한 층(공백 없앤 것)이 「상품 낱말 + 변동 낱말」 변동 행인가(「전환사채 상환」·「상환전환우선주 발행」)."""
+    for m in _KIND_WORD_ROW_RE.finditer(text or ""):
+        tail = _MOVE_TAIL_STRIP_RE.sub("", (text[m.end():]).split("/")[0])
+        if _MOVE_WORD_RE.search(tail):
+            return True
+    return False
 
 
 def _non_balance_cell(cell: dict) -> bool:
@@ -172,7 +185,7 @@ def _non_balance_cell(cell: dict) -> bool:
         return True
     if _maturity_bucket_cell(cell):
         return True
-    if any(_KIND_MOVEMENT_RE.search(_norm_label(p)) for p in [*(cell.get("label_path") or []), cell.get("label") or ""]):
+    if any(_kind_movement(_norm_label(p)) for p in [*(cell.get("label_path") or []), cell.get("label") or ""]):
         return True  # 「전환사채 상환」 변동 행
     col = re.sub(r"\s+", "", cell.get("col_header") or "")
     labels = [_norm_label(p) for p in (cell.get("label_path") or [])] + [_norm_label(cell.get("label"))]
@@ -550,6 +563,77 @@ _EQUITY_SPLIT_RE = re.compile(r"자본부분|자본요소|전환권대가|신주
 # 분리 동사가 없고(「구분 계상」) 옵션 경로가 자산 끝을 받지 않으므로 따로 막지 않는다(「…풋과 (제3자) 콜을 분리하여」는 분리).
 _HOLDER_RE = re.compile(r"금융자산|취득한|취득하여|투자한")
 _SEP_CONDITIONAL_RE = re.compile(r"경우|때에는|때는|라면")
+# fix round 4(R17 「자기 회사」): separated 를 확인하는 분리 문장은 발행자 쪽만이다. 보유자 낱말 — 발행회사에 대하여,
+# 행사할 수 있는 권리, 보유(하고 있는·한·중 …), 취득(시점·한·하여 …), 대출채권, 매매목적, 투자(투자자 제외),
+# 금융자산(으로 분류·인식, 당기손익-공정가치측정금융자산) — 이 든 문장은 아니다. 「사채권자가 보유한 …」처럼 보유의 주어가
+# 사채권자·투자자이면 발행자 문장이라 막지 않는다.
+_HOLDER_WORD_RE = re.compile(r"발행회사에\s*대하여|행사할\s*수\s*있는\s*권리|보유\s*(?:하고\s*있|한|중|하는|하여|목적)"
+                             r"|취득|대출채권|매매\s*목적|투자(?!자)|금융자산")
+_HOLDER_SUBJECT_BEFORE_RE = re.compile(r"(?:권자|투자자|보유자)(?:가|는|이|들이|들은)?\s*$")
+# 보유자 진술 쪽(넓게): 보유의 주어가 남(제3자·주주·기업·특수관계자)이거나 목적어가 다른 것(「의결권을 보유한」).
+_STATEMENT_SUBJECT_BEFORE_RE = re.compile(r"(?:권자|투자자|보유자|제\s*3\s*자|제삼자|주주|(?<!지배)(?<!연결)기업|특수관계자)"
+                                          r"(?:가|는|이|들이|들은)?\s*$|(?:을|를)\s*$")
+# 「…상환전환우선주를 보유한 투자자가」 — 보유의 주어가 뒤에 오는 관계절(투자자·주주·사채권자)
+_HOLDER_SUBJECT_AFTER_RE = re.compile(r"^\s*(?:한|하는|하고\s*있는|중인)\s*(?:투자자|주주|사채권자|보유자|자(?:가|는|의))")
+# 공시 단위 보유자 진술 — 상품이 보유·취득·투자의 목적어이거나 자산으로 분류된 문장:
+# 「…전환사채 및 신주인수권부사채를 매매목적으로 보유」, 「…해외전환사채 및 신주인수권을 보유」, 「보유하고 있는 전환사채」·
+# 「취득한 전환사채」, 「기타대출채권으로 분류된 전환사채」, 「… 상환전환우선주는 … 장기투자자산으로 분류」.
+# 희석주당이익 문장(「회사가 보유하고 있는 희석성 잠재적보통주로는 전환상환우선주」), 자기 회사 상품(「…기업이 보유하고 있는
+# 연결회사의 전환사채」), 「…권리를 보유」처럼 상품이 목적어가 아닌 문장은 아니다.
+# 우선주는 전환·상환이 붙은 것만(「보통주와 의결권이 있는 우선주를 합산한 보유주식수」는 주주 지분이다).
+_PREF = r"(?:상환전환|전환상환|상환|전환)우선주"
+_KIND_OBJ = r"(?:전환사채|신주인수권부사채|교환사채|" + _PREF + r"|신주인수권(?!부))"
+_KIND_NAME = r"(?:전환사채|신주인수권부사채|교환사채|" + _PREF + r")"
+_HOLDER_STATEMENT_RES = (
+    re.compile(_KIND_OBJ + r"(?:\s*등)?\s*(?:을|를)\s*[^.。]{0,15}?(?:보유(?!자)|취득|투자(?!자))"),
+    re.compile(r"(?:보유|취득|투자)\s*(?:하고\s*있는|하고\s*있던|한|중인)\s*(?:[^.。\s]{1,12}\s*){0,2}?" + _KIND_NAME),
+    re.compile(r"(?:금융자산|투자자산|대출채권)\s*(?:으로|로)\s*분류\s*(?:된|되는|한|하고\s*있는)\s*[^.。]{0,30}?" + _KIND_NAME),
+    re.compile(_KIND_NAME + r"(?:\s*등)?\s*(?:은|는|을|를)\s*(?P<gap>[^.。]{0,120}?)(?:금융자산|투자자산|대출채권)\s*(?:으로|로)\s*"
+               r"(?:분류|인식|계상|지정)"),
+    re.compile(r"매매\s*목적"),
+)
+_HOLDER_STATEMENT_SKIP_RE = re.compile(r"희석|잠재적\s*보통주")
+_OWN_INSTRUMENT_RE = re.compile(r"(?<![가-힣])(?:당사|회사|연결회사|지배기업|지배회사|연결실체)\s*(?:의|가\s*발행한|이\s*발행한)\s*"
+                                + _KIND_NAME)
+_GAP_OPTION_RE = re.compile(r"콜옵션|풋옵션|매도청구권|매수청구권|조기상환|전환권|신주인수권(?!부)|교환권")
+# 자기 회사를 발행자로 적은 말(「당사가 발행한」·「연결회사가 발행한」·「회사는 … 발행하였」). 「발행회사」·「B사」는 아니다.
+_ISSUER_NAMED_RE = re.compile(r"(?<![가-힣])(?:당사|회사|연결회사|지배기업|지배회사|연결실체|연결기업)"
+                              r"(?:가|는|이|은|의|에서)?\s*[^.。]{0,25}?발행\s*(?:한|하였|했)")
+
+
+def _holder_hits(rx: re.Pattern, text: str) -> bool:
+    """rx 일치 중 보유의 주어가 사채권자·투자자·보유자가 아닌 것이 있는가."""
+    for m in rx.finditer(text):
+        if m.group(0).startswith("보유") and _HOLDER_SUBJECT_BEFORE_RE.search(text[max(0, m.start() - 12):m.start()]):
+            continue
+        return True
+    return False
+
+
+def _holder_wording(text: str) -> bool:
+    return _holder_hits(_HOLDER_WORD_RE, text or "")
+
+
+def _holder_statement(text: str) -> bool:
+    """회사가 남의 전환사채·신주인수권부사채·우선주를 보유(취득·투자)한다는 진술(위 _HOLDER_STATEMENT_RES)."""
+    text = text or ""
+    if not _text_kinds(text) or _HOLDER_STATEMENT_SKIP_RE.search(text):
+        return False
+    for rx in _HOLDER_STATEMENT_RES:
+        for m in rx.finditer(text):
+            if m.group(0).startswith(("보유", "취득", "투자")):
+                if _STATEMENT_SUBJECT_BEFORE_RE.search(text[max(0, m.start() - 12):m.start()]):
+                    continue
+            elif _HOLDER_SUBJECT_AFTER_RE.search(text[m.end():m.end() + 12]):
+                continue
+            if _OWN_INSTRUMENT_RE.search(m.group(0)):
+                continue  # 「…보유하고 있는 연결회사의 전환사채」 — 자기 회사 상품
+            if "gap" in rx.groupindex and _GAP_OPTION_RE.search(m.group("gap") or ""):
+                continue  # 「전환사채에 … 콜옵션을 금융자산으로」 — 옵션이 자산이지 상품이 아니다
+            return True
+    return False
+
+
 # 옵션(풋·콜 포함) 목록이 주어로 바로 조사를 받고 「파생상품(부채)로 분류·인식·계상·회계처리」 — 분리했다는 뜻이다.
 # 파생상품자산으로 잡았다는 문장(제3자 지정 콜 등)은 분리 근거로 쓰지 않는다(그런 분리는 「분리하여」 문장이나 칸으로).
 _OPT_LIST_ANY = rf"(?:{_OPT_ANY}{_JOIN})*{_OPT_ANY}(?:\s*등)?"
@@ -673,23 +757,76 @@ _HOLDER_TITLE_RE = re.compile(r"보유\s*(?:하고\s*있는|한|중인|중|하�
 _INVESTEE_RE = re.compile(r"(?<![가-힣A-Za-z0-9])([가-힣A-Za-z0-9]{0,10}사)\s*의?\s*"
                           r"(?:전환사채|신주인수권부사채|교환사채|(?:상환)?(?:전환)?(?:상환)?우선주)")
 _SELF_COMPANY = {"당사", "회사", "동사", "연결회사", "지배회사", "모회사", "발행회사", "본사"}
+# 행·열의 회사 이름(부채·자산 칸 모두, fix round 4). 「투자자」·「조합」 같은 낱말은 넣지 않는다(부채 칸 「투자자의 조기상환청구권」).
+_COMPANY_NAME_RE = re.compile(r"\(주\)|㈜|주식회사|유한회사|(?<![A-Za-z])(?:Inc|Ltd|Corp|LLC)(?![A-Za-z])")
 _COMPANY_LAYER_RE = re.compile(r"\(주\)|㈜|주식회사|유한회사|합자회사|조합|투자|펀드|(?<![A-Za-z])(?:Inc|Ltd|Co|Corp|LLC)(?![A-Za-z])")
 
 
-def _separation_cell(cid: str, cell: dict, kind: str, series: str | None, nb: set, *, sep_sentence: bool = False) -> bool:
+def _investee_named(cell: dict) -> bool:
+    """행 이름·열 머리글이 상품 앞에 투자 대상 회사 이름을 적었는가(「B사 전환사채의 전환권 등」). 당사·회사·연결회사 등
+    자기 회사는 아니다. 「종속회사의 전환사채」·「자회사 …」도 막는다(fix round 4: 기록의 회사가 연결 발행자인지 이 칸만으로
+    알 수 없다 — 거부는 안전하다)."""
+    return any(m.group(1) not in _SELF_COMPANY for t in _row_col_texts(cell) for m in _INVESTEE_RE.finditer(t))
+
+
+def _holder_title(cell: dict) -> bool:
+    titles = re.sub(r"\s+", " ", (cell.get("table_title") or "") + " | " + (cell.get("note_title") or ""))
+    return bool(_HOLDER_TITLE_RE.search(titles))
+
+
+def _holder_filing(cells: dict, sentences: dict) -> bool:
+    """공시 단위 보유자 신호: 보유자 진술 문장(상품 종류 낱말 + 매매목적·보유·취득·투자·금융자산으로 분류), 투자 대상 이름
+    칸(「B사 전환사채의 전환권 등」), 또는 제목 끝 문장이 보유자 낱말과 상품 종류를 함께 말하는 표(「보유하고 있는 전환사채」)."""
+    if any(_holder_statement(t) for t in sentences.values()):
+        return True
+    for c in cells.values():
+        if _cell_kinds(c) and _investee_named(c):
+            return True
+        core = _title_core(c.get("table_title"))
+        if _HOLDER_TITLE_RE.search(core) and _text_kinds(core):
+            return True
+    return False
+
+
+def _issuer_sep_sentence(text: str, kind: str, series: str | None, holder_filing: bool) -> bool:
+    """separated 를 확인하는 발행자 쪽 분리 문장(fix round 4, R17): 분리 진술("sep")이고 이 상품(종류·회차)을 말하며,
+    보유자 낱말이 없고, 보유자 공시에서는 자기 회사를 발행자로 적어야 한다(「당사가 발행한」)."""
+    if _separation_kind(text) != "sep" or not _sentence_fits(text, kind, series) or _holder_wording(text):
+        return False
+    return not holder_filing or bool(_ISSUER_NAMED_RE.search(text or ""))
+
+
+def _separation_cell(cid: str, cell: dict, kind: str, series: str | None, nb: set, *, sep_sentence: bool = False,
+                     holder_filing: bool = False, contradiction: bool = False) -> bool:
     """이 상품의 분리 파생상품 금액 칸(잔액 표, 0 아님, 종류·회차가 맞고 상품 종류 낱말로 그 상품에 묶임).
     기본은 부채 쪽 칸만이다(fix round 1). 자산 쪽 칸은 행 이름·열 머리글 자체가 기록 종류를 말하고, 제3자·권자(보유자)
     낱말과 회사·투자 이름 층(label_path)이 없을 때만 — 제3자 지정 콜, 보유한 신주인수권, 남의 지분 콜은 분리가 아니다.
     fix round 2: 상품 앞의 투자 대상 이름(「B사 전환사채」, 당사·회사 제외)이나 표 제목(앞 문장 포함)·주석 제목의 보유자
     낱말(보유하고 있는·보유한·취득한·투자)이 있어도 자산 칸은 아니다.
-    fix round 3(R17): 자산 칸은 입력에 같은 종류(회차)의 분리 문장(자기 회사·부정·조건 아님, sep_sentence)이 있을 때만이다.
-    자산 칸만으로는 확인하지 않는다(제3자 지정 콜과 발행자 콜을 이름으로 가릴 수 없다)."""
+    fix round 3(R17): 자산 칸은 입력에 같은 종류(회차)의 발행자 분리 문장(sep_sentence)이 있을 때만이다.
+    fix round 4: 부채 칸도 투자 대상 이름(종속회사·자회사 포함)이나 행·열의 회사 이름(「(주)…」·「㈜」·주식회사)이면 아니다.
+    보유자 제목 표(「회사가 보유하고 있는 파생상품의 내역」)나 보유자 공시(holder_filing)의 부채 칸은 같은 종류의 발행자 분리
+    문장(sep_sentence)이 있거나, (보유자 제목이 아닌) 그 표의 제목·주석 제목이 자기 회사를 발행자로 적을 때(「당사가 발행한
+    전환사채 및 관련 내재파생상품의 세부내역」)만이다. 자산 칸은 보유자 제목이면 문장이 있어도 아니다.
+    contradiction=True(not_separated·whole_fvpl 모순 검사)는 이전 그대로 부채 쪽 칸이면 모두 센다 — 막는 규칙이 모순
+    검사를 느슨하게 하지 않도록."""
     if cid in nb or not _num(cell.get("value")) or not _series_fits(cell, series, kind) or not _cell_tied(cell, kind):
         return False
     side = _deriv_side(cell)
+    if contradiction:
+        return side == "liability"
+    if side not in ("liability", "asset") or _investee_named(cell):
+        return False
+    if any(_COMPANY_NAME_RE.search(re.sub(r"\s+", "", t)) for t in _row_col_texts(cell)):
+        return False  # 「(주)에이투지엔터테인먼트 전환우선주 풋옵션」 — 남의 회사 상품
     if side == "liability":
-        return True
-    if side != "asset" or not sep_sentence:
+        if sep_sentence or not (_holder_title(cell) or holder_filing):
+            return True
+        # 보유자 공시라도 표 제목(끝 문장)·주석 제목이 자기 회사를 발행자로 적으면(「당사가 발행한 전환사채 및 관련
+        # 내재파생상품의 세부내역」) 그 표의 부채 칸은 발행자 칸이다(보유자 제목 표는 아니다).
+        own_title = _title_core(cell.get("table_title")) + " | " + (cell.get("note_title") or "")
+        return not _holder_title(cell) and bool(_ISSUER_NAMED_RE.search(own_title))
+    if not sep_sentence:
         return False
     texts = [re.sub(r"\s+", "", t) for t in _row_col_texts(cell)]
     own = set().union(*(_text_kinds(t) for t in texts))
@@ -697,10 +834,7 @@ def _separation_cell(cid: str, cell: dict, kind: str, series: str | None, nb: se
         return False
     if any(_COMPANY_LAYER_RE.search(p) for p in (cell.get("label_path") or [])):
         return False
-    if any(m.group(1) not in _SELF_COMPANY for t in _row_col_texts(cell) for m in _INVESTEE_RE.finditer(t)):
-        return False  # 「B사 전환사채의 전환권 등」 — 투자 대상 회사의 상품
-    titles = re.sub(r"\s+", " ", (cell.get("table_title") or "") + " | " + (cell.get("note_title") or ""))
-    return not _HOLDER_TITLE_RE.search(titles)
+    return not _holder_title(cell)
 
 
 def _measured_cell(cid: str, cell: dict, kind: str, series: str | None, nb: set, rx: re.Pattern) -> bool:
@@ -722,6 +856,7 @@ def _separation_supported(claim: str, ids: list[str], rec: dict, cells: dict, se
     """embedded_separation 값이 근거로 뒷받침되는가(R14: 없거나 어긋나면 False).
     - separated: 그 상품(종류·회차)의 분리 파생상품 금액 칸, 또는 그 상품의 분리 문장(「분리하여 … 파생상품/공정가치」,
       옵션 목록이 「파생상품(부채)로 인식」). 근거 중 분리하지 않았다는 문장이 있으면 아니다. 자본요소 분리는 아니다.
+      분리 문장은 발행자 쪽만(_issuer_sep_sentence: 보유자 낱말 없음, 보유자 공시면 「당사가 발행한」 — fix round 4).
     - not_separated: 분리하지 않았다는 문장, 상각후원가로만 측정한다는 문장·칸, 또는 전체 FVPL 지정(d8).
     - whole_fvpl: 전체 FVPL 지정 문장이나 당기손익-공정가치 측정 금융부채 칸의 그 상품 행.
     not_separated·whole_fvpl 은 기록에 확인된 파생상품 금액이 없고, 입력에 그 상품의 분리 파생상품 칸·분리 문장이 없을 때만.
@@ -731,15 +866,22 @@ def _separation_supported(claim: str, ids: list[str], rec: dict, cells: dict, se
     sent = [sentences[i] for i in ids if i in sentences and _sentence_fits(sentences[i], kind, series)]
     ev_cells = [(i, cells[i]) for i in ids if i in cells]
     kinds = [_separation_kind(t) for t in sent]
-    # 입력 어딘가에 이 종류(회차)의 분리 문장이 있는가 — 자산 칸은 이것이 있을 때만 근거가 된다(R17)
-    any_sep = any(_separation_kind(t) == "sep" and _sentence_fits(t, kind, series) for t in sentences.values())
     if claim == "separated":
         if "not" in kinds:
             return False
-        return "sep" in kinds or any(_separation_cell(i, c, kind, series, nb, sep_sentence=any_sep) for i, c in ev_cells)
+        # 발행자 쪽 분리 문장만(fix round 4). 입력 어딘가에 같은 종류(회차)의 발행자 분리 문장이 있어야 자산 칸과
+        # 보유자 표·보유자 공시의 부채 칸이 근거가 된다(R17).
+        holder_filing = _holder_filing(cells, sentences)
+        if any(_issuer_sep_sentence(t, kind, series, holder_filing) for t in sent):
+            return True
+        any_issuer = any(_issuer_sep_sentence(t, kind, series, holder_filing) for t in sentences.values())
+        return any(_separation_cell(i, c, kind, series, nb, sep_sentence=any_issuer, holder_filing=holder_filing)
+                   for i, c in ev_cells)
     if has_deriv_amount or "sep" in kinds:
         return False
-    if any_sep or any(_separation_cell(i, c, kind, series, nb) for i, c in cells.items()):
+    # 모순 검사는 넓게: 보유자·발행자를 가리지 않은 분리 문장, 부채 쪽 분리 칸(막는 규칙 없이)
+    any_sep = any(_separation_kind(t) == "sep" and _sentence_fits(t, kind, series) for t in sentences.values())
+    if any_sep or any(_separation_cell(i, c, kind, series, nb, contradiction=True) for i, c in cells.items()):
         return False
     fvpl = any(_fvpl_designation(t) for t in sent) or any(
         _measured_cell(i, c, kind, series, nb, _FVPL_LIAB_RE) for i, c in ev_cells)

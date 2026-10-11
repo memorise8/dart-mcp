@@ -18,7 +18,7 @@ from dart_search_mcp.ledger.instrument_input import (
 from dart_search_mcp.ledger import instruments as instruments_mod
 from dart_search_mcp.ledger.instruments import (
     OUTPUT_SCHEMA,
-    PROMPT_I5,
+    PROMPT_I6,
     PROMPT_VERSION,
     Cache,
     build_messages,
@@ -561,7 +561,7 @@ class ExtractInstrumentsTest(unittest.TestCase):
         inp["tables_text"] = "[T1] (separate) / 단위: (단위: 천원)\nr3 전환사채 | c1=1,000,000"
         msgs = build_messages(inp)
         self.assertEqual([m["role"] for m in msgs], ["system", "user"])
-        self.assertEqual(msgs[0]["content"], PROMPT_I5["system"])
+        self.assertEqual(msgs[0]["content"], PROMPT_I6["system"])
         for phrase in ("전환사채·신주인수권부사채·교환사채·상환전환우선주", "표 칸 id와 문장 id로만",
                        "null 또는 unconfirmed", "부채요소(주계약)와 전환권 파생상품부채는 다른 칸"):
             self.assertIn(phrase, msgs[0]["content"])
@@ -830,8 +830,8 @@ class ModelUsedTest(unittest.TestCase):
 
 class PromptExampleTest(unittest.TestCase):
     def test_example_has_no_synthetic_series_key(self):
-        self.assertNotIn("CB-?", PROMPT_I5["example"])
-        self.assertIn('"series_key": ""', PROMPT_I5["example"])
+        self.assertNotIn("CB-?", PROMPT_I6["example"])
+        self.assertIn('"series_key": ""', PROMPT_I6["example"])
         self.assertNotIn("CB-?", build_messages(_inp())[1]["content"])
 
 
@@ -1528,7 +1528,7 @@ class NonBalanceCellsTest(unittest.TestCase):
 
 class PromptI3Test(unittest.TestCase):
     def test_i3_version_and_rules(self):
-        self.assertEqual(PROMPT_VERSION, "i5")  # i3 규칙 문구는 i5 에도 남는다
+        self.assertEqual(PROMPT_VERSION, "i6")  # i3 규칙 문구는 i6 에도 남는다
         user = build_messages(_inp())[1]["content"]
         for phrase in ("1499943000 이 아니다", '"s:494"', "<표 id>:r<행>:v<번호>", "[current_end]",
                        "null 이 아닌 필드는 모두 evidence", "「전환권가치」", "「전환사채 및 조기상환권」",
@@ -1542,7 +1542,7 @@ class PromptI3Test(unittest.TestCase):
 
     def test_prompt_examples_pass_validator(self):
         """프롬프트 예시 출력이 지금 검증기를 통과한다(예시가 거부되는 근거를 가르치지 않는다)."""
-        for inp, rec in instruments_mod._EXAMPLE_CASES_I5:
+        for inp, rec in instruments_mod._EXAMPLE_CASES_I6:
             out, reasons = validate(copy.deepcopy(rec), inp)
             self.assertEqual(reasons, [], rec.get("series_key"))
             for f, ids in rec["evidence"].items():
@@ -1769,7 +1769,7 @@ class HolderSideSentenceTest(unittest.TestCase):
 
 class PromptI4Test(unittest.TestCase):
     def test_i4_version_and_rules(self):
-        self.assertEqual(PROMPT_VERSION, "i5")  # i5 가 i4 문구를 그대로 담는다
+        self.assertEqual(PROMPT_VERSION, "i6")  # i6 가 i4 문구를 그대로 담는다
         user = build_messages(_inp())[1]["content"]
         for phrase in ("equity_conflict", "자본요소", "회차가 다르", "만기", "이연법인세", "현금유입", "거래상대방",
                        "파생금융자산(부채)", "발행시", "비파생"):
@@ -2335,9 +2335,209 @@ class T9bFixRound3Test(unittest.TestCase):
             self.assertIn(phrase, user)
 
 
+
+class T9bFixRound4Test(unittest.TestCase):
+    """fix round 4(R17 「자기 회사」): 분리 문장은 발행자 쪽만 — 보유자 낱말(발행회사에 대하여·행사할 수 있는 권리·보유·취득·
+    대출채권·투자·금융자산으로 분류)이 든 문장은 아니다. 보유자 진술(「…전환사채…를 매매목적으로 보유」)이나 보유자 표가 있는
+    공시에서는 분리 문장이 자기 회사를 발행자로 적어야 한다(「당사가 발행한」). 투자 대상 이름·보유자 제목은 부채 칸도 막는다.
+    상품 뒤 변동 낱말 규칙은 옵션 복합어(상환전환권·전환상환우선주)·전환가치·발행자·「(발행)」을 변동으로 읽지 않는다.
+    실제 칸·문장은 build_input 출력(20260327000244:00760 등)에서 손으로 옮겼다."""
+
+    # 20260327000244:00760 (별도) — 전환사채·신주인수권부사채 보유자
+    S137 = ("(*2) 기타대출채권으로 분류된 전환사채 및 신주인수권부사채와 관련된 금액으로 전환사채 및 신주인수권부사채에 내재된 "
+            "전환권, 신주인수권 및 조기상환청구권을 별도로 분리하여 파생상품으로 인식한 후, 취득시점의 주계약의 공정가치와 "
+            "전환사채 및 신주인수권부사채 액면금액의 차이를 현재가치할인차금으로 인식하였습니다.")
+    S198 = "당사는 파생상품을 포함한 전환사채 및 신주인수권부사채를 매매목적으로 보유하고 있습니다."
+    S199 = ("전환사채 및 신주인수권부사채에 포함되어 있는 전환권 등은 내재파생상품의 분리요건을 충족함에 따라 주계약과 분리하여 "
+            "해당가치를 이항모형으로 평가하고 있으며, 발행회사에 대하여 전환권, 신주인수권 및 조기상환권을 행사할 수 있는 권리는 "
+            "파생상품자산으로 인식하고, 발행회사의 매수청구권을 파생상품부채로 인식하고 있습니다.")
+    # 20260410001301:00761 s419 — 자기 회사를 발행자로 적은 분리 문장
+    S419 = ("연결회사가 발행한 상환전환우선주에 내재된 전환권 및 조기상환권은 분리하여 파생상품부채로 인식되었으며, "
+            "상환전환우선주의 원본금액은 상환전환우선주부채로 계상하였습니다.")
+    TT073 = "21. 파생상품 보고기간종료일 현재 당사가 보유하고 있는 파생상품의 내역은 다음과 같습니다.〈당기말〉"
+    # 20260327000244:00760 t073:r3:c2 · t074:r2:c2 · t074:r6:c2 (부채 쪽, 투자 대상 이름)
+    LIAB = (("CB", "20260327000244:00760:t073:r3:c2",
+             _rcell(17849, "B사 전환사채의 전환권 등", col="파생상품부채", nt="파생상품", n_value_cols=4, multiplier=1000,
+                    tt=TT073)),
+            ("CB", "20260327000244:00760:t074:r2:c2",
+             _rcell(20392, "C사 전환사채의 전환권 등", col="파생상품부채", period="prior_end", nt="파생상품", n_value_cols=4,
+                    multiplier=1000, tt="〈전기말〉")),
+            ("BW", "20260327000244:00760:t074:r6:c2",
+             _rcell(25985, "H사 신주인수권부사채의 신주인수권 등", col="파생상품부채", period="prior_end", nt="파생상품",
+                    n_value_cols=4, multiplier=1000, tt="〈전기말〉")))
+
+    def test_holder_sentences_not_separation(self):
+        for sid, text in (("s199", self.S199), ("s137", self.S137)):
+            for kind in ("CB", "BW"):
+                for extra in ({}, {"s198": self.S198}):
+                    out, reasons = validate(_rec_emb("separated", [sid], kind=kind, series_key=""),
+                                            _inp9b({}, {sid: text, **extra}))
+                    self.assertEqual(out["embedded_separation"], "unconfirmed", (sid, kind, extra))
+                    self.assertEqual(reasons, ["no_separation_ref"], (sid, kind, extra))
+
+    def test_holder_sentence_does_not_unlock_asset_cell(self):
+        ok = _pcell("전환사채 매도청구권", tt="당기말 현재 파생상품자산의 내역", nt="파생상품", value=300)
+        for text in (self.S199, self.S137):
+            out, reasons = validate(_rec_emb("separated", ["A:r1:c1"], series_key=""), _inp9b({"A:r1:c1": ok}, {"s1": text}))
+            self.assertEqual(reasons, ["no_separation_ref"])
+
+    def test_issuer_sentence_still_works(self):
+        for kind, sid, text in (("CB", "s391", S391), ("CB", "s1179", S1179), ("RCPS", "s419", self.S419)):
+            out, reasons = validate(_rec_emb("separated", [sid], kind=kind, series_key=""), _inp9b({}, {sid: text}))
+            self.assertEqual(out["embedded_separation"], "separated", sid)
+            self.assertEqual(reasons, [], sid)
+
+    def test_holder_filing_needs_issuer_named_sentence(self):
+        # 보유자 진술이 있는 공시: 발행자를 적지 않은 분리 문장(S391)은 아니고, 「연결회사가 발행한」 문장은 된다
+        out, reasons = validate(_rec_emb("separated", ["s391"], series_key=""),
+                                _inp9b({}, {"s198": self.S198, "s391": S391}))
+        self.assertEqual(reasons, ["no_separation_ref"])
+        out, reasons = validate(_rec_emb("separated", ["s419"], kind="RCPS", series_key=""),
+                                _inp9b({}, {"s198": self.S198, "s419": self.S419}))
+        self.assertEqual(out["embedded_separation"], "separated")
+        # 보유자 표(투자 대상 이름 칸)만 있어도 같다
+        kind, cid, c = self.LIAB[0]
+        out, reasons = validate(_rec_emb("separated", ["s391"], series_key=""), _inp9b({cid: c}, {"s391": S391}))
+        self.assertEqual(reasons, ["no_separation_ref"])
+
+    def test_holder_wording_not_loosened(self):
+        from dart_search_mcp.ledger.instrument_validate import _holder_wording
+        self.assertTrue(_holder_wording("당사는 B사 전환사채를 보유하고 있으며 전환권을 분리하여 파생상품자산으로 인식하였습니다."))
+        self.assertFalse(_holder_wording("사채권자가 보유한 조기상환청구권은 주계약에서 분리하여 파생상품부채로 인식하였습니다."))
+        for t in (self.S199, self.S137):
+            self.assertTrue(_holder_wording(t))
+
+    def test_holder_statement_detection(self):
+        from dart_search_mcp.ledger.instrument_validate import _holder_statement
+        self.assertTrue(_holder_statement(self.S198))
+        self.assertTrue(_holder_statement("당사가 보유하고 있는 전환사채는 당기손익-공정가치측정금융자산으로 분류하였습니다."))
+        self.assertFalse(_holder_statement("사채권자가 보유한 조기상환청구권은 주계약에서 분리하여 파생상품부채로 인식하였습니다."))
+        self.assertFalse(_holder_statement(S391))
+        self.assertFalse(_holder_statement(self.S419))
+        # 실제 보유자 진술(build_input 문장): 20250812000814:00760 s520, 20260319000952:00760 s195, 20260327000244 s137
+        for t in ("3) 가격위험당사는 당기말 현재 재무제표상 당기손익인식공정가치측정금융자산으로 분류되는 NKGen Biotech Inc.가 "
+                  "발행한 해외전환사채 및 신주인수권을 보유하고 있으며, 해당 장부금액 963백만원은 …",
+                  "(*) (주)위드에이스튜디오 전환사채, (주)게임체인저월드와이드 상환전환우선주는 당사가 이사선임권을 통한 유의적 "
+                  "영향력을 보유하고 있어 관계기업에 해당하나, 소유지분에 연계된 이익에 실질적으로 현재 접근하지 못함에 따라 금융상품 "
+                  "기준서를 적용하여 장기투자자산으로 분류되었습니다(주석 26 참조).",
+                  self.S137,
+                  # 20251205000494:00761 s1290 — 지배기업은 자기 회사
+                  "(*) 지배기업이 보유한 전환사채를 보통주 전환함에 따라 지배력을 취득하였습니다.",
+                  # 20260318000859:00760 s560, 20260319000952:00761 s774
+                  "(5) 당사가 보유한 (주)티아이티엘 전환사채와 관련하여 특정 요건을 충족할 경우 당사는 당사가 발행한 "
+                  "전환상환우선주와 상계할 수 있는 약정을 체결하고 있습니다.",
+                  "(*1) 종속기업인 (주)에이투지엔터테인먼트에 대한 전환우선주를 보유하고 있으며, 이사선임권을 통해 종속기업에 "
+                  "유의적인 영향력을 행사할 수 있다고 판단하여 관계기업으로 분류하였습니다."):
+            self.assertTrue(_holder_statement(t), t[:30])
+        # 보유자 진술이 아닌 실제 문장: 희석주당이익(20260403000455 s412), 자기 회사 상품(20250728000410 s668),
+        # 상품이 목적어가 아님(20260403002153 s482), 발행자 콜옵션을 금융자산으로(20260319000952 s251)
+        for t in ("회사가 보유하고 있는 희석성 잠재적보통주로는 전환상환우선주가 있으며, 희석주당순손실 산정을 위해 …",
+                  "(2) 특수관계자 거래 주석 35에 기재하고 있는 바와 같이 연결회사는 2024년 중 유의적인 영향력을 행사하는 기업이 "
+                  "보유하고 있는 연결회사의 전환사채 액면 460억원을 현금 28억원에 양수하는 거래를 진행하였습니다.",
+                  "(*2) 상환전환우선주 투자자로 투자계약서 상 기타비상무이사 1인을 지명할 수 있는 권리를 보유하고 있는 기업입니다.",
+                  "(*1) 전환사채에 포함된 발행자에게 부여된 제3자 지정 가능 콜옵션을 별도의 금융자산으로 분류하였습니다.",
+                  # 20250728000410:00761 s684 일부 — 남이 보유한 자기 회사 상품
+                  "…유의적인 영향력을 행사하는 기업이 보유 중인 연결회사가 발행한 전환사채 액면 75,500백만원과 관련된 "
+                  "파생상품부채가 17,962백만원의 금융부채로 계상되어 있습니다.",
+                  # 20251128000641:00760 s44 일부 — 의결권을 보유한(보유의 목적어가 의결권)
+                  "보고기간종료일 현재 당사의 보통주 발행주식수는 4,128,220주, 보통주자본금은 412,822천원이며, 의결권을 보유한 "
+                  "전환상환우선주 및 전환우선주 등의 우선주 발행주식수는 3,271,294주이며, 주요 주주의 구성내역은 다음과 같습니다.",
+                  # 20260320000625:00760 s355·s377 — 보유자가 투자자·제3자
+                  "(*2) 종속회사가 발행한 상환전환우선주를 보유한 투자자가 회사에 매도할 수 있는 풋옵션입니다.",
+                  "(*2) (주)그로젠바이오가 발행하고 제3자가 보유하고 있는 의결권 있는 상환전환우선주를 포함하여 고려한 지분율은 "
+                  "당기말 현재 44.6%(전기말 42.3%)입니다.",
+                  # 20260402001950:00761 s367 — 보유자의 청구(발행자 문장)
+                  "(*1) 연결회사는 보유자의 청구에 따라 상환전환우선주를 상환해야 할 의무가 있으며 보유자에 대한 상환이 연결회사의 "
+                  "재량이 아닌 보유자의 선택에 의해 결정되어지므로, 상환전환우선주 중 보유자의 청구에 따라 지급하여야 하는 부채를 "
+                  "금융부채로 분류하였습니다.",
+                  # 20250828001542:00761 s46 — 주주 지분(우선주는 전환·상환이 붙어야 상품)
+                  "지배기업의 보통주와 의결권이 있는 우선주를 합산한 보유주식수와 지분율을 기준으로 최대주주는 ○○○입니다."):
+            self.assertFalse(_holder_statement(t), t[:30])
+
+    def test_real_holder_liability_cells(self):
+        for kind, cid, c in self.LIAB:
+            for sents in ({}, {"s198": self.S198}):
+                for sk in ("", f"{kind}-1"):
+                    out, reasons = validate(_rec_emb("separated", [cid], kind=kind, series_key=sk), _inp9b({cid: c}, sents))
+                    self.assertEqual(out["embedded_separation"], "unconfirmed", (cid, sk))
+                    self.assertEqual(reasons, ["no_separation_ref"], (cid, sk))
+
+    def test_liability_cell_holder_title_and_filing(self):
+        from dart_search_mcp.ledger.instrument_validate import _separation_cell
+        own = _pcell("전환사채 전환권", tt=self.TT073, col="파생상품부채", nt="파생상품", value=300)
+        # 보유자 제목(일반 「…보유하고 있는 파생상품」) 표의 부채 칸: 같은 종류 발행자 분리 문장이 있어야 한다
+        self.assertFalse(_separation_cell("L:r1:c1", own, "CB", None, set()))
+        self.assertTrue(_separation_cell("L:r1:c1", own, "CB", None, set(), sep_sentence=True))
+        out, reasons = validate(_rec_emb("separated", ["L:r1:c1"], series_key=""), _inp9b({"L:r1:c1": own}))
+        self.assertEqual(reasons, ["no_separation_ref"])
+        out, reasons = validate(_rec_emb("separated", ["L:r1:c1"], series_key=""),
+                                _inp9b({"L:r1:c1": own}, {"s391": S391}))
+        self.assertEqual(out["embedded_separation"], "separated")
+        # 보유자 공시의 부채 칸(제목은 평범): 발행자를 적은 문장이 있어야 한다
+        plain = _pcell("전환사채 전환권", tt="당기말 현재 파생상품부채의 내역", nt="파생상품", value=300)
+        self.assertFalse(_separation_cell("L:r1:c1", plain, "CB", None, set(), holder_filing=True))
+        out, reasons = validate(_rec_emb("separated", ["L:r1:c1"], series_key=""),
+                                _inp9b({"L:r1:c1": plain}, {"s198": self.S198}))
+        self.assertEqual(reasons, ["no_separation_ref"])
+        # 보유자 공시라도 표 제목이 자기 회사를 발행자로 적으면 부채 칸은 된다 — 20260319000952:00760:t113:r7:c1
+        t113 = _rcell(1, "파생상품부채(*2)", col="당기말", nt="전환사채", n_value_cols=2, multiplier=1000,
+                      tt="2) 당기말 현재 당사가 발행한 전환사채 및 관련 내재파생상품의 세부내역은 다음과 같습니다.")
+        t113["value"] = 1250000
+        self.assertTrue(_separation_cell("L:r1:c1", t113, "CB", None, set(), holder_filing=True))
+        out, reasons = validate(_rec_emb("separated", ["L:r1:c1"], series_key=""),
+                                _inp9b({"L:r1:c1": t113}, {"s198": self.S198}))
+        self.assertEqual(out["embedded_separation"], "separated")
+        # 회사 이름이 든 부채 칸 — 20260319000952:00760:t119:r2:c1(종속기업 우선주 투자자에게 써 준 풋옵션)
+        a2z = _rcell(500, "(주)에이투지엔터테인먼트 전환우선주 풋옵션(*)", col="당기말/유동", nt="파생상품", n_value_cols=4,
+                     multiplier=1000, tt="(2) 파생상품부채의 상세내역은 다음과 같습니다.")
+        self.assertFalse(_separation_cell("L:r1:c1", a2z, "RCPS", None, set(), sep_sentence=True))
+        # 투자 대상 이름은 문장이 있어도 막는다(부채·자산 모두); 종속회사·자회사도 막는다(거부는 안전 — 문서화)
+        for label in ("B사 전환사채의 전환권 등", "종속회사의 전환사채 전환권", "자회사 전환사채 전환권"):
+            c = dict(plain, label=label, label_path=[label])
+            self.assertFalse(_separation_cell("L:r1:c1", c, "CB", None, set(), sep_sentence=True), label)
+        # 자산 칸은 보유자 제목이면 발행자 문장이 있어도 막는다(fix round 2 그대로)
+        asset = _pcell("전환사채 매도청구권", tt=self.TT073, col="파생상품자산", nt="파생상품", value=300)
+        self.assertFalse(_separation_cell("A:r1:c1", asset, "CB", None, set(), sep_sentence=True))
+        # 부채 칸이 보유자 표에서 막혀도 not_separated 모순 검사는 여전히 그 칸을 본다(느슨해지지 않음)
+        out, reasons = validate(_rec_emb("not_separated", ["s262"], series_key=""),
+                                _inp9b({"L:r1:c1": own}, {"s262": S262}))
+        self.assertEqual(reasons, ["no_separation_ref"])
+
+    def test_movement_word_exclusions(self):
+        from dart_search_mcp.ledger.instrument_validate import _non_balance_cell
+        real = (  # (cid, label_path, col, title) — build_input 출력
+            ("20260319000779:00760:t152:r2:c1", ["제3회 전환사채 전환권(전환가치)"], "당 기 말/장부금액", "부채로 분류된 각 금융부채의 장부금액"),
+            ("20260318001334:00761:t059:r1:c4", ["파생상품부채(전환상환우선주-투자자 상환전환권)", "수준 3", "내재파생상품",
+                                                 "이항모형,위험조정할인율모형"], "당기말", "(4) 가치평가기법과 투입변수"),
+            ("20260624000063:00761:t116:r2:c2", ["금융부채", "전환사채 및 전환상환우선주"], "당기말", "1) 금융자산 및 부채의 장부금액"),
+            ("20260319000854:00761:t057:r2:c2", ["파생상품자산", "제10회 전환사채: 발행자의 매도청구권"], "당기말",
+             "① 당기말 현재 상기 전환사채와 관련하여 인식하고 있는 파생금융자산ㆍ부채의 내역은 다음과 같습니다."),
+            ("20260403003860:00760:t059:r8:c1", ["전환사채(발행) 매도청구권"], "공정가치", "금융상품 공정가치"),
+        )
+        for cid, path, col, tt in real:
+            c = _pcell(path[-1], path=path, col=col, tt=tt, nt="")
+            self.assertFalse(_non_balance_cell(c), cid)
+        # 진짜 변동 행은 그대로 변동이다
+        for label in ("전환사채 상환", "전환사채 전환", "전환사채 상환권 행사", "전환상환우선주 전환", "상환전환우선주 발행"):
+            self.assertTrue(_non_balance_cell(_pcell(label, tt="파생상품부채의 변동")), label)
+        # 금액 필드: t116 칸은 face 근거로 not_balance 가 아니다
+        cid = "20260624000063:00761:t116:r2:c2"
+        c = _pcell("전환사채 및 전환상환우선주", path=["금융부채", "전환사채 및 전환상환우선주"], tt="1) 금융자산 및 부채의 장부금액",
+                   value=947128)
+        out, reasons = validate(_rec5("face", "current_end", 947128, [cid], series_key=""), _inp9b({cid: c}))
+        self.assertNotIn("not_balance:balance.current_end.face", reasons)
+
+    def test_prompt_i6(self):
+        self.assertEqual(PROMPT_VERSION, "i6")
+        user = build_messages(_inp())[1]["content"]
+        for phrase in ("발행회사에 대하여", "행사할 수 있는 권리", "매매목적으로 보유", "당사가 발행한", "부채 칸도",
+                       "종속회사", "전환가치", "발행자의 매도청구권", "전환상환우선주-투자자 상환전환권",
+                       "당사가 발행한 전환사채 및 관련 내재파생상품", "(주)에이투지엔터테인먼트"):
+            self.assertIn(phrase, user)
+
 class PromptI5Test(unittest.TestCase):
     def test_i5_version_and_rules(self):
-        self.assertEqual(PROMPT_VERSION, "i5")
+        self.assertEqual(PROMPT_VERSION, "i6")  # i6 가 i5 문구를 그대로 담는다
         user = build_messages(_inp())[1]["content"]
         for phrase in ("계약상현금흐름", "합계 열", "취득일 현재", "발행조건", "자본금", "상각후원가측정금융부채",
                        "신주인수권부사채", "no_separation_ref", "분리하여", "자본부분", "당기손익-공정가치 측정 금융부채로 지정",
