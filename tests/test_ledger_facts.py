@@ -471,6 +471,11 @@ class DictionaryC2Test(unittest.TestCase):
                    headers=["발행일", "당기말", "전기말"])
         self.assertEqual({f["period"] for f in self.facts(t)}, {"current_end", "prior_end"})
 
+    def test_non_amount_columns_skipped(self):
+        t = _table([("유동파생상품부채(전환사채)", [3, 500, 1200])], note_title="공정가치", title="가치평가기법",
+                   periods=("current_end",) * 3, headers=["수준", "공정가치", "주당전환가격"])
+        self.assertEqual([f["amount"] for f in self.facts(t)], [500])
+
     def test_coverage_keyword_scope_excludes_flows(self):
         t = _table([("전환권대가", [1, 2]), ("전환사채 이자비용", [3, 4]), ("유동파생상품부채(전환사채)", [1, 1])])
         cov = coverage([t], self.concepts)["conversion"]

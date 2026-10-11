@@ -34,6 +34,8 @@ _WS_RE = re.compile(r"\s+")
 _AMOUNT_UNITS = {"krw", "foreign", "unknown"}
 _PREFERRED_COL_RE = re.compile(r"^(?:합계|총계|계|(?:기말)?순?장부(?:금|가)액|기말(?:잔액|금액)?|당기말(?:잔액)?)$")
 _FLOW_HEADER_RE = re.compile(r"취득|증가|감소|상각|처분|대체|손상|환입|발생|상환|전환|행사|기초|발행|최초|인식시")
+# 금액이 아닌 숫자 열(공정가치 서열 「수준」, 주당 가격, 비율·이자율, 만기 연도) — 단위가 원으로 잡혀도 금액 개념에 안 쓴다
+_NON_AMOUNT_HEADER_RE = re.compile(r"^(수준|Level|서열)$|주당|가격|단가|전환가액|행사가액|비율|이자율|할인율|만기일|^만기$|연도|^기간$|잔존기간|상환기간|%")
 _TARGET_RULES = (("conversion", re.compile(r"전환|Convertible|CB|CPS|BW")), ("redemption", re.compile(r"상환|매도청구|콜옵션")))
 _HANGUL_RE = re.compile(r"[가-힣]")
 END = {"current_end", "prior_end"}
@@ -286,6 +288,8 @@ def _candidates(table: dict, concepts: list[Concept]):
                 if col is None or cell.get("value") is None:
                     continue
                 if _cell_unit(table, cell).get("kind") not in _AMOUNT_UNITS:
+                    continue
+                if _NON_AMOUNT_HEADER_RE.search(_header_last(col)):
                     continue
                 if col_rx and not any(rx.search(_header_last(col)) for rx in col_rx):
                     continue
