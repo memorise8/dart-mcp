@@ -433,7 +433,7 @@ class DictionaryC2Test(unittest.TestCase):
                          {"R:00760:t001"})
 
     def test_balance_ignores_percent_column_for_end_detection(self):
-        t = _table([("사채할인발행차금", [None, -5, -7])], note_title="사채", title="사채 내역",
+        t = _table([("사채할인발행차금", [None, -5, -7])], note_title="사채", title="전환사채 내역",
                    periods=("current_end", "current_period", "current_period"), headers=["이자율(%)", "유동성", "비유동성"],
                    overrides={1: {"raw": "%", "kind": "percent", "multiplier": 1, "currency": None}})
         t["rows"][0]["cells"][0]["value"] = 3.5
@@ -493,8 +493,8 @@ class FixRound1Test(unittest.TestCase):
     def facts(self, *tables):
         return extract_facts(list(tables), self.concepts)
 
-    def test_version_c3(self):
-        self.assertEqual(self.concepts[0].version, "c3")
+    def test_version_after_c2(self):  # c3에서 올림, 이후 판은 FixRound2Test 가 확인
+        self.assertNotIn(self.concepts[0].version, ("c1", "c2"))
 
     # 지적 1: target 은 행 이름 → 경로 → 상위 행·각주 순, 근거 표시
     def test_target_specific_option_word_beats_instrument_name(self):
@@ -709,6 +709,54 @@ class FixRound1Test(unittest.TestCase):
                 self.assertIn(rule.get("on", "row"), ("row", "context"))
             self.assertNotIn("kw_exclude", spec)
             self.assertNotIn("require_context", spec)
+
+
+class FixRound2Test(unittest.TestCase):
+    """T6 수정 2차."""
+
+    def setUp(self):
+        self.concepts = load_concepts()
+
+    def facts(self, *tables):
+        return extract_facts(list(tables), self.concepts)
+
+    def test_version_c4(self):
+        self.assertEqual(self.concepts[0].version, "c4")
+
+    def test_plain_bond_face_and_carrying_not_host(self):
+        # 20260402000760 t061 「(1) 사채내역」(FRN), 20260422000648 t047 「제1회 무보증사모사채」 모양
+        t1 = _table([(["제1회 FRN 사채", "액면가액"], [35256000, 35256000]), (["제1회 FRN 사채", "장부가액"], [35156422, 35034394])],
+                    note_title="사채", title="(1) 사채내역")
+        t2 = _table([("제1회 무보증사모사채", [None, None]), ("액면금액", [2000000, 2000000]), ("장부금액", [1978000, 1970000]),
+                     ("사채할인발행차금", [-22000, 0]), ("차감: 사채할인발행차금", [-1, -2])],
+                    note_title="사채", title="사채 내역", tid="R:00760:t002")
+        self.assertEqual(_by(self.facts(t1, t2), "HOST_LIABILITY"), [])
+
+    def test_convertible_series_face_still_host(self):
+        t = _table([(["제1회 무보증사모전환사채", "액면금액"], [100, 100])], note_title="사채", title="사채 내역")
+        self.assertEqual(len(_by(self.facts(t), "HOST_LIABILITY")), 2)
+
+    def test_embedded_asset_rows_not_liability(self):
+        t = _table([("내재파생상품자산", [3, 3]), ("당기손익-공정가치측정금융자산(파생상품)", [2, 2]),
+                    ("내재파생상품부채", [4, 4]), ("상환전환우선주부채(파생상품)", [5, 5])],
+                   note_title="파생상품", title="전환사채 관련 파생상품")
+        got = {f["label"]: f["concept"] for f in self.facts(t)}
+        self.assertNotEqual(got.get("내재파생상품자산"), "EMB_DERIV_LIABILITY")
+        self.assertNotEqual(got.get("당기손익-공정가치측정금융자산(파생상품)"), "EMB_DERIV_LIABILITY")
+        self.assertEqual(got["내재파생상품부채"], "EMB_DERIV_LIABILITY")
+        self.assertEqual(got["상환전환우선주부채(파생상품)"], "EMB_DERIV_LIABILITY")
+
+    def test_target_default_basis(self):
+        t = _table([("파생상품부채", [5, 6])], note_title="사채", title="파생상품의 내역")
+        t["rows"][0]["label_path"] = ["파생상품부채"]
+        t["footnotes"] = []
+        # 문맥은 상위 행에서 「사채」만(옵션·상품 낱말 없음) → 대상 모름
+        t["rows"].insert(0, {"row": 0, "label": "사채 관련", "label_path": ["사채 관련"], "level": 0, "acode": None,
+                             "kind": "item", "cells": [{"col": 1, "raw": "", "value": None, "value_krw": None,
+                                                        "unit_override": None}]})
+        t["rows"][1]["level"] = 1
+        (f, _) = _by(self.facts(t), "EMB_DERIV_LIABILITY")
+        self.assertEqual((f["target"], f["target_basis"]), ("other", "default"))
 
 
 class RunnerTest(unittest.TestCase):

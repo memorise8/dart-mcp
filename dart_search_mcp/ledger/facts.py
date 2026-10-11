@@ -72,6 +72,7 @@ class Concept:
     context_exclude_patterns: tuple = ()
     own_label_only: bool = False
     title_region: bool = False
+    table_context: bool = False  # 참이면 context_patterns 를 같은 표의 다른 행 이름에도 맞춘다
     topic: str = ""
     version: str = ""
     _rx: dict = field(default_factory=dict, compare=False, hash=False, repr=False)
@@ -98,6 +99,7 @@ def load_concepts(path: Path | None = None) -> list[Concept]:
                            column_patterns=tuple(c.get("column_patterns") or ()),
                            context_exclude_patterns=tuple(c.get("context_exclude_patterns") or ()),
                            own_label_only=bool(c.get("own_label_only")), title_region=bool(c.get("title_region")),
+                           table_context=bool(c.get("table_context")),
                            topic=c.get("topic", ""),
                            version=version))
     return out
@@ -270,7 +272,7 @@ def _target_of(text: str) -> str | None:
 
 def _target(concept: Concept, label: str, path_parents: list[str], row_context: list[str],
             title: str) -> tuple[str | None, str | None, str | None]:
-    """(target, target_basis, target_hint). 행 이름 → 경로 부모(가까운 것부터) → 상위 행·각주(context).
+    """(target, target_basis, target_hint). target_basis ∈ label|path|context|default. 행 이름 → 경로 부모(가까운 것부터) → 상위 행·각주(context).
     표 제목만 근거면 target 은 비우고 target_hint 에만 적는다(제목은 표 전체 이야기라 행 근거가 아니다)."""
     if concept.target != "by_label":
         return concept.target, ("concept" if concept.target else None), None
@@ -282,7 +284,7 @@ def _target(concept: Concept, label: str, path_parents: list[str], row_context: 
     hint = _target_of(title)
     if hint:
         return None, None, hint
-    return "other", "label", None
+    return "other", "default", None  # 행·경로·문맥 어디에도 대상 낱말이 없다(행 이름이 정한 것이 아님)
 
 
 def _cell_unit(table: dict, cell: dict) -> dict:
@@ -352,6 +354,7 @@ def _candidates(table: dict, concepts: list[Concept]):
     periods = {c.get("period") for k, c in cols.items() if k in amount_cols}
     has_end, has_period = bool(periods & END), bool(periods & PERIOD)
     headers = [_WS_RE.sub("", "".join(c.get("header_path") or [])) for c in cols.values()]
+    row_names = [norm_label(r.get("label")) for r in rows]
     parents = _parents(rows)
     title = _WS_RE.sub("", table.get("title") or "")
     regions = [(_region_ok(c, table)) for c in concepts]
@@ -377,7 +380,8 @@ def _candidates(table: dict, concepts: list[Concept]):
             if any(rx.search(label) or rx.search(joined) for rx in c.rx("exclude_patterns")):
                 continue
             if c.context_patterns and not any(rx.search(t) for rx in c.rx("context_patterns")
-                                              for t in [label, *context, *headers] if t):
+                                              for t in [label, *context, *headers,
+                                                        *(row_names if c.table_context else [])] if t):
                 continue
             if c.context_exclude_patterns and any(rx.search(t) for rx in c.rx("context_exclude_patterns")
                                                   for t in [*path_parents, *parents[i]] if t):
