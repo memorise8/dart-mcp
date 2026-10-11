@@ -166,6 +166,26 @@ class FilingTablesTest(unittest.TestCase):
         self.assertEqual([r["label"] for r in t["rows"]], ["가사", "나사"])
         self.assertEqual(t["rows"][1]["label_path"], ["종속기업", "나사"])
 
+    def test_single_stub_numeric_labels_kept(self):  # 리뷰 2차: 레이블 열이 하나면 숫자 레이블도 그대로
+        doc = """<DOCUMENT><BODY><P>(단위: 원)</P><TABLE BORDER="1"><THEAD>
+<TR><TH>연 도</TH><TH>금액</TH></TR></THEAD><TBODY>
+<TR><TD>2025</TD><TD>100</TD></TR>
+<TR><TD>2024</TD><TD>200</TD></TR>
+</TBODY></TABLE></BODY></DOCUMENT>"""
+        t = build_filing_tables("X", [("x.xml", doc.encode())], {})[0]
+        self.assertEqual([r["label"] for r in t["rows"]], ["2025", "2024"])
+
+    def test_two_stub_percent_is_fallback_only(self):
+        # 두 행 머리 열 중 하나가 비율: 글 칸이 있으면 글, 비율만 있으면 비율을 레이블로
+        doc = """<DOCUMENT><BODY><P>(단위: 원)</P><TABLE BORDER="1"><THEAD>
+<TR><TH>회사명</TH><TH>지분율</TH><TH>장부가액</TH></TR></THEAD><TBODY>
+<TR><TD>에이사</TD><TD>10%</TD><TD>100</TD></TR>
+<TR><TD></TD><TD>20%</TD><TD>200</TD></TR>
+</TBODY></TABLE></BODY></DOCUMENT>"""
+        t = build_filing_tables("X", [("x.xml", doc.encode())], {})[0]
+        self.assertEqual([r["label"] for r in t["rows"]], ["에이사", "20%"])
+        self.assertEqual(t["rows"][1]["label_path"], ["20%"])
+
     def test_total_in_second_label_column(self):
         doc = """<DOCUMENT><BODY><P>(단위: 원)</P><TABLE BORDER="1"><THEAD>
 <TR><TH>구 분</TH><TH>지 역</TH><TH>당기말</TH></TR></THEAD><TBODY>
