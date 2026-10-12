@@ -1,0 +1,761 @@
+{
+ "20260408000011:00760:t039": {
+  "table_id": "20260408000011:00760:t039",
+  "rcept_no": "20260408000011",
+  "amends_rcept_no": null,
+  "file": "20260408000011_00760.xml",
+  "fs_scope": "separate",
+  "page": 27,
+  "region": {
+   "kind": "note",
+   "note_no": "6",
+   "note_title": "금융상품 공정가치",
+   "sub_path": [
+    "(4)"
+   ]
+  },
+  "title": "한편, 수준 3에 해당하는 금융자산ㆍ부채의 공정가치를 결정하기 위하여 경영진은 가치평가기법을 이용하였으며, 중요한 투입변수는 시장에서 관측하지 않은 자료입니다. 수준 3으로 분류된 금융부채에 대하여 사용된 가치평가기법과 투입변수는 다음과 같습니다.",
+  "footnotes": [],
+  "unit": {
+   "raw": "(단위: 천원)",
+   "kind": "krw",
+   "multiplier": 1000,
+   "currency": "KRW"
+  },
+  "columns": [
+   {
+    "col": 0,
+    "header_path": [
+     "구 분",
+     "당기손익-공정가치 측정 금융자산"
+    ],
+    "role": "label"
+   },
+   {
+    "col": 1,
+    "header_path": [
+     "공정가치",
+     "당기손익-공정가치 측정 금융자산"
+    ],
+    "role": "value",
+    "period": "current_end",
+    "date": null
+   },
+   {
+    "col": 2,
+    "header_path": [
+     "수준",
+     "당기손익-공정가치 측정 금융자산"
+    ],
+    "role": "value",
+    "period": "current_end",
+    "date": null
+   },
+   {
+    "col": 3,
+    "header_path": [
+     "가치평가기법",
+     "당기손익-공정가치 측정 금융자산"
+    ],
+    "role": "label"
+   },
+   {
+    "col": 4,
+    "header_path": [
+     "투입변수",
+     "당기손익-공정가치 측정 금융자산"
+    ],
+    "role": "label"
+   }
+  ],
+  "rows": [
+   {
+    "row": 2,
+    "label": "파생금융상품자산",
+    "label_path": [
+     "파생금융상품자산"
+    ],
+    "level": 2,
+    "acode": null,
+    "kind": "item",
+    "cells": [
+     {
+      "col": 1,
+      "raw": "7,658",
+      "value": 7658,
+      "value_krw": 7658000,
+      "unit_override": null
+     },
+     {
+      "col": 2,
+      "raw": "3",
+      "value": 3,
+      "value_krw": 3000,
+      "unit_override": null
+     }
+    ]
+   },
+   {
+    "row": 3,
+    "label": "당기손익-공정가치 측정 금융부채",
+    "label_path": [
+     "당기손익-공정가치 측정 금융부채"
+    ],
+    "level": 0,
+    "acode": null,
+    "kind": "item",
+    "cells": []
+   },
+   {
+    "row": 4,
+    "label": "내재파생금융상품부채",
+    "label_path": [
+     "내재파생금융상품부채"
+    ],
+    "level": 2,
+    "acode": null,
+    "kind": "item",
+    "cells": [
+     {
+      "col": 1,
+      "raw": "2,928,440",
+      "value": 2928440,
+      "value_krw": 2928440000,
+      "unit_override": null
+     },
+     {
+      "col": 2,
+      "raw": "3",
+      "value": 3,
+      "value_krw": 3000,
+      "unit_override": null
+     }
+    ]
+   }
+  ],
+  "checks": {
+   "period_found": true,
+   "unit_found": true,
+   "sum_ok": null,
+   "identity_ok": null
+  },
+  "issues": [],
+  "status": "verified",
+  "parser_version": "ledger-t3"
+ },
+ "20260408000011:00761:t060": {
+  "table_id": "20260408000011:00761:t060",
+  "rcept_no": "20260408000011",
+  "amends_rcept_no": null,
+  "file": "20260408000011_00761.xml",
+  "fs_scope": "consolidated",
+  "page": 20,
+  "region": {
+   "kind": "note",
+   "note_no": "6",
+   "note_title": "금융상품 공정가치",
+   "sub_path": [
+    "(4)"
+   ]
+  },
+  "title": "한편, 수준 3에 해당하는 금융자산ㆍ부채의 공정가치를 결정하기 위하여 경영진은 가치평가기법을 이용하였으며, 중요한 투입변수는 시장에서 관측하지 않은 자료입니다. 수준 3으로 분류된 금융부채에 대하여 사용된 가치평가기법과 투입변수는 다음과 같습니다.",
+  "footnotes": [],
+  "unit": {
+   "raw": "(단위: 천원)",
+   "kind": "krw",
+   "multiplier": 1000,
+   "currency": "KRW"
+  },
+  "columns": [
+   {
+    "col": 0,
+    "header_path": [
+     "구 분",
+     "당기손익-공정가치 측정 금융자산"
+    ],
+    "role": "label"
+   },
+   {
+    "col": 1,
+    "header_path": [
+     "공정가치",
+     "당기손익-공정가치 측정 금융자산"
+    ],
+    "role": "value",
+    "period": "current_end",
+    "date": null
+   },
+   {
+    "col": 2,
+    "header_path": [
+     "수준",
+     "당기손익-공정가치 측정 금융자산"
+    ],
+    "role": "value",
+    "period": "current_end",
+    "date": null
+   },
+   {
+    "col": 3,
+    "header_path": [
+     "가치평가기법",
+     "당기손익-공정가치 측정 금융자산"
+    ],
+    "role": "label"
+   },
+   {
+    "col": 4,
+    "header_path": [
+     "투입변수",
+     "당기손익-공정가치 측정 금융자산"
+    ],
+    "role": "label"
+   }
+  ],
+  "rows": [
+   {
+    "row": 2,
+    "label": "파생금융상품자산",
+    "label_path": [
+     "파생금융상품자산"
+    ],
+    "level": 2,
+    "acode": null,
+    "kind": "item",
+    "cells": [
+     {
+      "col": 1,
+      "raw": "7,658",
+      "value": 7658,
+      "value_krw": 7658000,
+      "unit_override": null
+     },
+     {
+      "col": 2,
+      "raw": "3",
+      "value": 3,
+      "value_krw": 3000,
+      "unit_override": null
+     }
+    ]
+   },
+   {
+    "row": 3,
+    "label": "당기손익-공정가치 측정 금융부채",
+    "label_path": [
+     "당기손익-공정가치 측정 금융부채"
+    ],
+    "level": 0,
+    "acode": null,
+    "kind": "item",
+    "cells": []
+   },
+   {
+    "row": 4,
+    "label": "내재파생금융상품부채",
+    "label_path": [
+     "내재파생금융상품부채"
+    ],
+    "level": 2,
+    "acode": null,
+    "kind": "item",
+    "cells": [
+     {
+      "col": 1,
+      "raw": "2,928,440",
+      "value": 2928440,
+      "value_krw": 2928440000,
+      "unit_override": null
+     },
+     {
+      "col": 2,
+      "raw": "3",
+      "value": 3,
+      "value_krw": 3000,
+      "unit_override": null
+     }
+    ]
+   }
+  ],
+  "checks": {
+   "period_found": true,
+   "unit_found": true,
+   "sum_ok": null,
+   "identity_ok": null
+  },
+  "issues": [],
+  "status": "verified",
+  "parser_version": "ledger-t3"
+ },
+ "20260324000018:00760:t150": {
+  "table_id": "20260324000018:00760:t150",
+  "rcept_no": "20260324000018",
+  "amends_rcept_no": null,
+  "file": "20260324000018_00760.xml",
+  "fs_scope": "separate",
+  "page": 62,
+  "region": {
+   "kind": "note",
+   "note_no": "21",
+   "note_title": "금융자산",
+   "sub_path": [
+    "(1)"
+   ]
+  },
+  "title": "(1) 당기말과 전기말 현재 금융자산 및 금융부채의 내역은 다음과 같습니다.",
+  "footnotes": [],
+  "unit": {
+   "raw": "(단위: 천원)",
+   "kind": "krw",
+   "multiplier": 1000,
+   "currency": "KRW"
+  },
+  "columns": [
+   {
+    "col": 0,
+    "header_path": [
+     "구 분"
+    ],
+    "role": "label"
+   },
+   {
+    "col": 1,
+    "header_path": [
+     "당기말"
+    ],
+    "role": "value",
+    "period": "current_end",
+    "date": null
+   },
+   {
+    "col": 2,
+    "header_path": [
+     "전기말"
+    ],
+    "role": "value",
+    "period": "prior_end",
+    "date": null
+   }
+  ],
+  "rows": [
+   {
+    "row": 1,
+    "label": "유동금융자산",
+    "label_path": [
+     "유동금융자산"
+    ],
+    "level": 0,
+    "acode": null,
+    "kind": "item",
+    "cells": []
+   },
+   {
+    "row": 2,
+    "label": "주주간약정 내재파생자산(*1)",
+    "label_path": [
+     "주주간약정 내재파생자산(*1)"
+    ],
+    "level": 2,
+    "acode": null,
+    "kind": "item",
+    "cells": [
+     {
+      "col": 1,
+      "raw": "-",
+      "value": 0,
+      "value_krw": 0,
+      "unit_override": null
+     },
+     {
+      "col": 2,
+      "raw": "763,730",
+      "value": 763730,
+      "value_krw": 763730000,
+      "unit_override": null
+     }
+    ]
+   },
+   {
+    "row": 3,
+    "label": "신주인수권부사채 매도청구권(*2)",
+    "label_path": [
+     "신주인수권부사채 매도청구권(*2)"
+    ],
+    "level": 2,
+    "acode": null,
+    "kind": "item",
+    "cells": [
+     {
+      "col": 1,
+      "raw": "-",
+      "value": 0,
+      "value_krw": 0,
+      "unit_override": null
+     },
+     {
+      "col": 2,
+      "raw": "918,524",
+      "value": 918524,
+      "value_krw": 918524000,
+      "unit_override": null
+     }
+    ]
+   },
+   {
+    "row": 4,
+    "label": "전환사채의 거래일손익",
+    "label_path": [
+     "전환사채의 거래일손익"
+    ],
+    "level": 2,
+    "acode": null,
+    "kind": "item",
+    "cells": [
+     {
+      "col": 1,
+      "raw": "-",
+      "value": 0,
+      "value_krw": 0,
+      "unit_override": null
+     },
+     {
+      "col": 2,
+      "raw": "-",
+      "value": 0,
+      "value_krw": 0,
+      "unit_override": null
+     }
+    ]
+   },
+   {
+    "row": 5,
+    "label": "합 계",
+    "label_path": [
+     "합 계"
+    ],
+    "level": 0,
+    "acode": null,
+    "kind": "total",
+    "cells": [
+     {
+      "col": 1,
+      "raw": "-",
+      "value": 0,
+      "value_krw": 0,
+      "unit_override": null
+     },
+     {
+      "col": 2,
+      "raw": "1,682,254",
+      "value": 1682254,
+      "value_krw": 1682254000,
+      "unit_override": null
+     }
+    ]
+   },
+   {
+    "row": 6,
+    "label": "유동금융부채",
+    "label_path": [
+     "유동금융부채"
+    ],
+    "level": 0,
+    "acode": null,
+    "kind": "item",
+    "cells": []
+   },
+   {
+    "row": 7,
+    "label": "전환사채의 내재파생부채",
+    "label_path": [
+     "전환사채의 내재파생부채"
+    ],
+    "level": 2,
+    "acode": null,
+    "kind": "item",
+    "cells": [
+     {
+      "col": 1,
+      "raw": "87,300",
+      "value": 87300,
+      "value_krw": 87300000,
+      "unit_override": null
+     },
+     {
+      "col": 2,
+      "raw": "1,711,500",
+      "value": 1711500,
+      "value_krw": 1711500000,
+      "unit_override": null
+     }
+    ]
+   },
+   {
+    "row": 8,
+    "label": "주주간약정 내재파생부채(*1)",
+    "label_path": [
+     "주주간약정 내재파생부채(*1)"
+    ],
+    "level": 2,
+    "acode": null,
+    "kind": "item",
+    "cells": [
+     {
+      "col": 1,
+      "raw": "-",
+      "value": 0,
+      "value_krw": 0,
+      "unit_override": null
+     },
+     {
+      "col": 2,
+      "raw": "2,271,170",
+      "value": 2271170,
+      "value_krw": 2271170000,
+      "unit_override": null
+     }
+    ]
+   },
+   {
+    "row": 9,
+    "label": "금융보증부채",
+    "label_path": [
+     "금융보증부채"
+    ],
+    "level": 2,
+    "acode": null,
+    "kind": "item",
+    "cells": [
+     {
+      "col": 1,
+      "raw": "-",
+      "value": 0,
+      "value_krw": 0,
+      "unit_override": null
+     },
+     {
+      "col": 2,
+      "raw": "24,093",
+      "value": 24093,
+      "value_krw": 24093000,
+      "unit_override": null
+     }
+    ]
+   },
+   {
+    "row": 10,
+    "label": "합 계",
+    "label_path": [
+     "합 계"
+    ],
+    "level": 0,
+    "acode": null,
+    "kind": "total",
+    "cells": [
+     {
+      "col": 1,
+      "raw": "87,300",
+      "value": 87300,
+      "value_krw": 87300000,
+      "unit_override": null
+     },
+     {
+      "col": 2,
+      "raw": "4,006,763",
+      "value": 4006763,
+      "value_krw": 4006763000,
+      "unit_override": null
+     }
+    ]
+   }
+  ],
+  "checks": {
+   "period_found": true,
+   "unit_found": true,
+   "sum_ok": true,
+   "identity_ok": null
+  },
+  "issues": [],
+  "status": "verified",
+  "parser_version": "ledger-t3"
+ },
+ "20260211000330:00760:t063": {
+  "table_id": "20260211000330:00760:t063",
+  "rcept_no": "20260211000330",
+  "amends_rcept_no": null,
+  "file": "20260211000330_00760.xml",
+  "fs_scope": "separate",
+  "page": 12,
+  "region": {
+   "kind": "note",
+   "note_no": "5",
+   "note_title": "금융상품 공정가치",
+   "sub_path": [
+    "(2)"
+   ]
+  },
+  "title": "회사는 공정가치 서열체계에서 수준 3으로 분류되는 반복적인 공정가치측정치에 대해 다음의 가치평가기법과 투입변수를 사용하고 있습니다.",
+  "footnotes": [],
+  "unit": {
+   "raw": "(단위: 천원)",
+   "kind": "krw",
+   "multiplier": 1000,
+   "currency": "KRW"
+  },
+  "columns": [
+   {
+    "col": 0,
+    "header_path": [
+     "당기말"
+    ],
+    "role": "label"
+   },
+   {
+    "col": 1,
+    "header_path": [
+     "공정가치"
+    ],
+    "role": "value",
+    "period": "current_end",
+    "date": null
+   },
+   {
+    "col": 2,
+    "header_path": [
+     "수준"
+    ],
+    "role": "value",
+    "period": "current_end",
+    "date": null
+   },
+   {
+    "col": 3,
+    "header_path": [
+     "가치평가기법"
+    ],
+    "role": "label"
+   },
+   {
+    "col": 4,
+    "header_path": [
+     "투입변수"
+    ],
+    "role": "label"
+   },
+   {
+    "col": 5,
+    "header_path": [
+     "수준3 투입변수 범위 (가중평균)"
+    ],
+    "role": "label"
+   }
+  ],
+  "rows": [
+   {
+    "row": 1,
+    "label": "파생상품부채",
+    "label_path": [
+     "파생상품부채"
+    ],
+    "level": 0,
+    "acode": null,
+    "kind": "item",
+    "cells": []
+   },
+   {
+    "row": 2,
+    "label": "전환상환우선주 내재파생상품",
+    "label_path": [
+     "전환상환우선주 내재파생상품"
+    ],
+    "level": 0,
+    "acode": null,
+    "kind": "item",
+    "cells": [
+     {
+      "col": 1,
+      "raw": "47,171,059",
+      "value": 47171059,
+      "value_krw": 47171059000,
+      "unit_override": null
+     },
+     {
+      "col": 2,
+      "raw": "3",
+      "value": 3,
+      "value_krw": 3000,
+      "unit_override": null
+     }
+    ]
+   },
+   {
+    "row": 3,
+    "label": "전환상환우선주 내재파생상품",
+    "label_path": [
+     "전환상환우선주 내재파생상품"
+    ],
+    "level": 0,
+    "acode": null,
+    "kind": "item",
+    "cells": []
+   },
+   {
+    "row": 4,
+    "label": "당기손익-공정가치 측정 금융부채",
+    "label_path": [
+     "당기손익-공정가치 측정 금융부채"
+    ],
+    "level": 0,
+    "acode": null,
+    "kind": "item",
+    "cells": []
+   },
+   {
+    "row": 5,
+    "label": "전환상환우선주 주계약",
+    "label_path": [
+     "전환상환우선주 주계약"
+    ],
+    "level": 0,
+    "acode": null,
+    "kind": "item",
+    "cells": [
+     {
+      "col": 1,
+      "raw": "9,486,106",
+      "value": 9486106,
+      "value_krw": 9486106000,
+      "unit_override": null
+     },
+     {
+      "col": 2,
+      "raw": "3",
+      "value": 3,
+      "value_krw": 3000,
+      "unit_override": null
+     }
+    ]
+   },
+   {
+    "row": 6,
+    "label": "전환상환우선주 주계약",
+    "label_path": [
+     "전환상환우선주 주계약"
+    ],
+    "level": 0,
+    "acode": null,
+    "kind": "item",
+    "cells": []
+   }
+  ],
+  "checks": {
+   "period_found": true,
+   "unit_found": true,
+   "sum_ok": null,
+   "identity_ok": null
+  },
+  "issues": [],
+  "status": "verified",
+  "parser_version": "ledger-t3"
+ }
+}

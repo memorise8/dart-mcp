@@ -785,8 +785,8 @@ class T6bTest(unittest.TestCase):
     def facts(self, *tables, stats=None):
         return extract_facts(list(tables), self.concepts, stats=stats)
 
-    def test_version_c8(self):  # c6 = T6b, c7 = T6b 수정 1차(R25), c8 = R27 리스 「단기리스를 제외한」
-        self.assertEqual(self.concepts[0].version, "c8")
+    def test_version_c8_or_later(self):  # c6 = T6b, c7 = T6b 수정 1차(R25), c8 = R27, c9 = T11b(T11bEmbRecallTest)
+        self.assertRegex(self.concepts[0].version, r"^c([89]|\d\d)$")
 
     # ---- 1. FVOCI_EQUITY 표 제목 + 합계 행 ----
     def test_real_title_equity_total_row(self):
@@ -1018,6 +1018,68 @@ class R27LeaseExcludingShortTermTest(unittest.TestCase):
                          ("단기리스및소액자산리스를제외한 리스의 총현금유출", [8, 8]))
         self.assertNotIn("LEASE_SHORT_LOW_EXP", set(got.values()))
         self.assertNotIn("LEASE_LOW_VALUE_EXP", set(got.values()))
+
+
+_T11B = json.loads((Path(__file__).parent / "fixtures" / "ledger" / "t11b_tables.json").read_text(encoding="utf-8"))
+
+
+class T11bEmbRecallTest(unittest.TestCase):
+    """T11b: 수준 3 공정가치 표의 전환사채·우선주 내재파생상품부채 행(f-kemtec-emb·f-baropharm-emb, c9)."""
+
+    def setUp(self):
+        self.concepts = load_concepts()
+
+    def facts(self, *tables):
+        return extract_facts(list(tables), self.concepts)
+
+    def real(self, tid):
+        return json.loads(json.dumps(_T11B[tid]))  # 1층 표 기록 그대로(dart_collected/tables 에서 옮김)
+
+    def test_version_c9(self):
+        self.assertEqual(self.concepts[0].version, "c9")
+
+    def test_real_kemtec_embedded_financial_derivative_liability(self):
+        # 케이이엠텍 「내재파생금융상품부채 2,928,440」(천원) — 「금융」이 끼어 c8 「내재파생(상품)?부채」에 안 걸렸다
+        for tid in ("20260408000011:00761:t060", "20260408000011:00760:t039"):
+            got = _by(self.facts(self.real(tid)), "EMB_DERIV_LIABILITY")
+            # 「수준」 열은 1층 머리글이 [수준, 구획 이름] 순서라 마지막 요소로는 못 거른다(기존 1층 문제, 보고서에 적음)
+            got = [f for f in got if f["source"]["col"] == 1]
+            self.assertEqual([(f["period"], f["amount_krw"], f["label"]) for f in got],
+                             [("current_end", 2_928_440_000, "내재파생금융상품부채")])
+            # 행·경로·문맥에 대상 낱말이 없다 → 대상 모름(other/default), 판정은 전환권이 아니라고 보지 않는다
+            self.assertEqual((got[0]["target"], got[0]["target_basis"]), ("other", "default"))
+            self.assertEqual(_by(self.facts(self.real(tid)), "EMB_DERIV_ASSET"), [])
+
+    def test_real_baropharm_rcps_embedded_derivative(self):
+        # 바로팜 「전환상환우선주 내재파생상품 47,171,059」(천원), 값 빈 머리 행 「파생상품부채」 아래
+        got = _by(self.facts(self.real("20260211000330:00760:t063")), "EMB_DERIV_LIABILITY")
+        self.assertEqual([(f["period"], f["amount_krw"]) for f in got], [("current_end", 47_171_059_000)])
+        self.assertEqual((got[0]["target"], got[0]["target_basis"]), ("conversion", "label"))
+        # 주계약 행은 내재파생이 아니다
+        self.assertFalse(any("주계약" in f["label"] for f in self.facts(self.real("20260211000330:00760:t063"))
+                             if f["concept"].startswith("EMB")))
+
+    def test_real_dasan_already_extracted(self):
+        # 다산솔루에타 「전환사채의 내재파생부채 87,300」(천원): c8 에서도 사실이었다(판정이 안 본 것이 원인)
+        got = [f for f in _by(self.facts(self.real("20260324000018:00760:t150")), "EMB_DERIV_LIABILITY")
+               if f["label"] == "전환사채의 내재파생부채"]
+        self.assertEqual({(f["period"], f["amount_krw"], f["target"]) for f in got},
+                         {("current_end", 87_300_000, "conversion"), ("prior_end", 1_711_500_000, "conversion")})
+
+    def test_instrument_embedded_derivative_under_asset_header_not_liability(self):
+        t = _table([("파생상품자산", [None, None]), ("전환사채 내재파생상품", [3, 3]),
+                    ("파생상품부채", [None, None]), ("상환전환우선주 내재파생상품", [4, 4])],
+                   note_title="금융상품 공정가치", title="수준 3 공정가치")
+        got = {f["label"]: f["concept"] for f in self.facts(t)}
+        self.assertNotEqual(got.get("전환사채 내재파생상품"), "EMB_DERIV_LIABILITY")
+        self.assertEqual(got["상환전환우선주 내재파생상품"], "EMB_DERIV_LIABILITY")
+
+    def test_hedging_and_valuation_rows_still_excluded(self):
+        t = _table([("내재파생금융상품부채평가이익", [1, 1]), ("파생금융상품부채(통화스왑)", [2, 2]),
+                    ("이자율스왑 내재파생금융상품부채", [3, 3]), ("전환사채 내재파생상품평가손실", [4, 4]),
+                    ("통화선도 내재파생상품", [5, 5])],
+                   note_title="파생상품", title="전환사채 관련 파생상품")
+        self.assertEqual([f for f in self.facts(t) if f["concept"].startswith("EMB")], [])
 
 
 if __name__ == "__main__":
