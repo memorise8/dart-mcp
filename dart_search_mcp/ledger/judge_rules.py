@@ -268,8 +268,9 @@ def _period(recs: list[dict], facts: list[dict]) -> str | None:
 
 
 def _from_records(value: str, picks: list[tuple[dict, str]], tables: dict, extra_ev: str = "",
-                  facts: list[dict] = ()) -> dict:
-    """기록 근거 결과. basis_period 는 근거 줄 칸의 기간(당기 우선), 그 칸이 비면 _period(기록 전체·facts)."""
+                  facts: list[dict] = (), recs: list[dict] = ()) -> dict:
+    """기록 근거 결과. basis_period 는 근거 줄 칸의 기간(당기 우선), 그 칸이 비면 _period(근거 기록 + 값을 정한
+    기록 전체 `recs`, facts) — 근거 줄이 잔액 없는 첫 기록으로 돌아가도 다른 기록의 기간을 쓴다."""
     lines, refs, sides, head = [], [], set(), ""
     for rec, field in picks:
         side = _record_side(rec, field)
@@ -279,7 +280,7 @@ def _from_records(value: str, picks: list[tuple[dict, str]], tables: dict, extra
         sides.add(side)
         head = head or h
     basis = "current" if "current" in sides else ("prior" if "prior" in sides else None)
-    basis = basis or _period([rec for rec, _ in picks], facts)
+    basis = basis or _period([rec for rec, _ in picks] + list(recs), facts)
     ev = " / ".join(lines + ([extra_ev] if extra_ev else []))
     return _res(value, evidence=ev, basis=basis, refs=list(dict.fromkeys(refs)), kind="instrument_record",
                 heading=head)
@@ -334,7 +335,7 @@ def _conv_run(ctx: Ctx, ins: list[dict]) -> dict | None:
     picks = [_first_with(eq, "equity_component")] if eq else []
     if li:
         picks.append(_first_with(li, "derivative_liability"))
-    return _equity_guard(ctx, _from_records(value, picks, ctx.tables, facts=period_facts))
+    return _equity_guard(ctx, _from_records(value, picks, ctx.tables, facts=period_facts, recs=eq + li))
 
 
 def _held(ctx: Ctx, recs: list[dict]) -> bool:

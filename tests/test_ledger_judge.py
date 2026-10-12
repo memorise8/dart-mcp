@@ -667,6 +667,15 @@ class FinalFixTest(unittest.TestCase):
         r = judge([], [self.bare(cur={"host_carrying": 5})])[CONV]
         self.assertEqual((r["value"], r["basis_period"]), ("EQUITY", "current"))
 
+    def test_i3_period_from_uncited_record_of_same_class(self):
+        # 재검토: 근거 줄은 첫 기록(잔액·변동 없음)인데 기간 근거는 다른 기록(전기 상환)에만 있음
+        a = self.bare()
+        b = self.bare()
+        b["movement"]["prior"] = ["redeemed"]
+        for ins in ([a, b], {"run1": [a, b], "run2": [a, b]}):
+            r = judge([], ins)[CONV]
+            self.assertEqual((r["value"], r["basis_period"]), ("EQUITY", "prior"))
+
     # ---- I2: 확정 행은 모두 basis_period 가 있다 ----
     def test_i2_basis_period_on_record_and_sentence_rows(self):
         # 분리 문장 기록 + 전기 파생상품 금액 사실 → 전기
