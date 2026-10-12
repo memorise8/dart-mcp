@@ -1035,15 +1035,14 @@ class T11bEmbRecallTest(unittest.TestCase):
     def real(self, tid):
         return json.loads(json.dumps(_T11B[tid]))  # 1층 표 기록 그대로(dart_collected/tables 에서 옮김)
 
-    def test_version_c9(self):
-        self.assertEqual(self.concepts[0].version, "c9")
+    def test_version_c9_or_later(self):  # c10 = T11b 수정 1차(T11bFix1Test)
+        self.assertRegex(self.concepts[0].version, r"^c(9|\d\d)$")
 
     def test_real_kemtec_embedded_financial_derivative_liability(self):
         # 케이이엠텍 「내재파생금융상품부채 2,928,440」(천원) — 「금융」이 끼어 c8 「내재파생(상품)?부채」에 안 걸렸다
         for tid in ("20260408000011:00761:t060", "20260408000011:00760:t039"):
+            # 「수준」 열은 머리글이 [수준, 구획 이름] 순서여도 금액 열이 아니다(T11b 수정 1차, c10)
             got = _by(self.facts(self.real(tid)), "EMB_DERIV_LIABILITY")
-            # 「수준」 열은 1층 머리글이 [수준, 구획 이름] 순서라 마지막 요소로는 못 거른다(기존 1층 문제, 보고서에 적음)
-            got = [f for f in got if f["source"]["col"] == 1]
             self.assertEqual([(f["period"], f["amount_krw"], f["label"]) for f in got],
                              [("current_end", 2_928_440_000, "내재파생금융상품부채")])
             # 행·경로·문맥에 대상 낱말이 없다 → 대상 모름(other/default), 판정은 전환권이 아니라고 보지 않는다
@@ -1080,6 +1079,53 @@ class T11bEmbRecallTest(unittest.TestCase):
                     ("통화선도 내재파생상품", [5, 5])],
                    note_title="파생상품", title="전환사채 관련 파생상품")
         self.assertEqual([f for f in self.facts(t) if f["concept"].startswith("EMB")], [])
+
+
+class T11bFix1Test(unittest.TestCase):
+    """T11b 수정 1차(c10): 자산 열의 「<상품> 내재파생상품」, 머리글 어느 단계든 「수준」인 열."""
+
+    def setUp(self):
+        self.concepts = load_concepts()
+
+    def facts(self, *tables):
+        return extract_facts(list(tables), self.concepts)
+
+    def test_version_c10(self):
+        self.assertEqual(self.concepts[0].version, "c10")
+
+    def test_instrument_embedded_derivative_in_asset_column_not_liability(self):
+        # 20260323001209 t106 모양: 열이 [당기말, 파생상품자산] / [당기말, 파생상품부채]
+        t = _table([("전환사채 내재파생상품", [3, 4])], note_title="금융상품 공정가치", title="수준 3 공정가치",
+                   periods=("current_end", "current_end"), headers=[["당기말", "파생상품자산"], ["당기말", "파생상품부채"]])
+        got = [(f["concept"], f["source"]["col"]) for f in self.facts(t) if f["concept"].startswith("EMB")]
+        self.assertNotIn(("EMB_DERIV_LIABILITY", 1), got)
+        self.assertIn(("EMB_DERIV_LIABILITY", 2), got)
+        # 열 이름이 「자산」 하나뿐이어도(20260324000733 t107 모양) 부채가 아니다
+        t = _table([("상환전환우선주 내재파생상품", [5, 6])], note_title="파생상품", title="파생상품 부채 및 자산",
+                   periods=("current_end", "prior_end"), headers=[["당기말", "자산"], ["전기말", "자산"]])
+        self.assertEqual(_by(self.facts(t), "EMB_DERIV_LIABILITY"), [])
+        # 「금융자산ㆍ부채」처럼 부채가 같이 있는 열은 그대로
+        t = _table([("상환전환우선주 내재파생상품", [7, 8])], note_title="파생상품", title="파생상품 부채",
+                   headers=[["금융자산ㆍ부채", "당기말"], ["금융자산ㆍ부채", "전기말"]])
+        self.assertEqual(len(_by(self.facts(t), "EMB_DERIV_LIABILITY")), 2)
+
+    def test_level_column_any_header_element_not_amount(self):
+        t = _table([("내재파생상품부채", [2928440, 3])], note_title="금융상품 공정가치", title="전환사채 수준 3",
+                   periods=("current_end", "current_end"),
+                   headers=[["공정가치", "당기손익-공정가치 측정 금융부채"], ["수준", "당기손익-공정가치 측정 금융부채"]])
+        got = _by(self.facts(t), "EMB_DERIV_LIABILITY")
+        self.assertEqual([(f["source"]["col"], f["amount"]) for f in got], [(1, 2928440)])
+        for lv in ("Level", "서열"):
+            t["columns"][2]["header_path"] = [lv, "x"]
+            self.assertEqual(len(_by(self.facts(t), "EMB_DERIV_LIABILITY")), 1, lv)
+
+    def test_level_number_columns_still_amounts(self):
+        # 수준 1·2·3 열(「수준1」)과 그 위 머리글은 금액 열 그대로 — 합계 열 하나만 쓰는 규칙도 그대로
+        t = _table([("내재파생상품부채", [0, 0, 9, 9])], note_title="금융상품 공정가치", title="전환사채 공정가치 서열",
+                   periods=("current_end",) * 4,
+                   headers=[["공정가치 서열", "수준1"], ["공정가치 서열", "수준2"], ["공정가치 서열", "수준3"], ["공정가치 서열", "합계"]])
+        got = _by(self.facts(t), "EMB_DERIV_LIABILITY")
+        self.assertEqual([(f["source"]["col"], f["amount"]) for f in got], [(4, 9)])
 
 
 if __name__ == "__main__":

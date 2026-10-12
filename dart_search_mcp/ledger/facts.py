@@ -42,6 +42,8 @@ _PREFERRED_COL_RE = re.compile(r"^(?:합계|총계|계|(?:기말)?순?장부(?:�
 _FLOW_HEADER_RE = re.compile(r"취득|증가|감소|증감|변동|상각|처분|대체|손상|환입|발생|상환|전환|행사|기초|발행|최초|인식시|창출|자본화")
 # 금액이 아닌 숫자 열(공정가치 서열 「수준」, 주당 가격, 비율·이자율, 만기 연도) — 단위가 원으로 잡혀도 금액 개념에 안 쓴다
 _NON_AMOUNT_HEADER_RE = re.compile(r"^(수준|Level|서열)$|주당|가격|단가|전환가액|행사가액|비율|이자율|할인율|만기일|^만기$|연도|^기간$|잔존기간|상환기간|주식수|%")
+# 공정가치 서열 「수준」 열은 머리글 어느 단계에 있어도 금액 열이 아니다(1층이 [수준, 구획 이름] 순서로 읽은 표, T11b)
+_LEVEL_HEADER_RE = re.compile(r"^(수준|Level|서열)$")
 # target(내재파생 분리 대상): 구체적인 옵션 낱말이 상품 이름 속 「전환」「상환」보다 앞선다.
 _T_CONV_OPTION = re.compile(r"전환권|신주인수권|교환권")
 _T_REDEMPTION_OPTION = re.compile(r"조기상환청구권|상환청구권|조기상환권|상환권|매도청구권|콜옵션|풋옵션|수의상환|[Cc]all|[Pp]ut")
@@ -80,7 +82,7 @@ class Concept:
     table_patterns: tuple = ()  # table_total: 표 제목 + 첫 소제목 행 글에 모두 있어야 하는 패턴
     table_exclude_patterns: tuple = ()  # table_total: 표 제목·소제목에 있으면 안 됨
     row_exclude_patterns: tuple = ()  # table_total: 표의 어느 행 이름에도 있으면 안 됨(합계가 다른 것을 포함)
-    column_exclude_patterns: tuple = ()  # table_total: 열 머리글 어느 단계에도 있으면 안 됨
+    column_exclude_patterns: tuple = ()  # 열 머리글 어느 단계에도 있으면 안 됨(table_total, 행 이름 개념 모두)
     section_patterns: tuple = ()  # table_total: 값 빈 구획 머리 행은 모두 이 중 하나에 맞아야 함(지분·중립 머리)
     replaces: tuple = ()  # table_total: 같은 칸에 이 개념만 걸려 있으면 대신한다
     topic: str = ""
@@ -313,13 +315,20 @@ def _is_amount_row(table: dict, row: dict) -> bool:
         return False
     cols = {c["col"]: c for c in table.get("columns") or [] if c.get("role") == "value"}
     return any(c.get("value") is not None and _cell_unit(table, c).get("kind") in _AMOUNT_UNITS
-               and not _NON_AMOUNT_HEADER_RE.search(_header_last(cols.get(c["col"]) or {}))
+               and not _non_amount_col(cols.get(c["col"]) or {})
                for c in row.get("cells") or [])
 
 
 def _header_last(col: dict) -> str:
     hp = col.get("header_path") or []
     return _WS_RE.sub("", hp[-1]) if hp else ""
+
+
+def _non_amount_col(col: dict) -> bool:
+    """금액이 아닌 숫자 열: 마지막 머리글이 비금액 낱말이거나, 머리글 어느 단계든 「수준」(공정가치 서열 수준 번호)."""
+    if _NON_AMOUNT_HEADER_RE.search(_header_last(col)):
+        return True
+    return any(_LEVEL_HEADER_RE.match(_WS_RE.sub("", h or "")) for h in col.get("header_path") or [])
 
 
 def _row_period(row: dict) -> str | None:
@@ -403,6 +412,7 @@ def _candidates(table: dict, concepts: list[Concept]):
                                                   for t in [*path_parents, *parents[i]] if t):
                 continue
             col_rx = c.rx("column_patterns")
+            col_ex = c.rx("column_exclude_patterns")
             picked = []
             for cell in row.get("cells") or []:
                 col = cols.get(cell["col"])
@@ -410,8 +420,10 @@ def _candidates(table: dict, concepts: list[Concept]):
                     continue
                 if _cell_unit(table, cell).get("kind") not in _AMOUNT_UNITS:
                     continue
-                if _NON_AMOUNT_HEADER_RE.search(_header_last(col)):
+                if _non_amount_col(col):
                     continue
+                if col_ex and any(rx.search(_WS_RE.sub("", h or "")) for rx in col_ex for h in col.get("header_path") or []):
+                    continue  # 「자산」 열의 내재파생상품 행은 부채 개념이 아니다(T11b 수정 1차)
                 if col_rx and not any(rx.search(_header_last(col)) for rx in col_rx):
                     continue
                 period, inferred = _cell_period(c, col, has_end, has_period, bool(col_rx), row_period)
@@ -472,7 +484,7 @@ def _table_total(c: Concept, order: int, table: dict, cols: dict, has_end: bool,
         if col is None or cell.get("value") is None or _cell_unit(table, cell).get("kind") not in _AMOUNT_UNITS:
             continue
         last = _header_last(col)
-        if _NON_AMOUNT_HEADER_RE.search(last):
+        if _non_amount_col(col):
             continue
         parts = [_WS_RE.sub("", h or "") for h in col.get("header_path") or []]
         if any(rx.search(h) for rx in c.rx("column_exclude_patterns") for h in parts if h):
