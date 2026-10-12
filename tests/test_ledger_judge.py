@@ -175,9 +175,10 @@ class EmbeddedTest(unittest.TestCase):
         self.assertEqual(r["EMBEDDED_DERIVATIVE_SEPARATION"]["value"], "SEPARATED")
 
     def test_separated_record_without_amount_cites_separation_evidence(self):
-        # 분리 금액 칸은 없고 분리 문장만 — 그 상품을 기간 안에 가지고 있어야 한다(T11b W1: 사채 잔액 사실)
+        # 분리 금액 칸은 없고 분리 문장만 — 그 상품을 기간 안에 가지고 있어야 한다(T11b W1: 파생상품 금액 사실)
         ins = [I(sep="separated", ev={"embedded_separation": ["s7", "s7"], "option_class": ["s1"]})]
-        r = judge([F("HOST_LIABILITY", 9, "prior_end")], ins)["EMBEDDED_DERIVATIVE_SEPARATION"]
+        w = F("EMB_DERIV_LIABILITY", 9, "prior_end", target="other", basis="default")
+        r = judge([w], ins)["EMBEDDED_DERIVATIVE_SEPARATION"]
         self.assertEqual((r["value"], r["source_refs"]), ("SEPARATED", ["s7"]))
         self.assertEqual(r["evidence"], "제3회 전환사채 주계약과 분리 (근거 s7)")
 
@@ -486,12 +487,23 @@ class T11bPrecisionTest(unittest.TestCase):
         rec = self.nexel()
         rec["balance"]["prior_end"]["face"] = 100  # 전기말에만 잔액(d6)
         self.assertEqual(judge([], [rec], marks)[EMB]["value"], "SEPARATED")
-        for f in (F("HOST_LIABILITY", 9, "prior_end"), F("CONV_OPTION_LIABILITY", 4),
-                  F("EMB_DERIV_LIABILITY", -3, target="other", basis="default")):
+        for f in (F("CONV_OPTION_LIABILITY", 4), F("EMB_DERIV_LIABILITY", -3, target="other", basis="default"),
+                  F("EMB_DERIV_ASSET", 2, "prior_end", target="redemption", basis="label")):
             self.assertEqual(judge([f], [self.nexel()], marks)[EMB]["value"], "SEPARATED", f["concept"])
 
+    def test_w1_unrelated_cb_host_or_equity_is_not_holding(self):
+        # 수정 1차: 전량 전환한 RCPS 의 분리 문장 + 다른 전환사채의 부채요소·자본요소 금액 → SEPARATED 아님
+        marks = [M(EMB, "company_statement", SEP_SENT, "s930")]
+        cb = I("equity", name="제5회 전환사채", cur={"host_carrying": 900, "equity_component": 50})
+        for facts, ins in (([F("HOST_LIABILITY", 900, label="전환사채")], [self.nexel()]),
+                           ([F("HOST_LIABILITY", 900, "prior_end"), F("CONV_OPTION_EQUITY", 50, label="전환권대가")],
+                            [self.nexel()]),
+                           ([F("HOST_LIABILITY", 900)], [self.nexel(), cb])):
+            r = judge(facts, ins, marks)[EMB]
+            self.assertNotEqual(r["value"], "SEPARATED")
+
     def test_w1_zero_or_unknown_period_fact_is_not_holding(self):
-        for f in (F("HOST_LIABILITY", 0), F("HOST_LIABILITY", 9, "unknown"), F("FVOCI_EQUITY", 9)):
+        for f in (F("EMB_DERIV_LIABILITY", 0), F("EMB_DERIV_LIABILITY", 9, "unknown"), F("FVOCI_EQUITY", 9)):
             r = judge([f], [self.nexel()])[EMB]
             self.assertEqual(r["value"], "UNDETERMINED", f["concept"])
 
@@ -575,6 +587,11 @@ class T11bPrecisionTest(unittest.TestCase):
         for f in keep:
             self.assertEqual(judge([f], [self.eq_rec()])[CONV]["value"], "EQUITY", f["label"])
             self.assertEqual(judge([F("CONV_OPTION_EQUITY", 10), f])[CONV]["value"], "EQUITY", f["label"])
+
+    def test_unknown_period_conv_liability_does_not_block_equity(self):
+        f = F("CONV_OPTION_LIABILITY", 40, "unknown", label="전환권파생상품부채")
+        self.assertEqual(judge([f], [self.eq_rec()])[CONV]["value"], "EQUITY")
+        self.assertEqual(judge([F("CONV_OPTION_EQUITY", 10), f])[CONV]["value"], "EQUITY")
 
     def test_currency_derivative_liability_table_does_not_block_equity(self):
         from dart_search_mcp.ledger.facts import extract_facts, load_concepts

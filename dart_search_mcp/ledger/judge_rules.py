@@ -313,13 +313,14 @@ def _conv_run(ctx: Ctx, ins: list[dict]) -> dict | None:
 
 
 def _held(ctx: Ctx, recs: list[dict]) -> bool:
-    """복합상품을 판정 기간(당기말·전기말) 안에 가지고 있는가(d6, T11b W1) — 그 기록의 잔액 칸 하나라도 0 이 아니거나,
-    같은 범위에 사채·전환권·내재파생 금액 사실(HOST/CONV/EMB, 기간 앎)이 0 이 아님."""
+    """분리 문장·기록이 가리키는 복합상품을 판정 기간(당기말·전기말) 안에 가지고 있는가(d6, T11b W1) — 그 기록의
+    잔액 칸 하나라도 0 이 아니거나, 같은 범위에 분리된 파생상품 금액 사실(EMB_*·CONV_OPTION_LIABILITY, 기간 앎)이 0 이
+    아님. 다른 사채의 부채요소·자본요소(HOST_LIABILITY·CONV_OPTION_EQUITY)는 그 상품의 보유 근거가 아니다(수정 1차)."""
     for r in recs:
         bal = r.get("balance") or {}
         if any(_num(v) != 0 for side in ("current_end", "prior_end") for v in (bal.get(side) or {}).values()):
             return True
-    return bool(_nonzero(ctx.facts, *ctx.rules["concept_groups"]["EMBEDDED_DERIVATIVE_SEPARATION"]))
+    return bool(_nonzero(ctx.facts, "EMB_DERIV_LIABILITY", "EMB_DERIV_ASSET", "CONV_OPTION_LIABILITY"))
 
 
 def _whole_fvpl_mark(ctx: Ctx) -> dict | None:
