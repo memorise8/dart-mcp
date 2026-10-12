@@ -44,6 +44,8 @@ _FLOW_HEADER_RE = re.compile(r"취득|증가|감소|증감|변동|상각|처분|
 _NON_AMOUNT_HEADER_RE = re.compile(r"^(수준|Level|서열)$|주당|가격|단가|전환가액|행사가액|비율|이자율|할인율|만기일|^만기$|연도|^기간$|잔존기간|상환기간|주식수|%")
 # 공정가치 서열 「수준」 열은 머리글 어느 단계에 있어도 금액 열이 아니다(1층이 [수준, 구획 이름] 순서로 읽은 표, T11b)
 _LEVEL_HEADER_RE = re.compile(r"^(수준|Level|서열)$")
+# 「수준」 아래 하위 머리글이 수준 번호·합계면 「수준」은 묶음 머리글이다(수준1·2·3·합계 열은 금액)
+_LEVEL_CHILD_RE = re.compile(r"^(수준|Level|level)\d|합계|총계|^계$")
 # target(내재파생 분리 대상): 구체적인 옵션 낱말이 상품 이름 속 「전환」「상환」보다 앞선다.
 _T_CONV_OPTION = re.compile(r"전환권|신주인수권|교환권")
 _T_REDEMPTION_OPTION = re.compile(r"조기상환청구권|상환청구권|조기상환권|상환권|매도청구권|콜옵션|풋옵션|수의상환|[Cc]all|[Pp]ut")
@@ -325,9 +327,13 @@ def _header_last(col: dict) -> str:
 
 
 def _non_amount_col(col: dict) -> bool:
-    """금액이 아닌 숫자 열: 마지막 머리글이 비금액 낱말이거나, 머리글 어느 단계든 「수준」(공정가치 서열 수준 번호)."""
-    if _NON_AMOUNT_HEADER_RE.search(_header_last(col)):
+    """금액이 아닌 숫자 열: 마지막 머리글이 비금액 낱말이거나, 머리글 어느 단계든 「수준」(공정가치 서열 수준 번호).
+    마지막 머리글이 수준 번호·합계면 「수준」은 그 위 묶음 머리글이라 금액 열이다."""
+    last = _header_last(col)
+    if _NON_AMOUNT_HEADER_RE.search(last):
         return True
+    if _LEVEL_CHILD_RE.search(last):
+        return False
     return any(_LEVEL_HEADER_RE.match(_WS_RE.sub("", h or "")) for h in col.get("header_path") or [])
 
 

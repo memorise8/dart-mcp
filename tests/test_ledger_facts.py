@@ -1126,6 +1126,12 @@ class T11bFix1Test(unittest.TestCase):
                    headers=[["공정가치 서열", "수준1"], ["공정가치 서열", "수준2"], ["공정가치 서열", "수준3"], ["공정가치 서열", "합계"]])
         got = _by(self.facts(t), "EMB_DERIV_LIABILITY")
         self.assertEqual([(f["source"]["col"], f["amount"]) for f in got], [(4, 9)])
+        # 「수 준」이 수준1·2·3·합계 위 묶음 머리글이면 합계 열은 금액이다(20260316001039 t197 모양)
+        t = _table([("기타포괄손익-공정가치측정 금융자산", [761512, 0, 2290, 763802])], note_title="범주별 금융상품",
+                   title="(당기말)", periods=("current_end",) * 4,
+                   headers=[["(단위: 백만원)", "수 준", h] for h in ("수준1", "수준2", "수준3", "합 계")])
+        got = _by(self.facts(t), "FVOCI_FA_TOTAL")
+        self.assertEqual([(f["source"]["col"], f["amount"]) for f in got], [(4, 763802)])
 
 
 if __name__ == "__main__":
