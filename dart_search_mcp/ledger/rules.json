@@ -1,5 +1,5 @@
 {
-  "rules_version": "r1",
+  "rules_version": "r2",
   "exception_patterns": {
     "dev_amortization": {
       "topic": "DEV_COST_CAPITALIZATION",
@@ -91,6 +91,10 @@
       "exclude": "손상|상각"
     },
     "emb_not_separated_statement": "분리하지\\s*(않|아니)",
+    "whole_fvpl_designation_statement": {
+      "why": "d8: 복합계약(상품) 전체를 당기손익-공정가치로 지정했다는 문장 = 분리 안 함. 분리 근거와 함께 있으면 확인 필요(T11b W2). 「지정할 수 있」 같은 일반 정책, 「복합계약 전체를 고려」(SPPI)는 안 걸린다",
+      "pattern": "(복합계약|상품|금융부채|우선주|사채)\\s*전체를\\s*당기손익[^.]{0,40}?지정(하였|했|하고\\s*있|되었|됐|되어\\s*있)"
+    },
     "ip_fair_value_in_sentence": "공정가치[^.]{0,60}\\d{1,3}(,\\d{3})+",
     "bc_cost_accounts": {
       "OPERATING": "판매비|관리비|판관비|영업비용",

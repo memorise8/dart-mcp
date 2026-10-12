@@ -175,8 +175,9 @@ class EmbeddedTest(unittest.TestCase):
         self.assertEqual(r["EMBEDDED_DERIVATIVE_SEPARATION"]["value"], "SEPARATED")
 
     def test_separated_record_without_amount_cites_separation_evidence(self):
+        # 분리 금액 칸은 없고 분리 문장만 — 그 상품을 기간 안에 가지고 있어야 한다(T11b W1: 사채 잔액 사실)
         ins = [I(sep="separated", ev={"embedded_separation": ["s7", "s7"], "option_class": ["s1"]})]
-        r = judge([], ins)["EMBEDDED_DERIVATIVE_SEPARATION"]
+        r = judge([F("HOST_LIABILITY", 9, "prior_end")], ins)["EMBEDDED_DERIVATIVE_SEPARATION"]
         self.assertEqual((r["value"], r["source_refs"]), ("SEPARATED", ["s7"]))
         self.assertEqual(r["evidence"], "제3회 전환사채 주계약과 분리 (근거 s7)")
 
@@ -450,6 +451,144 @@ class CommonTest(unittest.TestCase):
     def test_read_failed(self):
         r = judge([], [], [M("LEASE_EXEMPTION")], read_failed_topics={"LEASE_EXEMPTION"})["LEASE_EXEMPTION"]
         self.assertEqual(r["held_reason"], "read_failed")
+
+
+SPPI = "내재파생상품을 포함하는 복합계약은 계약상 현금흐름이 원금과 이자로만 구성되어 있는지를 결정할 때 해당 복합계약 전체를 고려합니다."
+WHOLE = ("전환우선주는 금융부채가 하나 이상의 내재파생상품을 포함하는 계약의 일부를 구성함에 따라 복합계약 전체를 "
+         "당기손익-공정가치 측정 항목으로 지정하였고, 공정가치로 최초 측정되며 이후 공정가치로 재측정되고 있습니다.")
+SEP_SENT = ("연결회사는 상환전환우선주 발행으로 수령한 금액 중 내재파생상품은 주계약인 부채요소로부터 분리하고 공정가치로 "
+            "평가하여 당기손익으로 인식하였으며, 주계약인 부채요소는 상각후원가로 측정하고 관련 이자비용은 금융원가로 인식하였습니다.")
+EMB = "EMBEDDED_DERIVATIVE_SEPARATION"
+CONV = "CONVERSION_OPTION_CLASS"
+
+
+class T11bPrecisionTest(unittest.TestCase):
+    """T11b: 전체 자료 게이트의 틀린 3층 판정 4건(W1~W4)과 그 근처 문장·사실."""
+
+    # ---- W1 넥셀: 분리 문장은 있으나 당기·전기 모두 상품 잔액 없음(전기 전량 전환) ----
+    def nexel(self, **cur):
+        rec = I(sep="separated", name="상환전환우선주", cur=cur or None, ev={"embedded_separation": ["s930"]})
+        rec["movement"]["prior"] = ["converted"]
+        return rec
+
+    def test_w1_separation_sentence_without_holding_is_not_separated(self):
+        facts = [F("CONV_OPTION_LIABILITY", 0, label=f"제{k}회 상환전환우선주 전환권 등", target="conversion")
+                 for k in (1, 2)]
+        marks = [M(EMB, "policy", SPPI, "s101"), M(EMB, "company_statement", SEP_SENT, "s930")]
+        for ins in ([self.nexel()], {"run1": [self.nexel()], "run2": [self.nexel()]}):
+            r = judge(facts, ins, marks, category_table=True)[EMB]
+            self.assertIn(r["value"], ("UNDETERMINED", "NOT_APPLICABLE"))
+            self.assertEqual(r["held_reason"], "no_facts")
+
+    def test_w1_holding_by_record_balance_or_fact_keeps_separated(self):
+        marks = [M(EMB, "company_statement", SEP_SENT, "s930")]
+        self.assertEqual(judge([], [self.nexel(host_carrying=5)], marks)[EMB]["value"], "SEPARATED")
+        rec = self.nexel()
+        rec["balance"]["prior_end"]["face"] = 100  # 전기말에만 잔액(d6)
+        self.assertEqual(judge([], [rec], marks)[EMB]["value"], "SEPARATED")
+        for f in (F("HOST_LIABILITY", 9, "prior_end"), F("CONV_OPTION_LIABILITY", 4),
+                  F("EMB_DERIV_LIABILITY", -3, target="other", basis="default")):
+            self.assertEqual(judge([f], [self.nexel()], marks)[EMB]["value"], "SEPARATED", f["concept"])
+
+    def test_w1_zero_or_unknown_period_fact_is_not_holding(self):
+        for f in (F("HOST_LIABILITY", 0), F("HOST_LIABILITY", 9, "unknown"), F("FVOCI_EQUITY", 9)):
+            r = judge([f], [self.nexel()])[EMB]
+            self.assertEqual(r["value"], "UNDETERMINED", f["concept"])
+
+    # ---- W2 페르소나: 분리 문장 + 복합계약 전체를 당기손익-공정가치로 지정한 문장(d8) ----
+    def persona(self):
+        return I(sep="separated", name="전환상환우선주부채", cur={"host_carrying": 11298892},
+                 ev={"embedded_separation": ["s413"]})
+
+    def test_w2_whole_contract_fvtpl_designation_conflicts_with_separation(self):
+        marks = [M(EMB, "policy", SPPI, "s127"), M(EMB, "policy", WHOLE, "s202")]
+        for ins in ([self.persona()], {"run1": [self.persona()], "run2": [self.persona()]}):
+            r = judge([F("HOST_LIABILITY", 11298891696)], ins, marks)[EMB]
+            self.assertEqual((r["value"], r["held_reason"]), ("UNDETERMINED", "needs_review"))
+            self.assertIn("s202", r["review_note"])
+            self.assertIn("s413", r["review_note"])
+        # 분리 금액 사실(대상 확인)로 SEPARATED 가 될 때도 같다
+        f = F("EMB_DERIV_LIABILITY", 7, label="파생상품부채(전환권)", target="conversion", basis="label")
+        r = judge([f], [], [M(EMB, "company_statement", WHOLE, "s202")])[EMB]
+        self.assertEqual(r["held_reason"], "needs_review")
+        self.assertIn("s202", r["review_note"])
+        # 다른 주제로 표시된 문장이어도 같은 공시의 문장이면 본다
+        r = judge([], [self.persona()], [M(CONV, "policy", WHOLE, "s202")])[EMB]
+        self.assertEqual(r["held_reason"], "needs_review")
+
+    def test_w2_designation_variants(self):
+        for text in ("회사는 상환전환우선주 전체를 당기손익-공정가치측정금융부채로 지정하였습니다.",
+                     "연결회사는 동 금융부채 전체를 당기손익-공정가치 측정 금융부채로 지정하고 있습니다.",
+                     "회사는 복합금융상품 전체를 당기손익인식금융부채로 지정하였습니다."):
+            r = judge([], [self.persona()], [M(EMB, "policy", text, "s9")])[EMB]
+            self.assertEqual(r["held_reason"], "needs_review", text)
+
+    def test_w2_near_miss_sentences_keep_separated(self):
+        for text in (SPPI,
+                     "내재파생상품을 포함하는 복합계약 전체를 당기손익-공정가치 측정 항목으로 지정할 수 있습니다.",
+                     "복합계약 전체를 고려하여 당기손익-공정가치로 측정합니다.",
+                     "전환사채의 전환권은 당기손익-공정가치 측정 금융부채로 지정하였습니다.",
+                     "회사는 상환전환우선주의 전체 발행금액을 부채로 분류하였습니다."):
+            r = judge([], [self.persona()], [M(EMB, "policy", text, "s9")])[EMB]
+            self.assertEqual(r["value"], "SEPARATED", text)
+
+    def test_w2_designation_without_separation_evidence_not_separated_value(self):
+        # 분리 근거가 없으면 이 문장으로 SEPARATED 가 나오지 않는다(값을 새로 확정하지는 않음)
+        r = judge([F("HOST_LIABILITY", 9)], [I(sep="unconfirmed")], [M(EMB, "policy", WHOLE, "s202")])[EMB]
+        self.assertNotEqual(r["value"], "SEPARATED")
+
+    # ---- W3·W4 케이이엠텍·다산: 자본 분류인데 같은 범위에 전환권 파생상품부채 금액 ----
+    def eq_rec(self):
+        return I("equity", name="전환사채", cur={"face": 5000000, "host_carrying": 5960135},
+                 ev={"option_class": ["s269", "s272"]})
+
+    def test_w4_equity_record_with_conversion_embedded_liability_needs_review(self):
+        f = F("EMB_DERIV_LIABILITY", 87300, label="전환사채의 내재파생부채", target="conversion", basis="label",
+              mult=1000)
+        for ins in ([self.eq_rec()], {"run1": [self.eq_rec()], "run2": [self.eq_rec()]}):
+            r = judge([F("HOST_LIABILITY", 5960134726), f], ins)[CONV]
+            self.assertEqual((r["value"], r["held_reason"]), ("UNDETERMINED", "needs_review"))
+            self.assertIn("s269", r["review_note"])
+            self.assertIn("전환사채의 내재파생부채 87,300", r["review_note"])
+
+    def test_w3_target_unknown_embedded_liability_blocks_equity(self):
+        f = F("EMB_DERIV_LIABILITY", 2928440, label="내재파생금융상품부채", target="other", basis="default", mult=1000)
+        r = judge([f], [self.eq_rec()])[CONV]
+        self.assertEqual(r["held_reason"], "needs_review")
+        f = F("EMB_DERIV_LIABILITY", 5, label="파생상품부채", target=None, basis=None)
+        self.assertEqual(judge([f], [self.eq_rec()])[CONV]["held_reason"], "needs_review")
+        # 기록 없이 사실만으로 EQUITY 가 될 때도 같다
+        r = judge([F("CONV_OPTION_EQUITY", 10, label="전환권대가"), f])[CONV]
+        self.assertEqual((r["value"], r["held_reason"]), ("UNDETERMINED", "needs_review"))
+        self.assertIn("전환권대가", r["review_note"])
+        # 괄호(음수)로 적은 전환권 파생상품부채도 금액이다
+        r = judge([F("CONV_OPTION_LIABILITY", -4, label="전환권파생상품부채")], [self.eq_rec()])[CONV]
+        self.assertEqual(r["held_reason"], "needs_review")
+
+    def test_non_conversion_or_absent_liability_does_not_block_equity(self):
+        keep = [F("EMB_DERIV_LIABILITY", 7, label="파생상품부채(조기상환청구권)", target="redemption", basis="label"),
+                F("EMB_DERIV_LIABILITY", 7, label="신종자본증권 파생상품부채", target="other", basis="label"),
+                F("EMB_DERIV_LIABILITY", 0, label="전환사채의 내재파생부채", target="conversion", basis="label"),
+                F("EMB_DERIV_LIABILITY", 7, "unknown", label="전환사채의 내재파생부채", target="conversion",
+                  basis="label"),
+                F("EMB_DERIV_ASSET", 7, label="파생상품자산(전환권)", target="conversion", basis="label")]
+        for f in keep:
+            self.assertEqual(judge([f], [self.eq_rec()])[CONV]["value"], "EQUITY", f["label"])
+            self.assertEqual(judge([F("CONV_OPTION_EQUITY", 10), f])[CONV]["value"], "EQUITY", f["label"])
+
+    def test_currency_derivative_liability_table_does_not_block_equity(self):
+        from dart_search_mcp.ledger.facts import extract_facts, load_concepts
+        from tests.test_ledger_facts import _table
+        t = _table([("파생금융상품부채(통화스왑)", [2, 2]), ("이자율스왑 파생상품부채", [3, 3]), ("통화선도 내재파생상품", [5, 5])],
+                   note_title="파생상품", title="전환사채 관련 파생상품")
+        facts = extract_facts([t], load_concepts())
+        self.assertEqual(judge(facts, [self.eq_rec()])[CONV]["value"], "EQUITY")
+
+    def test_derivative_liability_record_rules_unchanged(self):
+        li = I("derivative_liability", cur={"derivative_liability": 700}, name="제4회 전환사채")
+        f = F("EMB_DERIV_LIABILITY", 700, label="전환사채의 내재파생부채", target="conversion", basis="label")
+        self.assertEqual(judge([f], [self.eq_rec(), li])[CONV]["value"], "BOTH")
+        self.assertEqual(judge([f], [li])[CONV]["value"], "LIABILITY")
 
 
 def T(tid, note_title, labels, *, title="", headers=(), status="verified", scope="separate", kind="note", mult=1000):

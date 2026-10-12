@@ -51,6 +51,7 @@ def _load(path: str) -> dict:
     d = j["dev_expensed_statement"]
     rx["dev_exp"] = tuple(re.compile(d[k]) for k in ("pattern", "requires", "exclude"))
     rx["emb_not_sep"] = re.compile(j["emb_not_separated_statement"])
+    rx["whole_fvpl"] = re.compile(j["whole_fvpl_designation_statement"]["pattern"])
     rx["ip_fv_sentence"] = re.compile(j["ip_fair_value_in_sentence"])
     rx["bc_accounts"] = {v: re.compile(p) for v, p in j["bc_cost_accounts"].items()}
     j["rx"] = rx
@@ -264,6 +265,27 @@ def _from_records(value: str, picks: list[tuple[dict, str]], tables: dict, extra
                 heading=head)
 
 
+def _non_conversion(f: dict) -> bool:
+    """내재파생 사실의 대상이 전환권이 아님이 분명한가 — 상환권(조기상환청구권 등)이거나, 행·경로·문맥이 정한
+    「기타」(신종자본증권 등). 대상 낱말이 없어 붙은 other/default 와 대상 모름(None)은 분명하지 않다."""
+    t = f.get("target")
+    return t == "redemption" or (t == "other" and f.get("target_basis") not in (None, "default"))
+
+
+def _equity_guard(ctx: Ctx, res: dict) -> dict:
+    """EQUITY 판정에 같은 범위·기간 안 전환권 파생상품부채로 볼 금액이 있으면 확인 필요(d10, T11b W3·W4).
+    CONV_OPTION_LIABILITY 금액(부호 무관), 또는 대상이 전환권이 아님이 분명하지 않은 EMB_DERIV_LIABILITY 금액이다.
+    파생상품부채 기록(option_class=derivative_liability)이 없으면 부채·둘 다로 증명된 것은 아니어서 값을 정하지 않는다."""
+    if res.get("value") != "EQUITY":
+        return res
+    li = [f for f in _usable(ctx.facts, "CONV_OPTION_LIABILITY") if _num(f.get("amount")) != 0] + \
+        [f for f in _pos_abs(ctx.facts, "EMB_DERIV_LIABILITY") if not _non_conversion(f)]
+    if not li:
+        return res
+    return _review(f"자본 분류 근거({res['evidence']})인데 전환권 파생상품부채로 볼 금액이 있음: "
+                   f"{evidence_line(_pick(li), ctx.tables)}")
+
+
 def _conv_run(ctx: Ctx, ins: list[dict]) -> dict | None:
     topic = "CONVERSION_OPTION_CLASS"
     eq = [i for i in ins if i.get("option_class") == "equity"]
@@ -275,7 +297,7 @@ def _conv_run(ctx: Ctx, ins: list[dict]) -> dict | None:
             res = _from_facts(cls, feq + fli, ctx.tables)
             if cls == "BOTH":
                 res["evidence"] = f"{evidence_line(_pick(feq), ctx.tables)} / {evidence_line(_pick(fli), ctx.tables)}"
-            return res
+            return _equity_guard(ctx, res)
         return ctx.und(topic, "conv_no_class" if host(ctx.facts) else None)
     if not (eq or li):
         return ctx.und(topic, "conv_no_class")
@@ -287,7 +309,23 @@ def _conv_run(ctx: Ctx, ins: list[dict]) -> dict | None:
     picks = [_first_with(eq, "equity_component")] if eq else []
     if li:
         picks.append(_first_with(li, "derivative_liability"))
-    return _from_records(value, picks, ctx.tables)
+    return _equity_guard(ctx, _from_records(value, picks, ctx.tables))
+
+
+def _held(ctx: Ctx, recs: list[dict]) -> bool:
+    """복합상품을 판정 기간(당기말·전기말) 안에 가지고 있는가(d6, T11b W1) — 그 기록의 잔액 칸 하나라도 0 이 아니거나,
+    같은 범위에 사채·전환권·내재파생 금액 사실(HOST/CONV/EMB, 기간 앎)이 0 이 아님."""
+    for r in recs:
+        bal = r.get("balance") or {}
+        if any(_num(v) != 0 for side in ("current_end", "prior_end") for v in (bal.get(side) or {}).values()):
+            return True
+    return bool(_nonzero(ctx.facts, *ctx.rules["concept_groups"]["EMBEDDED_DERIVATIVE_SEPARATION"]))
+
+
+def _whole_fvpl_mark(ctx: Ctx) -> dict | None:
+    """같은 공시의 문장(주제·종류 무관) 중 복합계약(상품) 전체를 당기손익-공정가치로 지정했다는 문장(d8)."""
+    rx = ctx.rx["whole_fvpl"]
+    return next((m for m in ctx.marks if rx.search(m.get("text") or "")), None)
 
 
 def _emb_run(ctx: Ctx, ins: list[dict]) -> dict | None:
@@ -301,9 +339,22 @@ def _emb_run(ctx: Ctx, ins: list[dict]) -> dict | None:
     weak = [f for f in emb if f not in strong]
     stmt = [m for m in _topic_marks(ctx.marks, topic)
             if m.get("kind") == "company_statement" and ctx.rx["emb_not_sep"].search(m.get("text") or "")]
+    if sep and not _held(ctx, sep):
+        sep = []  # 분리 문장·기록이 가리키는 상품이 당기·전기 모두 없음 → 해당 없음·판단불가 규칙으로(§6.2)
     if sep or strong:
         if stmt:
             return _review(f"회사 문장은 분리하지 않음({stmt[0].get('sentence_id')})인데 분리 금액·기록이 있음")
+        whole = _whole_fvpl_mark(ctx)
+        if whole:
+            if sep:
+                rec = sep[0]
+                refs = (rec.get("evidence") or {}).get("embedded_separation") or []
+                what = f"{(rec.get('instrument') or rec.get('series_key') or '사채').strip()} 분리 기록" + \
+                    (f"({', '.join(dict.fromkeys(refs))})" if refs else "")
+            else:
+                f = _pick(strong)
+                what = f"분리 금액 {evidence_line(f, ctx.tables)}({_fact_ref(f)})"
+            return _review(f"{what}과 상품 전체를 당기손익-공정가치로 지정한 문장({whole.get('sentence_id')})이 함께 있음")
         if strong and nots and not sep:
             return _review(f"사채 기록은 {nots[0].get('embedded_separation')}인데 분리 금액이 있음: "
                            f"{evidence_line(_pick(strong), ctx.tables)}")
