@@ -1,5 +1,5 @@
 {
-  "rules_version": "r2",
+  "rules_version": "r3",
   "exception_patterns": {
     "dev_amortization": {
       "topic": "DEV_COST_CAPITALIZATION",
@@ -59,6 +59,13 @@
         "BC_RELATED_COST"
       ]
     },
+    "read_failed_absence_values": {
+      "why": "I1(r3): 사실이 없음에 기대어 정한 값. 그 주제의 관련 주석 표를 읽지 못했으면 판단불가/read_failed 다. 리스 NONE(0·「-」 칸 사실)·PPA NO_BUSINESS_COMBINATION(회사 문장)은 있는 근거로 정한 값이라 넣지 않는다",
+      "EMBEDDED_DERIVATIVE_SEPARATION": ["NOT_APPLICABLE"],
+      "IP_FAIR_VALUE": ["FV_NOT_DISCLOSED"],
+      "FVOCI_DESIGNATION": ["NOT_DESIGNATED"],
+      "DEV_COST_CAPITALIZATION": ["EXPENSED"]
+    },
     "emb_strong_targets": [
       "conversion",
       "redemption"
@@ -71,6 +78,9 @@
       "policy_only": "정책 문장만 있고 적용 사실(금액·사채 기록)이 없음",
       "read_failed": "관련 주석 표를 읽지 못함",
       "conv_no_class": "사채는 있으나 전환권 분류 근거 없음",
+      "conv_no_period": "사채는 있으나 당기·전기 잔액·변동 근거 없음",
+      "emb_no_period": "복합상품은 있으나 당기·전기 잔액·변동 근거 없음",
+      "emb_targeted_no_records": "사채·우선주 대상 공시이나 회차 기록 없음",
       "emb_no_evidence": "복합상품은 있으나 분리 여부를 확인할 칸·문장 없음",
       "emb_weak_only": "분리 대상(전환권·상환권)이 확인되지 않은 파생상품 금액만 있음",
       "fvoci_debt_only": "기타포괄손익-공정가치 채무상품만 있음",

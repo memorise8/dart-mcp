@@ -8,6 +8,7 @@
   - <ledger>/facts.jsonl, <ledger>/policy_marks.jsonl (2층 ①③)
   - --instruments / --instruments2: 2층 ② 독립 두 실행. (rcept_no, fs_scope)마다 마지막 줄을 쓰고,
     model_used 가 --model(기본 gpt-5.6-luna)이 아닌 줄은 그 실행에 없는 것으로 친다(R19).
+    어느 실행이든 skipped 아닌 줄(모델 무관)이 있는 공시·범위는 사채·우선주 대상이다(R35, meta instruments_targeted).
   - --v1-stance: 옛 topic_judge 결과. PPA_MEASUREMENT_PERIOD 값만 옮겨 쓴다(Q7, R3).
   - --tables: 1층 표 파일. 근거 줄의 주석 번호·제목, 무형자산 변동표·금융상품 범주표 여부, 읽기 실패 주석에 쓴다.
     디렉터리가 없으면 표 정보 없이 판정한다(근거 줄에 주석이 빠지고 NOT_APPLICABLE 은 나오지 않는다).
@@ -44,15 +45,20 @@ def _jsonl(path: Path):
                 yield json.loads(line)
 
 
-def load_runs(path: Path, model: str, keep: set[str] | None) -> tuple[dict, Counter]:
-    """(rcept_no, fs_scope) → 기록 목록(마지막 줄). 다른 모델 줄은 그 실행에 없는 것으로 친다."""
+def load_runs(path: Path, model: str, keep: set[str] | None) -> tuple[dict, Counter, set]:
+    """(rcept_no, fs_scope) → 기록 목록(마지막 줄). 다른 모델 줄은 그 실행에 없는 것으로 친다.
+    셋째 값은 skipped 아닌 줄이 하나라도 있는 (rcept_no, fs_scope) — 사채·우선주 대상(R35)."""
     last: dict = {}
     stats: Counter = Counter()
+    targeted: set = set()
     for r in _jsonl(path):
         if keep is not None and r.get("rcept_no") not in keep:
             continue
         stats["lines"] += 1
-        last[(r.get("rcept_no"), r.get("fs_scope") or "separate")] = r
+        key = (r.get("rcept_no"), r.get("fs_scope") or "separate")
+        if not r.get("skipped"):
+            targeted.add(key)
+        last[key] = r
     out = {}
     for key, r in last.items():
         if r.get("model_used") != model:
@@ -60,7 +66,7 @@ def load_runs(path: Path, model: str, keep: set[str] | None) -> tuple[dict, Coun
             continue
         out[key] = list(r.get("records") or [])
     stats["keys"] = len(out)
-    return out, stats
+    return out, stats, targeted
 
 
 def _group(path: Path, keep: set[str] | None) -> dict[str, list[dict]]:
@@ -100,6 +106,7 @@ def process(job: dict) -> dict:
         facts = [f for f in job["facts"] if (f.get("fs_scope") or "separate") == scope]
         meta = dict(job["meta"])
         meta.update(filing_meta)
+        meta["instruments_targeted"] = scope in set(job.get("targeted") or ())
         if tables:
             meta.update(scope_meta(tables, scope))
         runs = {"run1": job["run1"].get(scope), "run2": job["run2"].get(scope)}
@@ -143,8 +150,11 @@ def main(argv: list[str] | None = None) -> int:
 
     facts = _group(args.ledger / "facts.jsonl", keep)
     marks = _group(args.ledger / "policy_marks.jsonl", keep)
-    run1, s1 = load_runs(args.instruments, args.model, keep)
-    run2, s2 = load_runs(args.instruments2, args.model, keep)
+    run1, s1, t1 = load_runs(args.instruments, args.model, keep)
+    run2, s2, t2 = load_runs(args.instruments2, args.model, keep)
+    targeted = defaultdict(set)
+    for rc, sc in t1 | t2:
+        targeted[rc].add(sc)
     audit = {r["rcept_no"]: r for r in _jsonl(args.facts_audit) if keep is None or r.get("rcept_no") in keep}
     v1 = {}
     if args.v1_stance:
@@ -168,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
             r1, r2 = by_rcept_runs.get(rc, ({}, {}))
             scopes = {f.get("fs_scope") or "separate" for f in facts.get(rc, [])} | set(r1) | set(r2)
             yield {"rcept_no": rc, "facts": facts.get(rc, []), "marks": marks.get(rc, []), "run1": r1, "run2": r2,
-                   "scopes": sorted(scopes), "tables_dir": tables_dir,
+                   "scopes": sorted(scopes), "tables_dir": tables_dir, "targeted": sorted(targeted.get(rc, ())),
                    "meta": {"corp_code": a.get("corp_code"), "fiscal_year": a.get("fiscal_year"),
                             "v1_ppa": v1.get(rc)}}
 

@@ -13,6 +13,7 @@ meta 키(모두 선택):
   movement_table              무형자산 주석에 변동표가 있는가(None 이면 증가·상각 사실로 짐작)
   category_table              금융상품 범주표가 있는가(내재파생 NOT_APPLICABLE 의 조건)
   read_failed_topics          관련 주석 표를 읽지 못한 주제 집합
+  instruments_targeted        이 공시·범위가 2층 ② 사채·우선주 대상이었는가(어느 실행이든 skipped 아닌 줄, R35)
   v1_ppa                      옛 topic_judge 의 PPA_MEASUREMENT_PERIOD 행(Q7 유지)
 """
 from __future__ import annotations
@@ -203,6 +204,7 @@ class Ctx:
     def __init__(self, facts, marks, meta, rules, fs_scope=None):
         self.facts, self.marks, self.meta, self.rules = facts, marks, meta, rules
         self.fs_scope = fs_scope
+        self.targeted_no_records = False  # R35: 사채·우선주 대상인데 두 실행 모두 기록 0 (judge_filing 이 정함)
         self.tables = meta.get("tables") or {}
         self.reasons = rules["reasons"]
         self.rx = rules["rx"]
@@ -250,7 +252,24 @@ def _record_side(rec: dict, field: str) -> str | None:
     return None
 
 
-def _from_records(value: str, picks: list[tuple[dict, str]], tables: dict, extra_ev: str = "") -> dict:
+def _rec_sides(recs: list[dict]) -> set[str]:
+    """기록이 가리키는 기간 — 잔액 칸(어느 칸이든) 0 이 아닌 기간, 없으면 변동(당기·전기)이 적힌 기간."""
+    bal = {s for r in recs for s in ("current", "prior")
+           if any(_num(v) != 0 for v in ((r.get("balance") or {}).get(f"{s}_end") or {}).values())}
+    if bal:
+        return bal
+    return {s for r in recs for s in ("current", "prior") if ((r.get("movement") or {}).get(s))}
+
+
+def _period(recs: list[dict], facts: list[dict]) -> str | None:
+    """기록으로 정한 값의 basis_period(I2): 기록 잔액 → 기록 변동 → 같은 범위의 기간 아는 사실 순, 당기 우선."""
+    sides = _rec_sides(recs) or {_side(f) for f in facts}
+    return "current" if "current" in sides else ("prior" if "prior" in sides else None)
+
+
+def _from_records(value: str, picks: list[tuple[dict, str]], tables: dict, extra_ev: str = "",
+                  facts: list[dict] = ()) -> dict:
+    """기록 근거 결과. basis_period 는 근거 줄 칸의 기간(당기 우선), 그 칸이 비면 _period(기록 전체·facts)."""
     lines, refs, sides, head = [], [], set(), ""
     for rec, field in picks:
         side = _record_side(rec, field)
@@ -260,6 +279,7 @@ def _from_records(value: str, picks: list[tuple[dict, str]], tables: dict, extra
         sides.add(side)
         head = head or h
     basis = "current" if "current" in sides else ("prior" if "prior" in sides else None)
+    basis = basis or _period([rec for rec, _ in picks], facts)
     ev = " / ".join(lines + ([extra_ev] if extra_ev else []))
     return _res(value, evidence=ev, basis=basis, refs=list(dict.fromkeys(refs)), kind="instrument_record",
                 heading=head)
@@ -306,10 +326,15 @@ def _conv_run(ctx: Ctx, ins: list[dict]) -> dict | None:
     missing = [f for f in (fli if not li else []) + (feq if not eq else [])]
     if missing:
         return _review(f"사채 기록은 {value}인데 다른 분류 금액이 있음: {evidence_line(_pick(missing), ctx.tables)}")
+    # R34(d6): 쓴 기록에 당기·전기 잔액·변동이 없고 같은 범위에 기간 아는 사채 사실(전환권·부채요소)도 없으면
+    # 판정 기간 안에 그 사채를 가졌는지 모른다 → 판단불가. 전기에 상환·전환한 변동도 근거다.
+    period_facts = _nonzero(ctx.facts, "CONV_OPTION_EQUITY", "CONV_OPTION_LIABILITY", "HOST_LIABILITY")
+    if not _rec_sides(eq + li) and not period_facts:
+        return undetermined(False, ctx.reasons["conv_no_period"])
     picks = [_first_with(eq, "equity_component")] if eq else []
     if li:
         picks.append(_first_with(li, "derivative_liability"))
-    return _equity_guard(ctx, _from_records(value, picks, ctx.tables))
+    return _equity_guard(ctx, _from_records(value, picks, ctx.tables, facts=period_facts))
 
 
 def _held(ctx: Ctx, recs: list[dict]) -> bool:
@@ -364,27 +389,37 @@ def _emb_run(ctx: Ctx, ins: list[dict]) -> dict | None:
             if _record_side(rec, field):
                 return _from_records("SEPARATED", [(rec, field)], ctx.tables)
             line, refs, head = _record_line(rec, field, None, ctx.tables, "embedded_separation")
+            # 분리 문장 기록: 기간은 _held 가 본 기록 잔액(·변동) 또는 분리된 파생상품 금액 사실에서
+            held_facts = _nonzero(ctx.facts, "EMB_DERIV_LIABILITY", "EMB_DERIV_ASSET", "CONV_OPTION_LIABILITY")
             return _res("SEPARATED", evidence=line.replace(f"{_FIELD_LABEL[field]} 분류", "주계약과 분리"),
-                        refs=refs, kind="instrument_record", heading=head)
+                        basis=_period(sep, held_facts), refs=refs, kind="instrument_record", heading=head)
         return _from_facts("SEPARATED", strong, ctx.tables)
     if nots:
         if weak:
             return _review(f"사채 기록은 {nots[0].get('embedded_separation')}인데 파생상품 금액이 있음: "
                            f"{evidence_line(_pick(weak), ctx.tables)}")
+        # 분리 안 함도 판정 기간 안의 상품이어야 한다(d6, I2) — 기록 잔액·변동, 없으면 같은 범위의 복합상품 사실
+        basis = _period(nots, _nonzero(ctx.facts, *rules["concept_groups"][topic]))
+        if not basis:
+            return undetermined(False, ctx.reasons["emb_no_period"])
         rec = nots[0]
         refs = list((rec.get("evidence") or {}).get("embedded_separation") or [])
         what = "상품 전체를 당기손익-공정가치로 지정" if rec.get("embedded_separation") == "whole_fvpl" else "주계약과 분리하지 않음"
         name = (rec.get("instrument") or rec.get("series_key") or "사채").strip()
         tid = next((t for t in map(_cell_tid, refs) if t), None)
-        return _res("NOT_SEPARATED", evidence=f"{name} {what} (근거 {', '.join(refs) or '기록'})", refs=refs,
-                    kind="instrument_record", heading=_heading(tid, ctx.tables))
+        return _res("NOT_SEPARATED", evidence=f"{name} {what} (근거 {', '.join(refs) or '기록'})", basis=basis,
+                    refs=refs, kind="instrument_record", heading=_heading(tid, ctx.tables))
     compound = _nonzero(ctx.facts, *ctx.rules["concept_groups"][topic])
     unknown_period = [f for f in ctx.facts if f.get("concept") in ctx.rules["concept_groups"][topic]
                       and not _side(f) and _num(f.get("amount")) != 0]
     if not compound and not unknown_period and not ins and ctx.meta.get("category_table") \
             and _topic_marks(ctx.marks, topic):
+        if ctx.targeted_no_records:
+            # R35: 사채·우선주 대상 공시인데 회차 기록이 0 — 개념 재현율이 낮아 없음은 약한 근거다
+            return undetermined(False, ctx.reasons["emb_targeted_no_records"])
+        # 당기·전기 둘 다 보고 없음을 확인한 값 — basis_period 는 이 보고서의 당기(I2)
         return _res("NOT_APPLICABLE", evidence="당기·전기 모두 복합상품(사채·전환권·내재파생상품) 잔액 없음, 금융상품 범주표 있음",
-                    kind="ledger_fact")
+                    basis="current", kind="ledger_fact")
     if weak:
         return ctx.und(topic, "emb_weak_only")
     if ins or host(ctx.facts) or _pos(ctx.facts, "CONV_OPTION_EQUITY", "CONV_OPTION_LIABILITY"):
@@ -456,8 +491,9 @@ def _dev(ctx: Ctx) -> dict | None:
     asset = _pos(ctx.facts, "DEV_COST_ASSET")
     stmt = _dev_expensed(ctx)
     if stmt and not asset:
-        return _res("EXPENSED", evidence=(stmt.get("text") or "").strip()[:300], refs=[stmt.get("sentence_id")],
-                    kind="company_statement")
+        # 문장 근거라 기간 사실이 없다 — 이 보고서의 문장이므로 basis_period 는 당기(I2)
+        return _res("EXPENSED", evidence=(stmt.get("text") or "").strip()[:300], basis="current",
+                    refs=[stmt.get("sentence_id")], kind="company_statement")
     exc = [m for m in _topic_marks(ctx.marks, topic) if m.get("exception") == "dev_amortization"]
     movement = ctx.meta.get("movement_table")
     if movement is None:
@@ -572,6 +608,8 @@ def _ppa(ctx: Ctx) -> dict | None:
     if bc and value in ("PROVISIONAL", "FINAL"):
         res["source_refs"] = [_fact_ref(f) for f in bc]
         res["basis_period"] = _basis(bc)
+    if value != UND and not res["basis_period"]:
+        res["basis_period"] = "current"  # v1 문장은 이 보고서의 문장 — 당기(I2)
     return res
 
 
@@ -676,6 +714,7 @@ def judge_filing(rcept_no: str, fs_scope: str, facts: list[dict], instruments, m
     facts = [f for f in facts if (f.get("fs_scope") or fs_scope) == fs_scope]
     ctx = Ctx(facts, list(marks or []), meta, rules, fs_scope)
     runs = _runs(instruments)
+    ctx.targeted_no_records = bool(meta.get("instruments_targeted")) and not (runs[0] or runs[1])
     judged = {
         "CONVERSION_OPTION_CLASS": _consensus(ctx, "CONVERSION_OPTION_CLASS", runs, _conv_run),
         "EMBEDDED_DERIVATIVE_SEPARATION": _consensus(ctx, "EMBEDDED_DERIVATIVE_SEPARATION", runs, _emb_run),
@@ -687,6 +726,7 @@ def judge_filing(rcept_no: str, fs_scope: str, facts: list[dict], instruments, m
         "BUSINESS_COMBINATION_COST_CLASS": _bc_cost(ctx),
     }
     failed = set(meta.get("read_failed_topics") or ())
+    absence = rules["read_failed_absence_values"]
     out = []
     for topic in TOPICS:
         res = judged[topic]
@@ -694,7 +734,9 @@ def judge_filing(rcept_no: str, fs_scope: str, facts: list[dict], instruments, m
             res = _res(UND, held="read_failed", evidence=ctx.reasons["read_failed"])
         if res is None:
             continue
-        if topic in failed and res["value"] == UND and res["held_reason"] in ("no_facts", "policy_only"):
+        if topic in failed and (res["value"] == UND and res["held_reason"] in ("no_facts", "policy_only")
+                                or res["value"] in absence.get(topic, ())):
+            # 없음에 기댄 값(해당 없음 등)도 관련 주석 표를 읽지 못했으면 정할 수 없다(I1)
             res = _res(UND, held="read_failed", evidence=ctx.reasons["read_failed"])
         out.append(_row(rcept_no, fs_scope, topic, res, meta))
     return out

@@ -608,6 +608,113 @@ class T11bPrecisionTest(unittest.TestCase):
         self.assertEqual(judge([f], [li])[CONV]["value"], "LIABILITY")
 
 
+class FinalFixTest(unittest.TestCase):
+    """최종 리뷰 수정(r3): I1 읽기 실패, I2 basis_period, I3(R34) 전환권 기간 근거, R35 대상 공시 기록 0."""
+
+    def bare(self, option_class="equity", sep="unconfirmed", **kw):
+        # 잔액·변동이 모두 비어 있는 기록(20260312001339/separate 꼴)
+        return I(option_class, sep, name="제2회 무기명식 전환사채", **kw)
+
+    # ---- I1: 없음에 기대는 값은 관련 주석 표를 읽지 못했으면 read_failed ----
+    def test_i1_absence_values_become_read_failed(self):
+        m = [M(EMB)]
+        r = judge([], [], m, category_table=True, read_failed_topics={EMB})[EMB]
+        self.assertEqual((r["value"], r["held_reason"], r["evidence"]),
+                         ("UNDETERMINED", "read_failed", "관련 주석 표를 읽지 못함"))
+        r = judge([F("IP_CARRYING", 100)], read_failed_topics={"IP_FAIR_VALUE"})["IP_FAIR_VALUE"]
+        self.assertEqual((r["value"], r["held_reason"]), ("UNDETERMINED", "read_failed"))
+        r = judge([F("FVPL_EQUITY", 30)], read_failed_topics={"FVOCI_DESIGNATION"})["FVOCI_DESIGNATION"]
+        self.assertEqual((r["value"], r["held_reason"]), ("UNDETERMINED", "read_failed"))
+        s = M("DEV_COST_CAPITALIZATION", "company_statement", DevTest.EXP)
+        self.assertEqual(judge([], [], [s])["DEV_COST_CAPITALIZATION"]["value"], "EXPENSED")
+        r = judge([], [], [s], read_failed_topics={"DEV_COST_CAPITALIZATION"})["DEV_COST_CAPITALIZATION"]
+        self.assertEqual((r["value"], r["held_reason"]), ("UNDETERMINED", "read_failed"))
+
+    def test_i1_present_values_kept_when_read_failed(self):
+        # 있는 금액·0 칸으로 정한 값은 그대로(다른 주제의 읽기 실패도 영향 없음)
+        f = F("EMB_DERIV_LIABILITY", 7, label="파생상품부채(전환권)", target="conversion", basis="label")
+        self.assertEqual(judge([f], read_failed_topics={EMB})[EMB]["value"], "SEPARATED")
+        r = judge([F("LEASE_SHORT_TERM_EXP", 0), F("LEASE_LOW_VALUE_EXP", 0)],
+                  read_failed_topics={"LEASE_EXEMPTION"})["LEASE_EXEMPTION"]
+        self.assertEqual(r["value"], "NONE")
+        r = judge([F("IP_CARRYING", 100)], read_failed_topics={"LEASE_EXEMPTION"})["IP_FAIR_VALUE"]
+        self.assertEqual(r["value"], "FV_NOT_DISCLOSED")
+        r = judge([], [], [M(EMB)], category_table=True, read_failed_topics={CONV})[EMB]
+        self.assertEqual(r["value"], "NOT_APPLICABLE")
+
+    # ---- I3(R34): 전환권 값은 당기·전기 잔액·변동·기간 아는 사실 중 하나가 있어야 ----
+    def test_i3_conv_record_without_period_evidence_is_undetermined(self):
+        for ins in ([self.bare()], [self.bare("derivative_liability")],
+                    {"run1": [self.bare()], "run2": [self.bare()]}):
+            r = judge([], ins)[CONV]
+            self.assertEqual((r["value"], r["held_reason"]), ("UNDETERMINED", "no_facts"))
+            self.assertEqual(r["evidence"], "사채는 있으나 당기·전기 잔액·변동 근거 없음")
+        # 기간 모르는 사실·0 금액은 근거가 아니다
+        for f in (F("CONV_OPTION_EQUITY", 10, "unknown"), F("HOST_LIABILITY", 0, "prior_end")):
+            self.assertEqual(judge([f], [self.bare()])[CONV]["value"], "UNDETERMINED", f["period"])
+
+    def test_i3_near_miss_prior_movement_or_known_period_fact_keeps_value(self):
+        rec = self.bare()
+        rec["movement"]["prior"] = ["redeemed"]  # d6: 전기에 상환했어도 근거다
+        r = judge([], [rec])[CONV]
+        self.assertEqual((r["value"], r["basis_period"]), ("EQUITY", "prior"))
+        rec = self.bare()
+        rec["movement"]["current"] = ["converted"]
+        self.assertEqual(judge([], [rec])[CONV]["basis_period"], "current")
+        r = judge([F("HOST_LIABILITY", 900, "prior_end", label="전환사채")], [self.bare()])[CONV]
+        self.assertEqual((r["value"], r["basis_period"]), ("EQUITY", "prior"))
+        # 분류 칸이 0 이어도 다른 잔액 칸(부채요소)이 당기에 있으면 당기
+        r = judge([], [self.bare(cur={"host_carrying": 5})])[CONV]
+        self.assertEqual((r["value"], r["basis_period"]), ("EQUITY", "current"))
+
+    # ---- I2: 확정 행은 모두 basis_period 가 있다 ----
+    def test_i2_basis_period_on_record_and_sentence_rows(self):
+        # 분리 문장 기록 + 전기 파생상품 금액 사실 → 전기
+        ins = [I(sep="separated", ev={"embedded_separation": ["s7"]})]
+        w = F("EMB_DERIV_LIABILITY", 9, "prior_end", target="other", basis="default")
+        self.assertEqual(judge([w], ins)[EMB]["basis_period"], "prior")
+        rec = I(sep="separated", prior={"face": 100}, ev={"embedded_separation": ["s7"]})
+        self.assertEqual(judge([], [rec])[EMB]["basis_period"], "prior")
+        # 분리 안 함 기록: 잔액 → 변동 → 사실
+        r = judge([F("HOST_LIABILITY", 9, "prior_end")], [I(sep="whole_fvpl")])[EMB]
+        self.assertEqual((r["value"], r["basis_period"]), ("NOT_SEPARATED", "prior"))
+        rec = I(sep="not_separated")
+        rec["movement"]["current"] = ["issued"]
+        self.assertEqual(judge([], [rec])[EMB]["basis_period"], "current")
+        # 비용 처리 문장·해당 없음·v1 PPA 는 이 보고서 당기
+        s = M("DEV_COST_CAPITALIZATION", "company_statement", DevTest.EXP)
+        self.assertEqual(judge([], [], [s])["DEV_COST_CAPITALIZATION"]["basis_period"], "current")
+        self.assertEqual(judge([], [], [M(EMB)], category_table=True)[EMB]["basis_period"], "current")
+        v1 = {"value": "FINAL", "evidence": "확정", "held_reason": ""}
+        r = judge([], v1_ppa=v1, bc_filing=True)["PPA_MEASUREMENT_PERIOD"]
+        self.assertEqual((r["value"], r["basis_period"]), ("FINAL", "current"))
+
+    def test_i2_not_separated_without_period_evidence_is_undetermined(self):
+        r = judge([], [I(sep="not_separated", ev={"embedded_separation": ["s3"]})])[EMB]
+        self.assertEqual((r["value"], r["held_reason"]), ("UNDETERMINED", "no_facts"))
+        self.assertEqual(r["evidence"], "복합상품은 있으나 당기·전기 잔액·변동 근거 없음")
+
+    # ---- R35: 사채·우선주 대상 공시인데 두 실행 모두 기록 0 → 해당 없음 대신 판단불가 ----
+    def test_r35_targeted_zero_records_not_applicable_becomes_undetermined(self):
+        m = [M(EMB)]
+        for ins in ([], {"run1": [], "run2": []}, {"run1": [], "run2": None}, {"run1": None, "run2": None}):
+            r = judge([], ins, m, category_table=True, instruments_targeted=True)[EMB]
+            self.assertEqual((r["value"], r["held_reason"], r["evidence"]),
+                             ("UNDETERMINED", "no_facts", "사채·우선주 대상 공시이나 회차 기록 없음"))
+
+    def test_r35_near_miss_not_targeted_keeps_not_applicable(self):
+        m = [M(EMB)]
+        # 한 실행에만 기록이 있으면 R35 가 아니다(두 실행 값이 다르면 그대로 확인 필요)
+        r = judge([], {"run1": [], "run2": [I()]}, m, category_table=True, instruments_targeted=True)[EMB]
+        self.assertEqual(r["held_reason"], "needs_review")
+        r = judge([], {"run1": None, "run2": None}, m, category_table=True, instruments_targeted=False)[EMB]
+        self.assertEqual(r["value"], "NOT_APPLICABLE")
+        # 대상이어도 다른 판정(분리 금액)은 그대로
+        f = F("EMB_DERIV_LIABILITY", 7, label="파생상품부채(전환권)", target="conversion", basis="label")
+        r = judge([f], {"run1": [], "run2": []}, m, category_table=True, instruments_targeted=True)[EMB]
+        self.assertEqual(r["value"], "SEPARATED")
+
+
 def T(tid, note_title, labels, *, title="", headers=(), status="verified", scope="separate", kind="note", mult=1000):
     return {"table_id": tid, "fs_scope": scope, "status": status, "title": title,
             "region": {"kind": kind, "note_no": "9", "note_title": note_title, "sub_path": []},
@@ -714,6 +821,35 @@ class CliTest(unittest.TestCase):
             # 덮지 않는다
             self.assertEqual(main(["--ledger", str(led), "--facts-audit", str(d / "audit.jsonl"), "--instruments",
                                    str(d / "run1.jsonl"), "--instruments2", str(d / "run2.jsonl"), "--out", str(out)]), 2)
+
+    def test_targeted_scopes_from_both_runs(self):
+        # R35: 어느 실행이든 skipped 아닌 줄(llm_error·다른 모델 포함)이 있으면 그 공시·범위는 사채·우선주 대상
+        import json
+        import tempfile
+        from pathlib import Path
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("ledger_judge_cli2",
+                                                      Path(__file__).parents[1] / "scripts" / "ledger_judge.py")
+        cli = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cli)
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "run.jsonl"
+            rows = [{"rcept_no": R, "fs_scope": "separate", "records": [], "model_used": None, "error": "x"},
+                    {"rcept_no": R, "fs_scope": None, "skipped": "no_tables", "records": []},
+                    {"rcept_no": "20260101000001", "fs_scope": "consolidated", "records": [],
+                     "model_used": "gpt-5.6-luna"}]
+            p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+            runs, stats, targeted = cli.load_runs(p, "gpt-5.6-luna", None)
+            self.assertEqual(targeted, {(R, "separate"), ("20260101000001", "consolidated")})
+            self.assertEqual(set(runs), {("20260101000001", "consolidated")})
+        job = {"rcept_no": R, "facts": [], "marks": [M(EMB)], "run1": {"separate": []}, "run2": {},
+               "scopes": ["separate"], "tables_dir": None, "targeted": ["separate"],
+               "meta": {"corp_code": "1", "fiscal_year": 2025, "category_table": True}}
+        row = next(r for r in cli.process(job)["rows"] if r["topic"] == EMB)
+        self.assertEqual((row["value"], row["held_reason"]), ("UNDETERMINED", "no_facts"))
+        job["targeted"] = []
+        row = next(r for r in cli.process(job)["rows"] if r["topic"] == EMB)
+        self.assertEqual(row["value"], "NOT_APPLICABLE")
 
 
 if __name__ == "__main__":
