@@ -48,7 +48,8 @@ def _backend_complete_json():
     """백엔드 LLMClient 하나를 스레드들이 함께 쓴다(ws8_run_in_backend._backend_complete_json 과 같은 방식).
     messages 의 마지막 user 글을 prompt 로, 그 앞(system)을 history_messages 로 넘긴다. 응답 형식은 백엔드
     complete_json 의 JSON 모드에 맡기고 schema 는 프롬프트 안에 글로 들어 있다. 호출마다 토큰 사용량·실제
-    응답 모델을 스레드 지역 변수에 남긴다. 429는 topic_judge.run.with_retries 로 지수 백오프한다."""
+    응답 모델을 스레드 지역 변수에 남긴다. 429는 topic_judge.run.with_retries 로 지수 백오프한다.
+    폴백 모델은 쓰지 않는다(single_attempt) — luna 가 JSON 을 깨뜨리면 llm_error 로 남겨 다시 부른다."""
     from app.core.config import get_config
     from app.llm.client import LLMClient
 
@@ -78,8 +79,10 @@ def _backend_complete_json():
         messages, _schema = pair
         tl.usage = None
         tl.model_used = None
+        # single_attempt: 폴백 모델(mini)·제공자 최후 폴백 없이 luna 한 번만 부른다(R19 — 합의 비교는 luna 줄만).
+        # 실패하면 llm_error 줄로 남고, 다음 이어 하기 실행이 그 줄만 다시 부른다.
         completion = client.complete_json(prompt=messages[-1]["content"], model=model,
-                                          history_messages=list(messages[:-1]))
+                                          history_messages=list(messages[:-1]), single_attempt=True)
         tl.model_used = completion.model_used  # 폴백 모델로 답했는지 줄마다 남긴다
         return completion.payload
 
