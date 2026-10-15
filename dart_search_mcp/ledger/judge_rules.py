@@ -131,6 +131,8 @@ def _review(note: str, evidence: str | None = None) -> dict:
 
 def _fact_ref(f: dict) -> str:
     s = f.get("source") or {}
+    if s.get("sentence_id") and not s.get("table_id"):
+        return s["sentence_id"]  # 문장 사실(c11)
     return f"{s.get('table_id')}:r{s.get('row')}:c{s.get('col')}"
 
 
@@ -160,6 +162,8 @@ def _heading(tid: str | None, tables: dict) -> str:
 def evidence_line(fact: dict, tables: dict | None = None) -> str:
     """「<행 이름> <금액(원래 단위·단위 표기)> (<당기말|전기말|당기|전기>, 주석 <번호> <제목>)」."""
     amount = fact.get("amount")
+    if fact.get("match_basis") == "sentence":  # 문장 사실: 문장 그대로(금액·단위가 문장에 있다)
+        return f"{(fact.get('text') or '').strip()} ({_PERIOD_LABEL.get(fact.get('period') or '', '')}, 문장)"
     amt = ("-" if amount is None else _fmt_amount(amount)) + _fact_unit(fact)
     where = [_PERIOD_LABEL.get(fact.get("period") or "", "")]
     head = _heading((fact.get("source") or {}).get("table_id"), tables or {})
@@ -521,8 +525,9 @@ def _lease(ctx: Ctx) -> dict | None:
     topic = "LEASE_EXEMPTION"
     s_all, l_all = _usable(ctx.facts, "LEASE_SHORT_TERM_EXP"), _usable(ctx.facts, "LEASE_LOW_VALUE_EXP")
     c_all = _usable(ctx.facts, "LEASE_SHORT_LOW_EXP")
-    s, lo, c = _pos(ctx.facts, "LEASE_SHORT_TERM_EXP"), _pos(ctx.facts, "LEASE_LOW_VALUE_EXP"), \
-        _pos(ctx.facts, "LEASE_SHORT_LOW_EXP")
+    # 리스료는 비용이라 괄호(음수)로 적는 회사가 많다 — 부호와 무관하게 금액이 있으면 면제 적용(회계사 v2 s083 등)
+    s, lo, c = _pos_abs(ctx.facts, "LEASE_SHORT_TERM_EXP"), _pos_abs(ctx.facts, "LEASE_LOW_VALUE_EXP"), \
+        _pos_abs(ctx.facts, "LEASE_SHORT_LOW_EXP")
     value = _lease_value(bool(s), bool(lo))
     if value:
         res = _from_facts(value, s + lo, ctx.tables)
@@ -567,21 +572,59 @@ def _ip_pairs(car: list[dict], fv: list[dict]) -> list[tuple[dict, dict]]:
     return pairs
 
 
+def _ip_key(x: dict):
+    return x.get("amount_krw") if x.get("amount_krw") is not None else x.get("amount")
+
+
+def _ip_same(c: dict, f: dict) -> bool | None:
+    """장부금액·공정가치가 같은가. 문장 공정가치(「15,857백만원」)는 문장 단위 한 칸 안이면 같다(반올림·절사 표기).
+    문장 쪽인데 장부금액 원화 금액을 모르면 None(비교 불가)."""
+    if f.get("match_basis") != "sentence":
+        return _ip_key(c) == _ip_key(f)
+    if c.get("amount_krw") is None or not f.get("amount") or f.get("amount_krw") is None:
+        return None
+    unit = f["amount_krw"] / f["amount"]
+    return abs(c["amount_krw"] - f["amount_krw"]) < unit
+
+
+def _ip_model(ctx: Ctx) -> list[dict]:
+    """공정가치 모형 문장 사실 IP_FV_MODEL(c11, 2층 문장 사실) — 그 회사(범위)는 장부금액이 곧 공정가치다(r4)."""
+    return [f for f in ctx.facts if f.get("concept") == "IP_FV_MODEL"]
+
+
 def _ip(ctx: Ctx) -> dict | None:
     topic = "IP_FAIR_VALUE"
     car, fv = _pos(ctx.facts, "IP_CARRYING"), _pos(ctx.facts, "IP_FAIR_VALUE")
     if not car:
         return ctx.und(topic, "ip_no_carrying" if fv else None)
+    model = _ip_model(ctx)
     pairs = _ip_pairs(car, fv)
     if pairs:
         pairs.sort(key=lambda p: (_side(p[0]) != "current", -_num(p[0].get("amount_krw") or p[0].get("amount"))))
         c, f = pairs[0]
-        key = lambda x: x.get("amount_krw") if x.get("amount_krw") is not None else x.get("amount")  # noqa: E731
-        value = "FV_EQUALS" if key(c) == key(f) else "FV_DIFFERS"
+        same = _ip_same(c, f)
+        line = f"{evidence_line(c, ctx.tables)} / {evidence_line(f, ctx.tables)}"
+        if same is None:
+            return _review(f"장부금액 단위를 몰라 문장 공정가치와 비교 못 함: {line}")
+        value = "FV_EQUALS" if same else "FV_DIFFERS"
+        if value == "FV_DIFFERS" and model:
+            return _review(f"공정가치 모형({_fact_ref(model[0])})인데 장부금액과 공정가치가 다름: {line}")
         res = _from_facts(value, [c, f], ctx.tables)
-        res["evidence"] = f"{evidence_line(c, ctx.tables)} / {evidence_line(f, ctx.tables)}"
+        res["evidence"] = line
         res["basis_period"] = _side(c)
         return res
+    if model:  # 공정가치 모형: 당기말 장부금액이 공정가치이자 장부금액(회계사 v2 s120)
+        best = _pick(car)
+        res = _from_facts("FV_EQUALS", [best], ctx.tables, extra_refs=[_fact_ref(model[0])])
+        res["evidence"] = f"{evidence_line(best, ctx.tables)} / 공정가치 모형: {(model[0].get('text') or '').strip()[:200]}"
+        return res
+    nodiff = [f for f in ctx.facts if f.get("concept") == "IP_FV_NO_MATERIAL_DIFF"]
+    if nodiff:  # 금액 없이 「차이가 없다」만 — 공시 안 함으로 정하지 않는다(회계사 Q4 대기)
+        return _review(f"공정가치 금액 없이 차이 없음 문장만 있음({_fact_ref(nodiff[0])}): "
+                       f"{(nodiff[0].get('text') or '').strip()[:150]}")
+    leadin = [f for f in ctx.facts if f.get("concept") == "IP_FV_LEADIN"]
+    if leadin:  # 공정가치 표 머리 문장은 있는데 금액을 못 읽었다 — 공시 안 함이 아니다
+        return _review(f"공정가치 공시 표의 금액을 읽지 못함({_fact_ref(leadin[0])}): {(leadin[0].get('text') or '').strip()[:150]}")
     sent = [m for m in _topic_marks(ctx.marks, topic) if ctx.rx["ip_fv_sentence"].search(m.get("text") or "")]
     if sent:
         return _review(f"공정가치 금액이 표에 없고 문장({sent[0].get('sentence_id')})에만 있음")

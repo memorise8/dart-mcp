@@ -1,5 +1,5 @@
 {
-  "rules_version": "r3",
+  "rules_version": "r4",
   "exception_patterns": {
     "dev_amortization": {
       "topic": "DEV_COST_CAPITALIZATION",
@@ -48,7 +48,10 @@
       ],
       "IP_FAIR_VALUE": [
         "IP_CARRYING",
-        "IP_FAIR_VALUE"
+        "IP_FAIR_VALUE",
+        "IP_FV_MODEL",
+        "IP_FV_NO_MATERIAL_DIFF",
+        "IP_FV_LEADIN"
       ],
       "PPA_MEASUREMENT_PERIOD": [
         "BC_CONSIDERATION",

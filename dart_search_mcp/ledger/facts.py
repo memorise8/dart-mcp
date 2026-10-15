@@ -83,7 +83,7 @@ class Concept:
     mode: str = ""  # "table_total": 표 제목 + 합계 행(행 이름 매칭을 쓰지 않음)
     table_patterns: tuple = ()  # table_total: 표 제목 + 첫 소제목 행 글에 모두 있어야 하는 패턴
     table_exclude_patterns: tuple = ()  # table_total: 표 제목·소제목에 있으면 안 됨
-    row_exclude_patterns: tuple = ()  # table_total: 표의 어느 행 이름에도 있으면 안 됨(합계가 다른 것을 포함)
+    row_exclude_patterns: tuple = ()  # 표의 어느 행 이름에도 있으면 안 됨(table_total: 합계가 다른 것을 포함, 행 개념: c11)
     column_exclude_patterns: tuple = ()  # 열 머리글 어느 단계에도 있으면 안 됨(table_total, 행 이름 개념 모두)
     section_patterns: tuple = ()  # table_total: 값 빈 구획 머리 행은 모두 이 중 하나에 맞아야 함(지분·중립 머리)
     replaces: tuple = ()  # table_total: 같은 칸에 이 개념만 걸려 있으면 대신한다
@@ -389,6 +389,13 @@ def _candidates(table: dict, concepts: list[Concept]):
     parents = _parents(rows)
     title = _WS_RE.sub("", table.get("title") or "")
     regions = [(_region_ok(c, table)) for c in concepts]
+    # 행 이름 개념의 row_exclude_patterns(c11): 표의 어느 행에든 걸리면 그 표에는 이 개념을 쓰지 않는다
+    # (「감가상각누계액」 행이 있는 내역 표의 토지·건물 행은 취득원가다)
+    all_names = [n for r in rows for n in (norm_label(r.get("label")), *(norm_label(x) for x in r.get("label_path") or []))
+                 if n]
+    regions = [(ok and not (c.row_exclude_patterns and not c.mode
+                            and any(rx.search(n) for rx in c.rx("row_exclude_patterns") for n in all_names)), unk)
+               for c, (ok, unk) in zip(concepts, regions)]
     out: dict = {}
     for i, row in enumerate(rows):
         label, path_parents, joined = _row_texts(row)
@@ -697,4 +704,115 @@ def coverage(tables: list[dict], concepts: list[Concept], topics: dict | None = 
                 s["kw_matched"] += m
                 if not m and unmatched is not None:
                     unmatched.setdefault(t, Counter())[_row_key(row)] += 1
+    return out
+
+
+# ---------- 문장 사실(c11) ----------
+# 투자부동산 공정가치를 표가 아니라 문장으로 공시한 회사가 많다(회계사 v2 표본 s115·s116·s119).
+# 「(당기말|보고기간말) 현재 [회사의] 투자부동산의 공정가치는 N(단위)[(전기말: M단위)]」 한 문장 → IP_FAIR_VALUE 사실.
+# 「투자부동산 토지의」「투자부동산 중 토지의」「공정가치는 토지 N 및 건물 M」처럼 일부만 적은 문장은 쓰지 않는다(더하지 않음).
+_SENT_UNITS = {"원": 1, "천원": 1000, "백만원": 1000000, "억원": 100000000}
+_AMT = r"\d{1,3}(?:,\d{3})+|\d+"
+_UNIT = r"백만원|천원|억원|원"
+_IP_SUBJECT = r"[^.\d]{0,20}?투자부동산(?:\s*\(토지\s*및\s*건물\))?(?:의|에\s*대한)?\s*공정가치는\s*"
+_IP_FV_ONE = re.compile(
+    r"(?P<when>당기말|보고기간\s*말|보고기간\s*종료일|전기말)\s*현재" + _IP_SUBJECT
+    + r"(?:총\s*|약\s*)?(?P<amt>" + _AMT + r")\s*(?P<unit>" + _UNIT + r")"
+    + r"(?:\s*\(\s*전기말?\s*[:：]?\s*(?P<pamt>" + _AMT + r")\s*(?P<punit>" + _UNIT + r")?\s*\))?")
+_IP_FV_EACH = re.compile(
+    r"당기말\s*(?:및|과|와)\s*전기말\s*현재" + _IP_SUBJECT
+    + r"각각\s*(?P<amt>" + _AMT + r")\s*(?P<unit>" + _UNIT + r")?\s*(?:및|과|와|,)\s*(?P<pamt>" + _AMT + r")\s*(?P<punit>"
+    + _UNIT + r")")
+_SENT_WHEN = {"전기말": "prior_end"}
+# 공정가치 모형 문장(회계사 v2 s120): 이 회사는 장부금액이 곧 공정가치다 → IP_FV_MODEL 표시 사실(금액 없음).
+# 「원가모형에서 공정가치모형으로 변경」은 공정가치 모형이다. 원가모형 적용·건설중 예외·신뢰성 없음 문장은 아니다.
+_IP_FV_MODEL = re.compile(
+    r"투자부동산[^.]{0,60}(공정가치\s*(평가\s*)?모형|후속\s*측정[^.]{0,15}공정가치로"
+    r"|최초\s*인식\s*(이\s*)?후[^.]{0,40}공정가치로\s*(측정|계상))"
+    r"|최초\s*인식\s*(이\s*)?후[^.]{0,10}투자부동산[^.]{0,40}공정가치로\s*(측정|계상)"
+    r"|투자부동산을\s*공정가치로\s*(평가|측정|계상)")
+_IP_FV_MODEL_EXCLUDE = re.compile(r"원가\s*모형(?!에서)|건설\s*중인|신뢰성\s*있게\s*(산정|측정)할\s*수\s*없|하는\s*경우|할\s*수\s*있")
+# 「투자부동산의 장부금액은 공정가치와 중요한 차이가 없습니다」(금액 없음) — 회계사 Q4 대기(s118 부류) → 판정은 확인 필요
+_IP_FV_NO_DIFF = re.compile(r"투자부동산[^.]{0,40}(장부\s*(금|가)액|공정가치)[^.]{0,30}(중요한|유의적인|유의한|중요하지\s*않은)?\s*차이가?\s*"
+                            r"(없|미미|중요하지\s*않)")
+
+
+def _file_scope(name: str, by_file: dict) -> str | None:
+    if name in by_file:
+        return by_file[name]
+    code = re.search(r"_(\d{5})\.xml$", name or "")
+    return {"00760": "separate", "00761": "consolidated"}.get(code.group(1) if code else "")
+
+
+def _sentence_fact(filing: dict, p: dict, scope: str, period: str, amt: str, unit: str, version: str) -> dict:
+    amount = int(amt.replace(",", ""))
+    mult = _SENT_UNITS[unit]
+    return {"rcept_no": filing.get("rcept_no"), "amends_rcept_no": filing.get("amends_rcept_no"), "fs_scope": scope,
+            "concept": "IP_FAIR_VALUE", "period": period, "amount": amount, "unit_kind": "krw",
+            "amount_krw": amount * mult, "label": "투자부동산의 공정가치", "label_path": [], "column": "",
+            "target": None, "target_basis": None,
+            "source": {"sentence_id": p.get("id"), "page": p.get("page"), "file": p.get("file")},
+            "source_status": "sentence", "concepts_version": version, "match_basis": "sentence",
+            "text": (p.get("text") or "").strip()[:300]}
+
+
+_MARKER_LABEL = {"IP_FV_MODEL": "투자부동산 공정가치 모형", "IP_FV_NO_MATERIAL_DIFF": "투자부동산 공정가치·장부금액 차이 없음(문장)",
+                 "IP_FV_LEADIN": "투자부동산 공정가치 공시 머리 문장"}
+# 「투자부동산의 공정가치는 다음과 같습니다」 — 공정가치 표가 뒤따른다(금액을 못 읽어도 공시는 했다)
+_IP_FV_LEADIN = re.compile(r"투자부동산[^.]{0,30}공정가치[^.]{0,30}다음과\s*같")
+
+
+def _model_fact(filing: dict, p: dict, scope: str, version: str, concept: str = "IP_FV_MODEL") -> dict:
+    """금액 없는 표시 사실(공정가치 모형 / 차이 없음 문장)."""
+    return {"rcept_no": filing.get("rcept_no"), "amends_rcept_no": filing.get("amends_rcept_no"), "fs_scope": scope,
+            "concept": concept, "period": "current_end", "amount": None, "unit_kind": None, "amount_krw": None,
+            "label": _MARKER_LABEL[concept], "label_path": [], "column": "", "target": None, "target_basis": None,
+            "source": {"sentence_id": p.get("id"), "page": p.get("page"), "file": p.get("file")},
+            "source_status": "sentence", "concepts_version": version, "match_basis": "sentence",
+            "text": (p.get("text") or "").strip()[:300]}
+
+
+def sentence_facts(filing: dict, *, concepts_path: Path | None = None) -> list[dict]:
+    """1층 공시 기록(paragraphs·tables) → 문장에서 읽은 투자부동산 공정가치 사실(범위·기간마다 첫 문장 하나)과
+    금액 없는 표시 사실 IP_FV_MODEL(공정가치 모형)·IP_FV_NO_MATERIAL_DIFF(차이 없음 문장)·IP_FV_LEADIN(공정가치
+    공시 머리 문장)(범위마다 하나)."""
+    version = _load_raw(concepts_path).get("concepts_version", "")
+    by_file = {t.get("file"): t.get("fs_scope") for t in filing.get("tables") or [] if t.get("file") and t.get("fs_scope")}
+    out: list[dict] = []
+    seen: set = set()
+    for p in filing.get("paragraphs") or []:
+        text = p.get("text") or ""
+        if "투자부동산" not in text or "공정가치" not in text:
+            continue
+        scope = _file_scope(p.get("file") or "", by_file)
+        if not scope:
+            continue
+        if (scope, "model") not in seen and _IP_FV_MODEL.search(text) and not _IP_FV_MODEL_EXCLUDE.search(text):
+            seen.add((scope, "model"))
+            out.append(_model_fact(filing, p, scope, version))
+        if (scope, "leadin") not in seen and _IP_FV_LEADIN.search(text):
+            seen.add((scope, "leadin"))
+            out.append(_model_fact(filing, p, scope, version, "IP_FV_LEADIN"))
+        if (scope, "nodiff") not in seen and _IP_FV_NO_DIFF.search(text):
+            seen.add((scope, "nodiff"))
+            out.append(_model_fact(filing, p, scope, version, "IP_FV_NO_MATERIAL_DIFF"))
+        if "공정가치는" not in text:
+            continue
+        found = []
+        m = _IP_FV_EACH.search(text)
+        if m and not (m["unit"] and m["unit"] != m["punit"]):
+            found = [("current_end", m["amt"], m["unit"] or m["punit"]), ("prior_end", m["pamt"], m["punit"])]
+        else:
+            m = _IP_FV_ONE.search(text)
+            if m and m["punit"] and m["punit"] != m["unit"]:
+                m = None  # 당기·전기 단위가 다르면 오기일 수 있다(「13,595,625원(전기말 12,834,777천원)」) — 쓰지 않는다
+            if m:
+                found.append((_SENT_WHEN.get(m["when"], "current_end"), m["amt"], m["unit"]))
+                if m["pamt"] and m["when"] != "전기말":
+                    found.append(("prior_end", m["pamt"], m["punit"] or m["unit"]))
+        for period, amt, unit in found:
+            if (scope, period) in seen:
+                continue
+            seen.add((scope, period))
+            out.append(_sentence_fact(filing, p, scope, period, amt, unit, version))
     return out

@@ -861,5 +861,138 @@ class CliTest(unittest.TestCase):
         self.assertEqual(row["value"], "NOT_APPLICABLE")
 
 
+def S(amount, unit_mult, period="current_end", sid="s1", text="당기말 현재 투자부동산의 공정가치는 …입니다."):
+    """문장에서 읽은 투자부동산 공정가치 사실(c11, facts.sentence_facts 모양)."""
+    return {"rcept_no": R, "fs_scope": "separate", "concept": "IP_FAIR_VALUE", "period": period, "amount": amount,
+            "unit_kind": "krw", "amount_krw": amount * unit_mult, "label": "투자부동산의 공정가치", "label_path": [],
+            "column": "", "target": None, "target_basis": None,
+            "source": {"sentence_id": sid, "page": 1, "file": f"{R}_00760.xml"}, "source_status": "sentence",
+            "concepts_version": "c11", "match_basis": "sentence", "text": text}
+
+
+def FVM(sid="s926", text="(4) 투자부동산의 공정가치 모형의 적용당사는 투자부동산에 대한 후속측정을 공정가치로 평가하고 있으며, "
+        "투자부동산의 공정가치는 … 결정되었습니다."):
+    """공정가치 모형 문장 표시 사실(c11 IP_FV_MODEL, 금액 없음)."""
+    f = S(0, 1, sid=sid, text=text)
+    f.update({"concept": "IP_FV_MODEL", "amount": None, "amount_krw": None, "unit_kind": None,
+              "label": "투자부동산 공정가치 모형"})
+    return f
+
+
+class LeaseParenthesizedTest(unittest.TestCase):
+    """회계사 v2 표본(10-15): 괄호(음수)로 적은 리스료도 면제 적용 금액이다."""
+
+    def test_treasure_hunter_both(self):
+        # s083 트레져헌터 20260508000176: 단기리스료 (22,385,400), 소액자산 리스료 (9,286,674) → NONE 이었다
+        cp, pp = "current_period", "prior_period"
+        r = judge([F("LEASE_SHORT_TERM_EXP", -22385400, cp, "단기리스료"),
+                   F("LEASE_SHORT_TERM_EXP", -33353260, pp, "단기리스료"),
+                   F("LEASE_LOW_VALUE_EXP", -9286674, cp, "단기리스가 아닌 소액자산 리스료"),
+                   F("LEASE_LOW_VALUE_EXP", -10086590, pp, "단기리스가 아닌 소액자산 리스료")])["LEASE_EXEMPTION"]
+        self.assertEqual((r["value"], r["basis_period"]), ("BOTH", "current"))
+        self.assertIn("단기리스료 -22,385,400", r["evidence"])
+
+    def test_unity_short_term_and_hana_low_value(self):
+        # s097 유니티테크놀로지스코리아: 단기리스 리스료 (8,940)천원 / s100 하나자산운용: 소액리스료 (43,309)
+        r = judge([F("LEASE_SHORT_TERM_EXP", -8940, "current_period", mult=1000)])["LEASE_EXEMPTION"]
+        self.assertEqual((r["value"], r["basis_period"]), ("SHORT_TERM", "current"))
+        r = judge([F("LEASE_LOW_VALUE_EXP", -43309, "current_period")])["LEASE_EXEMPTION"]
+        self.assertEqual(r["value"], "LOW_VALUE")
+
+    def test_combined_negative_row_follows_both_rule(self):
+        # s087 휴림로봇 「단기리스 및 소액자산리스 관련 비용 (45,047)」, s091 무신사 「단기,소액자산 변동리스료 (12,881,327)」
+        # 합친 행의 BOTH 는 R36 보류 그대로 — 다만 금액이 있으니 NONE 은 아니다
+        r = judge([F("LEASE_SHORT_LOW_EXP", -45047, "current_period", mult=1000)])["LEASE_EXEMPTION"]
+        self.assertEqual(r["value"], "BOTH")
+
+    def test_dsm_low_value_negative_with_combined_positive(self):
+        # s099 디에스엠 20260318001079(별도): 소액기초자산리스 관련 비용 (6,979,968) + 다른 표 「단기 & 소액」 6,979,968
+        cp = "current_period"
+        r = judge([F("LEASE_LOW_VALUE_EXP", -6979968, cp), F("LEASE_LOW_VALUE_EXP", 0, "prior_period"),
+                   F("LEASE_SHORT_LOW_EXP", 6979968, cp)])["LEASE_EXEMPTION"]
+        self.assertEqual(r["value"], "LOW_VALUE")
+
+    def test_zero_dash_still_none(self):
+        cp = "current_period"
+        r = judge([F("LEASE_SHORT_TERM_EXP", 0, cp), F("LEASE_LOW_VALUE_EXP", 0, cp)])["LEASE_EXEMPTION"]
+        self.assertEqual(r["value"], "NONE")
+
+
+class IpSentenceAndModelTest(unittest.TestCase):
+    """회계사 v2 표본(10-15): 문장으로 공시한 투자부동산 공정가치·공정가치 모형."""
+
+    def test_mrblue_sentence_differs(self):
+        # s116 미스터블루: 장부금액 6,152,241천원, 「보고기간말 현재 투자부동산의 공정가치는 11,900,000천원입니다」
+        r = judge([F("IP_CARRYING", 6152241, mult=1000, label="합 계"), F("IP_CARRYING", 6217456, "prior_end", mult=1000),
+                   S(11900000, 1000, sid="s382", text="(4) 보고기간말 현재 투자부동산의 공정가치는 11,900,000천원입니다.")])
+        r = r["IP_FAIR_VALUE"]
+        self.assertEqual((r["value"], r["basis_period"]), ("FV_DIFFERS", "current"))
+        self.assertIn("s382", r["source_refs"])
+        self.assertIn("공정가치는 11,900,000천원", r["evidence"])
+
+    def test_mirae_sentence_equal_at_stated_precision(self):
+        # s115 미래나노텍(연결): 장부금액 15,857,480천원, 「공정가치는 15,857백만원」 → 문장 단위(백만원)로 같다
+        r = judge([F("IP_CARRYING", 15857480, mult=1000), S(15857, 1000000)])["IP_FAIR_VALUE"]
+        self.assertEqual((r["value"], r["basis_period"]), ("FV_EQUALS", "current"))
+        r = judge([F("IP_CARRYING", 15859480, mult=1000), S(15857, 1000000)])["IP_FAIR_VALUE"]
+        self.assertEqual(r["value"], "FV_DIFFERS")
+
+    def test_sangsin_sentence_differs(self):
+        # s119 상신금속: 장부금액 5,810,644천원, 「당기말 현재 투자부동산의 공정가치는 10,343백만원이며」
+        r = judge([F("IP_CARRYING", 5810644, mult=1000), S(10343, 1000000)])["IP_FAIR_VALUE"]
+        self.assertEqual(r["value"], "FV_DIFFERS")
+
+    def test_table_pair_beats_sentence(self):
+        t = f"{R}:00760:t900"
+        r = judge([F("IP_CARRYING", 100, tid=t, row=3, col=1), F("IP_FAIR_VALUE", 100, tid=t, row=3, col=2),
+                   S(9, 1)])["IP_FAIR_VALUE"]
+        self.assertEqual(r["value"], "FV_EQUALS")
+
+    def test_seohan_fair_value_model(self):
+        # s120 서한: 공정가치 모형 → 당기말 장부금액 212,096,826천원이 공정가치이자 장부금액
+        r = judge([F("IP_CARRYING", 212096826, mult=1000, label="합계"), F("IP_CARRYING", 211415701, "prior_end", mult=1000),
+                   FVM()])["IP_FAIR_VALUE"]
+        self.assertEqual((r["value"], r["basis_period"]), ("FV_EQUALS", "current"))
+        self.assertIn("합계 212,096,826천원 (당기말", r["evidence"])
+        self.assertIn("s926", r["source_refs"])
+
+    def test_model_mark_alone_is_not_used(self):
+        # 공정가치 모형은 2층 문장 사실(IP_FV_MODEL)로만 본다 — 정책 표시(marks)는 그대로 판단불가 근거일 뿐
+        m = M("IP_FAIR_VALUE", "company_statement", "당사는 투자부동산에 대한 후속측정을 공정가치로 평가하고 있습니다.")
+        r = judge([F("IP_CARRYING", 100)], [], [m])["IP_FAIR_VALUE"]
+        self.assertEqual(r["value"], "FV_NOT_DISCLOSED")
+
+    def test_model_fact_alone_is_not_a_row_value(self):
+        # 장부금액 없이 모형 문장만 있으면 행이 없다(금액 사실이 아니다)
+        self.assertNotIn("IP_FAIR_VALUE", judge([FVM()]))
+
+    def test_fair_value_model_with_differing_pair_needs_review(self):
+        r = judge([F("IP_CARRYING", 100), F("IP_FAIR_VALUE", 150), FVM()])["IP_FAIR_VALUE"]
+        self.assertEqual(r["held_reason"], "needs_review")
+
+    def test_no_material_difference_sentence_needs_review(self):
+        # 금액 없이 「장부금액은 공정가치와 중요한 차이가 없습니다」만 있으면 FV_NOT_DISCLOSED 로 정하지 않는다(Q4 대기)
+        m = FVM(sid="s657", text="한편, 당기말 현재 투자부동산의 장부금액은 공정가치와 중요한 차이가 없습니다.")
+        m["concept"] = "IP_FV_NO_MATERIAL_DIFF"
+        r = judge([F("IP_CARRYING", 750124, mult=1000), m])["IP_FAIR_VALUE"]
+        self.assertEqual(r["held_reason"], "needs_review")
+        self.assertIn("s657", r["evidence"])
+
+    def test_fair_value_leadin_without_amount_needs_review(self):
+        m = FVM(sid="s489", text="(3) 당기말 현재 투자부동산의 공정가치는 다음과 같습니다.")
+        m["concept"] = "IP_FV_LEADIN"
+        r = judge([F("IP_CARRYING", 15414420, mult=1000), m])["IP_FAIR_VALUE"]
+        self.assertEqual(r["held_reason"], "needs_review")
+        # 표 금액을 읽었으면 그대로 짝 비교
+        r = judge([F("IP_CARRYING", 100), F("IP_FAIR_VALUE", 100), m])["IP_FAIR_VALUE"]
+        self.assertEqual(r["value"], "FV_EQUALS")
+
+    def test_kcttc_land_listing_differs(self):
+        # s117 케이씨티시: 투자부동산 내역(당기말 46,012,668) / 공정가치 내역(당기말 95,702,928)
+        r = judge([F("IP_CARRYING", 46012668, mult=1000, label="토지"),
+                   F("IP_FAIR_VALUE", 95702928, mult=1000, label="공정가치")])["IP_FAIR_VALUE"]
+        self.assertEqual(r["value"], "FV_DIFFERS")
+
+
 if __name__ == "__main__":
     unittest.main()

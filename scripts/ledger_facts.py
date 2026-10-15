@@ -4,7 +4,7 @@
         [--rcept-list FILE] [--workers N] [--concepts PATH] [--limit N]
 
 출력(이미 있으면 멈춘다 — 기존 파일을 덮지 않는다):
-  - facts.jsonl            사실 한 줄에 하나(스펙 §5.2)
+  - facts.jsonl            사실 한 줄에 하나(스펙 §5.2). c11부터 문장 사실(투자부동산 공정가치, source.sentence_id)도 담는다
   - facts.unmatched.tsv    관련 주석 안 미매칭 금액 행 이름 빈도 상위 500(count, label)
   - facts.summary.json     공시·표·사실 수, 개념별·상태별 수, 충돌 경고, 주제별 매칭률(정의 A·B), 주제별 미매칭 상위
 """
@@ -34,11 +34,12 @@ def _init(concepts_path: str | None) -> None:
     p = Path(concepts_path) if concepts_path else None
     _STATE["concepts"] = load_concepts(p)
     _STATE["topics"] = load_topics(p)
+    _STATE["concepts_path"] = p
 
 
 def process(job: tuple[str, str]) -> dict:
     rcept, tables_dir = job
-    from dart_search_mcp.ledger.facts import coverage, extract_facts, unmatched_rows
+    from dart_search_mcp.ledger.facts import coverage, extract_facts, sentence_facts, unmatched_rows
     from dart_search_mcp.ledger.tables import load_filing
 
     try:
@@ -46,6 +47,7 @@ def process(job: tuple[str, str]) -> dict:
         tables = filing.get("tables", [])
         stats: Counter = Counter()
         facts = extract_facts(tables, _STATE["concepts"], stats=stats)
+        facts += sentence_facts(filing, concepts_path=_STATE.get("concepts_path"))  # c11: 투자부동산 공정가치 문장
         topic_unmatched: dict = {}
         cov = coverage(tables, _STATE["concepts"], _STATE["topics"], unmatched=topic_unmatched)
         return {"rcept_no": rcept, "error": None, "tables": len(tables),

@@ -981,6 +981,26 @@ class RunnerTest(unittest.TestCase):
             # 다시 돌리면 덮지 않고 멈춘다
             self.assertEqual(ledger_facts.main(["--tables", str(tables), "--out-dir", str(out), "--workers", "1"]), 2)
 
+    def test_runner_adds_sentence_facts(self):
+        # c11: 실행기는 표 사실에 문장 사실(투자부동산 공정가치)을 더한다
+        from dart_search_mcp.ledger.tables import write_filing
+        import importlib.util
+        import sys
+        spec = importlib.util.spec_from_file_location("ledger_facts_cli", Path(__file__).parents[1] / "scripts" / "ledger_facts.py")
+        ledger_facts = importlib.util.module_from_spec(spec)
+        sys.modules["ledger_facts_cli"] = ledger_facts
+        spec.loader.exec_module(ledger_facts)
+        with tempfile.TemporaryDirectory() as d:
+            filing = {"rcept_no": "20260312001016", "amends_rcept_no": None, "parser_version": "ledger-t3", "tables": [],
+                      "paragraphs": [{"id": "s382", "file": "20260312001016_00760.xml", "page": 14,
+                                      "text": "(4) 보고기간말 현재 투자부동산의 공정가치는 11,900,000천원입니다."}]}
+            write_filing(Path(d), "20260312001016", filing)
+            ledger_facts._init(None)
+            res = ledger_facts.process(("20260312001016", d))
+            self.assertIsNone(res["error"])
+            self.assertEqual([(f["concept"], f["amount_krw"], f["source"]["sentence_id"]) for f in res["facts"]],
+                             [("IP_FAIR_VALUE", 11900000000, "s382")])
+
 
 
 class R27LeaseExcludingShortTermTest(unittest.TestCase):
@@ -1090,8 +1110,8 @@ class T11bFix1Test(unittest.TestCase):
     def facts(self, *tables):
         return extract_facts(list(tables), self.concepts)
 
-    def test_version_c10(self):
-        self.assertEqual(self.concepts[0].version, "c10")
+    def test_version_c10_or_later(self):  # c11 = 리스·투자부동산 수정(LeaseIpFixC11Test)
+        self.assertIn(self.concepts[0].version, ("c10", "c11"))
 
     def test_instrument_embedded_derivative_in_asset_column_not_liability(self):
         # 20260323001209 t106 모양: 열이 [당기말, 파생상품자산] / [당기말, 파생상품부채]
@@ -1132,6 +1152,226 @@ class T11bFix1Test(unittest.TestCase):
                    headers=[["(단위: 백만원)", "수 준", h] for h in ("수준1", "수준2", "수준3", "합 계")])
         got = _by(self.facts(t), "FVOCI_FA_TOTAL")
         self.assertEqual([(f["source"]["col"], f["amount"]) for f in got], [(4, 763802)])
+
+
+class LeaseIpFixC11Test(unittest.TestCase):
+    """회계사 v2 표본 검토(10-15) 리스·투자부동산 수정(c11) — 실제 표본의 표·문장 조각."""
+
+    def setUp(self):
+        self.concepts = load_concepts()
+
+    def facts(self, *tables):
+        return extract_facts(list(tables), self.concepts)
+
+    def test_version_c11(self):
+        meta = json.loads(CONCEPTS_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(meta["concepts_version"], "c11")
+
+    def test_starflex_low_value_recognition_exemption_row(self):
+        # s088 스타플렉스 20260323001102 주석 13 사용권자산(연결, 천원): 소액기초자산 인식면제 행을 못 읽어 SHORT_TERM 이었다
+        t = _table([("단기리스 인식면제를 적용한 리스료", [14435, 7350]),
+                    ("소액기초자산 인식면제를 적용한 리스료", [8240, 8200])],
+                   note_title="사용권자산", title="(2) 당기와 전기 중 리스와 관련하여 인식한 비용의 내역은 다음과 같습니다.",
+                   periods=("current_period", "prior_period"), headers=["당기", "전기"], unit=KRW1000)
+        got = {(f["label"], f["concept"], f["amount"]) for f in self.facts(t) if f["period"] == "current_period"}
+        self.assertEqual(got, {("단기리스 인식면제를 적용한 리스료", "LEASE_SHORT_TERM_EXP", 14435),
+                               ("소액기초자산 인식면제를 적용한 리스료", "LEASE_LOW_VALUE_EXP", 8240)})
+
+    def test_seongbo_low_value_not_short_term_row(self):
+        # s096 성보산업 20260402003142 주석 13 리스(천원): 「단기리스료가 아닌 소액자산 리스료」는 소액 행(합친 행 아님)
+        t = _table([("단기리스료", [0, 0], 3), ("단기리스료가 아닌 소액자산 리스료", [4830, 4830], 3)],
+                   note_title="리스", title="(3) 리스와 관련해서 손익계산서에 인식될 금액은 다음과 같습니다.",
+                   periods=("current_period", "prior_period"), headers=["당기", "전기"], unit=KRW1000)
+        got = {f["label"]: f["concept"] for f in self.facts(t)}
+        self.assertEqual(got, {"단기리스료": "LEASE_SHORT_TERM_EXP",
+                               "단기리스료가 아닌 소액자산 리스료": "LEASE_LOW_VALUE_EXP"})
+
+    def test_parenthesized_lease_costs_kept_negative(self):
+        # s083 트레져헌터 20260508000176 주석 14 리스: 「(22,385,400)」 괄호 금액은 음수 사실로 남는다(판정이 부호를 무시)
+        t = _table([("단기리스료", [-22385400, -33353260]), ("단기리스가 아닌 소액자산 리스료", [-9286674, -10086590])],
+                   note_title="리스", title="(4) 당기와 전기 중 리스와 관련하여 손익계산서에 인식된 금액은 다음과 같습니다.",
+                   periods=("current_period", "prior_period"), headers=["당기", "전기"])
+        got = {(f["concept"], f["amount"]) for f in self.facts(t) if f["period"] == "current_period"}
+        self.assertEqual(got, {("LEASE_SHORT_TERM_EXP", -22385400), ("LEASE_LOW_VALUE_EXP", -9286674)})
+
+    def test_kcttc_ip_listing_period_columns_are_carrying(self):
+        # s117 케이씨티시 20260319001225 주석 15: 「(1) 투자부동산 내역」 당기말·전기말 열 = 장부금액
+        t = _table([("토지", [46012668, 51222080])], note_title="투자부동산", title="(1) 투자부동산 내역",
+                   headers=["당기말", "전기말"], unit=KRW1000)
+        fv = _table([("공정가치", [95702928, 100159160])], note_title="투자부동산",
+                    title="(3) 투자부동산과 관련한 공정가치 내역", headers=["당기말", "전기말"], unit=KRW1000,
+                    tid="R:00760:t002")
+        facts = self.facts(t, fv)
+        self.assertEqual({(f["period"], f["amount"]) for f in _by(facts, "IP_CARRYING")},
+                         {("current_end", 46012668), ("prior_end", 51222080)})
+        self.assertEqual({(f["period"], f["amount"]) for f in _by(facts, "IP_FAIR_VALUE")},
+                         {("current_end", 95702928), ("prior_end", 100159160)})
+
+    def test_seohan_carrying_composition_table(self):
+        # s120 서한 20260323001404 주석 14(연결, 천원): 「장부금액의 구성내역」 당기말 열
+        t = _table([("토지", [113489290, 111908220]), ("건물", [77341627, 78910105]),
+                    ("건설중인자산", [21265909, 20597376]), ("합계", [212096826, 211415701])],
+                   note_title="투자부동산",
+                   title="14. 투자부동산(1) 당기말과 전기말 현재 투자부동산 장부금액의 구성내역은 다음과 같습니다.",
+                   headers=["당기말", "전기말"], unit=KRW1000)
+        got = {(f["label"], f["period"], f["amount"]) for f in _by(self.facts(t), "IP_CARRYING")}
+        self.assertIn(("합계", "current_end", 212096826), got)
+
+    def test_seohan_fair_value_gain_column_is_not_fair_value(self):
+        # s120 서한 변동표의 「공정가치평가」 열은 평가손익(흐름)이다 — 공정가치 잔액이 아니다
+        t = _table([("토지", [111908220, 0, 100670, 113489290]), ("합계", [211415701, 668533, -1442608, 212096826])],
+                   note_title="투자부동산", title="(2) 당기와 전기 중 연결회사의 투자부동산 변동내역은 다음과 같습니다.① 당기",
+                   periods=("opening", "current_period", "current_period", "current_end"),
+                   headers=["기초", "취득", "공정가치평가", "당기말"], unit=KRW1000)
+        self.assertEqual(_by(self.facts(t), "IP_FAIR_VALUE"), [])
+
+    def test_hlb_genex_gross_listing_not_carrying_rows(self):
+        # s105 HLB제넥스 20260320001238 주석 12(별도, 천원): 내역 표에 「감가상각누계액」 행이 있으면 토지·건물 행은
+        # 취득원가다 — 새 「당기말 열」 장부금액 개념을 이 표에 쓰지 않는다(✓ 표본 FV_EQUALS 가 DIFFERS 로 깨졌었다)
+        t = _table([(["토 지", "대전광역시 유성구 테크노2로 187"], [52500, 52500]), ("건 물", [607500, 607500]),
+                    ("감가상각누계액", [-212625, -197438]), ("합 계", [447375, 462562])],
+                   note_title="투자부동산", title="(1) 당기말과 전기말 현재 투자부동산의 내역은 다음과 같습니다.",
+                   headers=["당기말", "전기말"], unit=KRW1000)
+        self.assertEqual(_by(self.facts(t), "IP_CARRYING"), [])
+        # 연결(t078)은 「감가상가누계액」 오타 — 「누계」로 막는다
+        t["rows"][2]["label"] = t["rows"][2]["label_path"][0] = "감가상가누계액"
+        self.assertEqual(_by(self.facts(t), "IP_CARRYING"), [])
+
+    def test_listing_title_guard(self):
+        # 담보·공정가치·수익 표의 당기말 열은 장부금액 개념이 아니다
+        for title in ("담보로 제공된 투자부동산 내역", "투자부동산 공정가치 내역", "투자부동산 관련 수익 내역"):
+            t = _table([("토지", [10, 20])], note_title="투자부동산", title=title, headers=["당기말", "전기말"])
+            self.assertEqual(_by(self.facts(t), "IP_CARRYING"), [], title)
+
+
+def _filing(paragraphs, tables=()):
+    return {"rcept_no": "R", "amends_rcept_no": None, "paragraphs": paragraphs, "tables": list(tables)}
+
+
+def _p(sid, text, file="R_00760.xml"):
+    return {"id": sid, "file": file, "page": 1, "text": text}
+
+
+class IpFairValueSentenceTest(unittest.TestCase):
+    """투자부동산 공정가치 문장 → IP_FAIR_VALUE 사실(c11). 표로 공시하지 않은 회사가 많다."""
+
+    def test_real_sentences(self):
+        from dart_search_mcp.ledger.facts import sentence_facts
+        got = sentence_facts(_filing([
+            # s116 미스터블루 20260312001016(별도)
+            _p("s382", "(4) 보고기간말 현재 투자부동산의 공정가치는 11,900,000천원입니다."),
+            # s115 미래나노텍 20260319000008(연결)
+            _p("s1186", "(6) 당기말 현재 투자부동산의 공정가치는 15,857백만원이며, 공정가치 평가는 독립된 평가인에 의해 수행됩니다.",
+               file="R_00761.xml"),
+        ]))
+        self.assertEqual({(f["fs_scope"], f["period"], f["amount"], f["amount_krw"], f["source"]["sentence_id"])
+                          for f in got},
+                         {("separate", "current_end", 11900000, 11900000000, "s382"),
+                          ("consolidated", "current_end", 15857, 15857000000, "s1186")})
+        for f in got:
+            self.assertEqual((f["concept"], f["unit_kind"], f["match_basis"]), ("IP_FAIR_VALUE", "krw", "sentence"))
+            self.assertEqual(f["concepts_version"], "c11")
+
+    def test_prior_in_parentheses_and_units(self):
+        from dart_search_mcp.ledger.facts import sentence_facts
+        got = sentence_facts(_filing([
+            # 미래나노텍 별도 s501
+            _p("s501", "(6) 당기말 현재 투자부동산의 공정가치는 2,846백만원(전기말: 2,740백만원)이며, 공정가치 평가는 독립된 평가인에 의해 수행됩니다."),
+            # s119 상신금속 20260306000295
+            _p("s301", "16-4. 당기말 현재 투자부동산의 공정가치는 10,343백만원이며, 공정가치 평가는 독립된 평가인에 의해 수행됩니다.",
+               file="Q_00761.xml"),
+        ]))
+        self.assertEqual({(f["fs_scope"], f["period"], f["amount_krw"]) for f in got},
+                         {("separate", "current_end", 2846000000), ("separate", "prior_end", 2740000000),
+                          ("consolidated", "current_end", 10343000000)})
+
+    def test_both_periods_each(self):
+        from dart_search_mcp.ledger.facts import sentence_facts
+        got = sentence_facts(_filing([_p("s9", "(4) 당기말과 전기말 현재 투자부동산의 공정가치는 각각 3,272,000천원 및 "
+                                                "3,204,000천원으로 당사는 공시지가 등을 반영하여 추정하였습니다.")]))
+        self.assertEqual({(f["period"], f["amount_krw"]) for f in got},
+                         {("current_end", 3272000000), ("prior_end", 3204000000)})
+
+    def test_not_whole_or_not_amount(self):
+        from dart_search_mcp.ledger.facts import sentence_facts
+        got = sentence_facts(_filing([
+            _p("s1", "투자부동산의 공정가치는 보고기간말 현재의 시장상황을 반영하고 있으며, 필요한 경우 조정됩니다."),
+            _p("s2", "(5) 보고기간말 현재 투자부동산 토지의 공정가치는 3,428,781천원 (전기: 3,243,104천원)입니다."),
+            _p("s3", "당기말 현재 투자부동산 중 토지의 공정가치는 1,041백만원입니다."),
+            _p("s4", "(4) 공정가치당기말 현재 투자부동산의 공정가치는 토지 1,138,321천원 및 건물 1,298,411천원입니다."),
+        ]))
+        self.assertEqual(got, [])
+
+    def test_mixed_units_sentence_skipped(self):
+        # 20260320001390: 「공정가치는 13,595,625원(전기말 12,834,777천원)」 — 당기 단위 오기로 보인다. 단위가 섞이면 쓰지 않는다
+        from dart_search_mcp.ledger.facts import sentence_facts
+        got = sentence_facts(_filing([_p("s1", "(4) 당기말 현재 투자부동산의 공정가치는 13,595,625원(전기말 12,834,777천원)이며, "
+                                                "취득 당시의 독립된 평가인에 의해 수행된 감정평가금액입니다.")]))
+        self.assertEqual(got, [])
+
+    def test_fair_value_model_marker(self):
+        # s120 서한 20260323001404: 공정가치 모형 회사 → IP_FV_MODEL 표시 사실(범위마다 하나, 금액 없음)
+        from dart_search_mcp.ledger.facts import sentence_facts
+        got = sentence_facts(_filing([
+            _p("s350", "(4) 투자부동산의 공정가치 모형의 적용당사는 투자부동산에 대한 후속측정을 공정가치로 평가하고 있으며, "
+                       "투자부동산의 공정가치는 평가대상 투자부동산과 유사한 부동산을 평가한 경험이 있고 전문적 자격이 있는 "
+                       "독립된 평가기관에서 측정한 가치에 따라 결정되었습니다."),
+            _p("s926", "투자부동산은 최초 인식시점에 원가로 측정하고 있으며, 최초 인식 후에는 공정가치로 측정하고 공정가치 변동으로 "
+                       "발생하는 손익은 발생한 기간의 당기손익에 반영하고 있습니다.", file="R_00761.xml"),
+            _p("s927", "연결실체는 당기 중 투자부동산 인식 후의 측정모형을 원가모형에서 공정가치모형으로 변경하였습니다.",
+               file="R_00761.xml"),
+        ]))
+        self.assertEqual({(f["fs_scope"], f["concept"], f["amount"], f["source"]["sentence_id"]) for f in got},
+                         {("separate", "IP_FV_MODEL", None, "s350"), ("consolidated", "IP_FV_MODEL", None, "s926")})
+
+    def test_model_marker_other_wordings(self):
+        # 말뭉치 영향 점검에서 놓친 공정가치 모형 문장들(20260227007246·20260408000789·20260408001128·20260403000047)
+        from dart_search_mcp.ledger.facts import sentence_facts
+        texts = ["최초 인식 후 투자부동산은 공정가치로 측정됩니다.",
+                 "투자부동산은 취득시 발생한 거래원가를 포함하여최초 인식시점에 원가로 측정하며, 최초 인식 후에 보고기간말 "
+                 "현재의 사장상황을 반영한 공정가치로 계상하고 공정가치의 변동에 따라 발생하는 손익은 당기손익에 반영합니다.",
+                 "유형자산과 투자부동산의 재평가연결회사는 투자부동산을 공정가치로 평가하고 있으며 공정가치의 변동은 "
+                 "손익계산서에 반영하고 있습니다.",
+                 "최초 인식 후 투자부동산은 보고기간말 현재의 시장상황을 반영하여 공정가치로 측정하고 공정가치 변동으로 발생하는 "
+                 "손익은 발생한 기간의 당기손익에 반영하고 있습니다"]
+        for t in texts:
+            got = sentence_facts(_filing([_p("s1", t)]))
+            self.assertEqual([f["concept"] for f in got], ["IP_FV_MODEL"], t)
+        got = sentence_facts(_filing([_p("s1", "투자부동산을 공정가치로 측정하는 경우 공정가치 변동은 당기손익에 반영합니다.")]))
+        self.assertEqual(got, [])
+
+    def test_not_material_difference_marker(self):
+        # 20260318001435: 「당기말 현재 투자부동산의 장부금액은 공정가치와 중요한 차이가 없습니다」 — 공정가치 금액은 없다
+        # (회계사 Q4 대기: 엘엑스판토스 s118 「차이가 미미해 공시 안 함」과 같은 부류) → IP_FV_NO_MATERIAL_DIFF 표시
+        from dart_search_mcp.ledger.facts import sentence_facts
+        got = sentence_facts(_filing([_p("s657", "한편, 당기말 현재 투자부동산의 장부금액은 공정가치와 중요한 차이가 없습니다.")]))
+        self.assertEqual([(f["concept"], f["amount"]) for f in got], [("IP_FV_NO_MATERIAL_DIFF", None)])
+
+    def test_fair_value_leadin_marker(self):
+        # 20260323000601: 「(3) 당기말 현재 투자부동산의 공정가치는 다음과 같습니다.」 + 글 칸 표(평가금액 14,780,000천원)
+        # 표 금액을 못 읽어도 공정가치를 공시한 것이다 → IP_FV_LEADIN 표시(공시 안 함으로 정하지 않게)
+        from dart_search_mcp.ledger.facts import sentence_facts
+        for t in ("(3) 당기말 현재 투자부동산의 공정가치는 다음과 같습니다.",
+                  "당기말과 전기말 현재 공정가치로 측정되는 투자부동산의 서열체계에 따른 수준별 공정가치 측정치는 다음과 같습니다."):
+            got = sentence_facts(_filing([_p("s489", t)]))
+            self.assertEqual([f["concept"] for f in got], ["IP_FV_LEADIN"], t)
+
+    def test_cost_model_or_construction_not_model_marker(self):
+        from dart_search_mcp.ledger.facts import sentence_facts
+        got = sentence_facts(_filing([
+            _p("s1", "(*) 과거회계기준에서는 임대목적으로 보유중인 부동산을 투자부동산으로 인식하고 공정가치모형을 적용하였으나, "
+                     "일반기업회계기준에서는 유형자산으로 인식하고 원가모형을 적용하였습니다."),
+            _p("s2", "건설 중인 투자부동산의 공정가치를 신뢰성 있게 산정할 수 없지만 건설이 완료된 시점에서는 공정가치를 신뢰성 "
+                     "있게 산정할 수 있다고 예상되는 경우 원가로 측정됩니다."),
+            _p("s3", "투자부동산은 원가모형으로 측정하며, 투자부동산의 공정가치 측정에 대한 공시는 주석 12를 참조하십시오."),
+        ]))
+        self.assertEqual(got, [])
+
+    def test_scope_from_table_file_map(self):
+        from dart_search_mcp.ledger.facts import sentence_facts
+        tables = [{"file": "R.xml", "fs_scope": "consolidated"}]
+        got = sentence_facts(_filing([_p("s1", "당기말 현재 투자부동산의 공정가치는 1,643백만원입니다.", file="R.xml")], tables))
+        self.assertEqual([f["fs_scope"] for f in got], ["consolidated"])
 
 
 if __name__ == "__main__":
