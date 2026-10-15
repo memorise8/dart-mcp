@@ -1424,6 +1424,38 @@ class IpFairValueSentenceTest(unittest.TestCase):
                                                 "주석으로 공시합니다.")]))
         self.assertNotIn("IP_FV_MODEL", [f["concept"] for f in got])
 
+    def test_round3_cost_sentences_movement_and_land_only(self):
+        # 수정 3차: 원가 표시·정액법 상각 문장(20260319001219·20260316000090), 당기 변동표의 감가상각 칸
+        # (20260312001302 등), 토지만 공정가치모형(20260319001238)은 모형 표시를 내지 않는다
+        from dart_search_mcp.ledger.facts import sentence_facts
+        model = "최초 인식 후 투자부동산은 공정가치로 측정됩니다."
+        for cost in ("투자부동산은 원가에서 감가상각누계액과 손상차손누계액을 차감한 금액으로 표시하고 있습니다.",
+                     "투자부동산 중 토지를 제외한 투자부동산은 경제적 내용연수에 걸쳐 정액법으로 상각됩니다."):
+            got = sentence_facts(_filing([_p("s1", model), _p("s2", cost)]))
+            self.assertNotIn("IP_FV_MODEL", [f["concept"] for f in got], cost)
+        # 유형자산 문장(투자부동산 낱말 없음)은 근거가 아니다
+        got = sentence_facts(_filing([_p("s1", model), _p("s2", "유형자산은 원가에서 감가상각누계액을 차감한 금액으로 표시합니다.")]))
+        self.assertIn("IP_FV_MODEL", [f["concept"] for f in got])
+        got = sentence_facts(_filing([_p("s1", "회사는 투자부동산 중 토지에 대해 공정가치모형을 적용하고 있습니다.")]))
+        self.assertNotIn("IP_FV_MODEL", [f["concept"] for f in got])
+
+        def mv(periods, label="감가상각비", value=-90, title="투자부동산 변동내역"):
+            cols = [{"col": i, "role": "value", "period": pr, "header_path": [pr]} for i, pr in enumerate(periods, 1)]
+            return {"file": "R_00760.xml", "fs_scope": "separate", "title": title, "columns": cols,
+                    "region": {"kind": "note", "note_title": "투자부동산"},
+                    "rows": [{"label": label, "label_path": [label],
+                              "cells": [{"col": i, "value": value} for i in range(1, len(periods) + 1)]}]}
+        got = sentence_facts(_filing([_p("s1", model)], [mv(["current_period"])]))
+        self.assertNotIn("IP_FV_MODEL", [f["concept"] for f in got])
+        for t in (mv(["prior_period"]), mv(["current_period"], value=0)):
+            got = sentence_facts(_filing([_p("s1", model)], [t]))
+            self.assertIn("IP_FV_MODEL", [f["concept"] for f in got])
+        # 감가상각이 열 머리글인 변동표(행 = 토지·건물)
+        t = mv(["current_period"], label="건물")
+        t["columns"][0]["header_path"] = ["감가상각"]
+        got = sentence_facts(_filing([_p("s1", model)], [t]))
+        self.assertNotIn("IP_FV_MODEL", [f["concept"] for f in got])
+
     def test_cost_model_or_construction_not_model_marker(self):
         from dart_search_mcp.ledger.facts import sentence_facts
         got = sentence_facts(_filing([

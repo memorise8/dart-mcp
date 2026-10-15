@@ -733,12 +733,16 @@ _IP_FV_MODEL = re.compile(
     r"|투자부동산을\s*공정가치로\s*(평가|측정|계상)")
 # 수정 1차: 부정문(「공정가치로 측정하지는 않지만」)·다른 회사(피투자회사·종속기업·관계기업)의 모형 문장도 아니다
 _IP_FV_MODEL_EXCLUDE = re.compile(r"원가\s*모형(?!에서)|건설\s*중인|신뢰성\s*있게\s*(산정|측정)할\s*수\s*없|하는\s*경우|할\s*수\s*있"
-                                  r"|측정하지\s*(는\s*)?(않|아니)|피투자|종속기업|관계기업")  # 부정은 측정 동사에만(수정 2차)
+                                  r"|측정하지\s*(는\s*)?(않|아니)|피투자|종속기업|관계기업"
+                                  r"|토지에\s*대해\s*(서는\s*)?공정가치")  # 토지만 공정가치(수정 3차)  # 부정은 측정 동사에만(수정 2차)
 # 같은 범위에 원가모형 근거(투자부동산 표의 감가상각누계 행, 원가모형 문장)가 있으면 모형 표시를 내지 않는다
 _IP_COST_ROW = re.compile(r"상각누계|상가누계")
 _IP_COST_SENT = re.compile(r"투자부동산[^.]{0,60}원가\s*모형(?!에서)|원가\s*모형(?!에서)[^.]{0,60}투자부동산")
 # 수정 2차: 전환 회사의 과거 원가모형 문장, 공정가치 모형 회사의 「원가모형으로 평가되었을 경우의 장부금액」 공시는 근거가 아니다
 _IP_COST_SENT_EXCLUDE = re.compile(r"과거에|경우의|되었을\s*경우")
+# 수정 3차: 투자부동산 문장 속 원가 표시·정액법 상각(「원가에서 감가상각누계액…을 차감」「토지를 제외한 … 정액법으로 상각」)
+_IP_COST_SENT2 = re.compile(r"원가에서\s*감가상각누계|정액법으로\s*상각")
+_IP_DEPR = re.compile(r"감가상각(?!누계)|상각비")
 _IP_COST_TABLE_EXCLUDE = re.compile(r"원가\s*모형|경우")
 
 
@@ -747,11 +751,22 @@ def _cost_row_table(t: dict) -> bool:
     if "투자부동산" not in ((t.get("region") or {}).get("note_title") or "") or \
             _IP_COST_TABLE_EXCLUDE.search(_WS_RE.sub("", t.get("title") or "")):
         return False
-    cur = {c.get("col") for c in t.get("columns") or [] if c.get("role") == "value" and c.get("period") == "current_end"}
+    vals = [c for c in t.get("columns") or [] if c.get("role") == "value"]
+    cur = {c.get("col") for c in vals if c.get("period") == "current_end"}
+    cur_p = {c.get("col") for c in vals if c.get("period") == "current_period"}
+    depr_cols = {c.get("col") for c in vals if c.get("period") == "current_period"
+                 and _IP_DEPR.search(_WS_RE.sub("", "".join(c.get("header_path") or [])))}
     for r in t.get("rows") or []:
-        if any(_IP_COST_ROW.search(_WS_RE.sub("", x or "")) for x in [r.get("label"), *(r.get("label_path") or [])]):
-            if any(c.get("col") in cur and c.get("value") for c in r.get("cells") or []):
+        names = [_WS_RE.sub("", x or "") for x in [r.get("label"), *(r.get("label_path") or [])]]
+        cells = r.get("cells") or []
+        if any(_IP_COST_ROW.search(n) for n in names):
+            if any(c.get("col") in cur and c.get("value") for c in cells):
                 return True
+        elif any(_IP_DEPR.search(n) for n in names):  # 당기 변동표의 감가상각 행(수정 3차)
+            if any(c.get("col") in cur_p and c.get("value") for c in cells):
+                return True
+        if any(c.get("col") in depr_cols and c.get("value") for c in cells):  # 감가상각 열(행 = 토지·건물)
+            return True
     return False
 # 「투자부동산의 장부금액은 공정가치와 중요한 차이가 없습니다」(금액 없음) — 회계사 Q4 대기(s118 부류) → 판정은 확인 필요
 _IP_FV_NO_DIFF = re.compile(r"투자부동산[^.]{0,40}(장부\s*(금|가)액|공정가치)[^.]{0,30}(중요한|유의적인|유의한|중요하지\s*않은)?\s*차이가?\s*"
@@ -806,7 +821,9 @@ def sentence_facts(filing: dict, *, concepts_path: Path | None = None) -> list[d
         if _cost_row_table(t):
             cost_scopes.add(t.get("fs_scope") or _file_scope(t.get("file") or "", by_file))
     for p in filing.get("paragraphs") or []:
-        if _IP_COST_SENT.search(p.get("text") or "") and not _IP_COST_SENT_EXCLUDE.search(p.get("text") or ""):
+        pt = p.get("text") or ""
+        if (_IP_COST_SENT.search(pt) or ("투자부동산" in pt and _IP_COST_SENT2.search(pt))) \
+                and not _IP_COST_SENT_EXCLUDE.search(pt):
             cost_scopes.add(_file_scope(p.get("file") or "", by_file))
     for p in filing.get("paragraphs") or []:
         text = p.get("text") or ""
