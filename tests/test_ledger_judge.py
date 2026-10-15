@@ -961,6 +961,14 @@ class IpSentenceAndModelTest(unittest.TestCase):
         r = judge([F("IP_CARRYING", 2162070, "prior_end", mult=1000, label="건물"), FVM()])["IP_FAIR_VALUE"]
         self.assertNotEqual(r["value"], "FV_EQUALS")
 
+    def test_blocked_model_sentence_never_not_disclosed(self):
+        # 수정 4차 안전망: 모형 문장이 원가 근거로 막혔으면 FV_NOT_DISCLOSED 대신 확인 필요
+        m = FVM(sid="s199")
+        m["concept"] = "IP_FV_MODEL_BLOCKED"
+        r = judge([F("IP_CARRYING", 295429547, mult=1000), m])["IP_FAIR_VALUE"]
+        self.assertEqual(r["held_reason"], "needs_review")
+        self.assertIn("s199", r["evidence"])
+
     def test_model_mark_alone_is_not_used(self):
         # 공정가치 모형은 2층 문장 사실(IP_FV_MODEL)로만 본다 — 정책 표시(marks)는 그대로 판단불가 근거일 뿐
         m = M("IP_FAIR_VALUE", "company_statement", "당사는 투자부동산에 대한 후속측정을 공정가치로 평가하고 있습니다.")

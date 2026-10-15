@@ -626,6 +626,10 @@ def _ip(ctx: Ctx) -> dict | None:
     leadin = [f for f in ctx.facts if f.get("concept") == "IP_FV_LEADIN"]
     if leadin:  # 공정가치 표 머리 문장은 있는데 금액을 못 읽었다 — 공시 안 함이 아니다
         return _review(f"공정가치 공시 표의 금액을 읽지 못함({_fact_ref(leadin[0])}): {(leadin[0].get('text') or '').strip()[:150]}")
+    blocked = [f for f in ctx.facts if f.get("concept") == "IP_FV_MODEL_BLOCKED"]
+    if blocked:  # 모형 문장이 원가모형 근거와 충돌 — 공시 안 함으로 정하지 않는다(수정 4차 안전망)
+        return _review(f"공정가치 모형 문장({_fact_ref(blocked[0])})이 원가모형 근거와 충돌: "
+                       f"{(blocked[0].get('text') or '').strip()[:150]}")
     sent = [m for m in _topic_marks(ctx.marks, topic) if ctx.rx["ip_fv_sentence"].search(m.get("text") or "")]
     if sent:
         return _review(f"공정가치 금액이 표에 없고 문장({sent[0].get('sentence_id')})에만 있음")

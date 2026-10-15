@@ -1456,6 +1456,26 @@ class IpFairValueSentenceTest(unittest.TestCase):
         got = sentence_facts(_filing([_p("s1", model)], [t]))
         self.assertNotIn("IP_FV_MODEL", [f["concept"] for f in got])
 
+    def test_round4_fair_value_gain_column_overrides_depreciation(self):
+        # 수정 4차: 20260408001128·20260408003196(연결) t105 — 공정가치평가 열 3,138,000 이 있는 변동표의 작은 감가상각비
+        # (-13,047)는 원가모형 근거가 아니다. 막힌 모형 문장은 IP_FV_MODEL_BLOCKED 로 남긴다
+        from dart_search_mcp.ledger.facts import sentence_facts
+        model = "최초 인식 후 투자부동산은 보고기간말 현재의 시장상황을 반영하여 공정가치로 측정하고 있습니다."
+        cols = [{"col": 1, "role": "value", "period": "opening", "header_path": ["기초"]},
+                {"col": 2, "role": "value", "period": "current_period", "header_path": ["감가상각비"]},
+                {"col": 3, "role": "value", "period": "current_period", "header_path": ["공정가치평가"]},
+                {"col": 4, "role": "value", "period": "current_end", "header_path": ["기말"]}]
+        t = {"file": "R_00761.xml", "fs_scope": "consolidated", "title": "투자부동산 변동내역", "columns": cols,
+             "region": {"kind": "note", "note_title": "투자부동산"},
+             "rows": [{"label": "합계", "label_path": ["합계"],
+                       "cells": [{"col": 1, "value": 292305000}, {"col": 2, "value": -13047},
+                                 {"col": 3, "value": 3138000}, {"col": 4, "value": 295429547}]}]}
+        got = sentence_facts(_filing([_p("s1", model, file="R_00761.xml")], [t]))
+        self.assertEqual([f["concept"] for f in got], ["IP_FV_MODEL"])
+        t["rows"][0]["cells"][2]["value"] = 0  # 평가 열이 0 이면 감가상각이 원가모형 근거
+        got = sentence_facts(_filing([_p("s1", model, file="R_00761.xml")], [t]))
+        self.assertEqual([f["concept"] for f in got], ["IP_FV_MODEL_BLOCKED"])
+
     def test_cost_model_or_construction_not_model_marker(self):
         from dart_search_mcp.ledger.facts import sentence_facts
         got = sentence_facts(_filing([

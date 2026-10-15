@@ -743,6 +743,7 @@ _IP_COST_SENT_EXCLUDE = re.compile(r"과거에|경우의|되었을\s*경우")
 # 수정 3차: 투자부동산 문장 속 원가 표시·정액법 상각(「원가에서 감가상각누계액…을 차감」「토지를 제외한 … 정액법으로 상각」)
 _IP_COST_SENT2 = re.compile(r"원가에서\s*감가상각누계|정액법으로\s*상각")
 _IP_DEPR = re.compile(r"감가상각(?!누계)|상각비")
+_IP_FV_GAIN = re.compile(r"공정가치\s*(평가|변동)")  # 같은 표에 0 아닌 평가 열·행이 있으면 감가상각은 근거가 아니다(수정 4차)
 _IP_COST_TABLE_EXCLUDE = re.compile(r"원가\s*모형|경우")
 
 
@@ -756,16 +757,22 @@ def _cost_row_table(t: dict) -> bool:
     cur_p = {c.get("col") for c in vals if c.get("period") == "current_period"}
     depr_cols = {c.get("col") for c in vals if c.get("period") == "current_period"
                  and _IP_DEPR.search(_WS_RE.sub("", "".join(c.get("header_path") or [])))}
+    gain_cols = {c.get("col") for c in vals if _IP_FV_GAIN.search(_WS_RE.sub("", "".join(c.get("header_path") or [])))}
+    fv_gain = any((c.get("col") in gain_cols or any(_IP_FV_GAIN.search(_WS_RE.sub("", x or ""))
+                                                     for x in [r.get("label"), *(r.get("label_path") or [])]))
+                  and c.get("value") for r in t.get("rows") or [] for c in r.get("cells") or [])
     for r in t.get("rows") or []:
         names = [_WS_RE.sub("", x or "") for x in [r.get("label"), *(r.get("label_path") or [])]]
         cells = r.get("cells") or []
         if any(_IP_COST_ROW.search(n) for n in names):
             if any(c.get("col") in cur and c.get("value") for c in cells):
                 return True
+        elif fv_gain:
+            continue
         elif any(_IP_DEPR.search(n) for n in names):  # 당기 변동표의 감가상각 행(수정 3차)
             if any(c.get("col") in cur_p and c.get("value") for c in cells):
                 return True
-        if any(c.get("col") in depr_cols and c.get("value") for c in cells):  # 감가상각 열(행 = 토지·건물)
+        if not fv_gain and any(c.get("col") in depr_cols and c.get("value") for c in cells):  # 감가상각 열(행 = 토지·건물)
             return True
     return False
 # 「투자부동산의 장부금액은 공정가치와 중요한 차이가 없습니다」(금액 없음) — 회계사 Q4 대기(s118 부류) → 판정은 확인 필요
@@ -793,7 +800,8 @@ def _sentence_fact(filing: dict, p: dict, scope: str, period: str, amt: str, uni
 
 
 _MARKER_LABEL = {"IP_FV_MODEL": "투자부동산 공정가치 모형", "IP_FV_NO_MATERIAL_DIFF": "투자부동산 공정가치·장부금액 차이 없음(문장)",
-                 "IP_FV_LEADIN": "투자부동산 공정가치 공시 머리 문장"}
+                 "IP_FV_LEADIN": "투자부동산 공정가치 공시 머리 문장",
+                 "IP_FV_MODEL_BLOCKED": "투자부동산 공정가치 모형 문장(원가모형 근거와 충돌)"}
 # 「투자부동산의 공정가치는 다음과 같습니다」 — 공정가치 표가 뒤따른다(금액을 못 읽어도 공시는 했다)
 _IP_FV_LEADIN = re.compile(r"투자부동산[^.]{0,30}공정가치[^.]{0,30}다음과\s*같")
 
@@ -832,10 +840,10 @@ def sentence_facts(filing: dict, *, concepts_path: Path | None = None) -> list[d
         scope = _file_scope(p.get("file") or "", by_file)
         if not scope:
             continue
-        if (scope, "model") not in seen and scope not in cost_scopes and _IP_FV_MODEL.search(text) \
-                and not _IP_FV_MODEL_EXCLUDE.search(text):
-            seen.add((scope, "model"))
-            out.append(_model_fact(filing, p, scope, version))
+        if (scope, "model") not in seen and _IP_FV_MODEL.search(text) and not _IP_FV_MODEL_EXCLUDE.search(text):
+            seen.add((scope, "model"))  # 원가모형 근거로 막혀도 문장은 남긴다(판정이 확인 필요로 보냄, 수정 4차)
+            out.append(_model_fact(filing, p, scope, version,
+                                   "IP_FV_MODEL_BLOCKED" if scope in cost_scopes else "IP_FV_MODEL"))
         if (scope, "leadin") not in seen and _IP_FV_LEADIN.search(text):
             seen.add((scope, "leadin"))
             out.append(_model_fact(filing, p, scope, version, "IP_FV_LEADIN"))
