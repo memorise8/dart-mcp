@@ -1379,7 +1379,9 @@ class IpFairValueSentenceTest(unittest.TestCase):
         from dart_search_mcp.ledger.facts import sentence_facts
         model = "최초 인식 후 투자부동산은 공정가치로 측정됩니다."
         table = {"file": "R_00760.xml", "fs_scope": "separate", "region": {"kind": "note", "note_title": "투자부동산"},
-                 "rows": [{"label": "감가상각누계액", "label_path": ["감가상각누계액"]}]}
+                 "title": "투자부동산 내역",
+                 "columns": [{"col": 1, "role": "value", "period": "current_end", "header_path": ["당기말"]}],
+                 "rows": [{"label": "감가상각누계액", "label_path": ["감가상각누계액"], "cells": [{"col": 1, "value": -7}]}]}
         got = sentence_facts(_filing([_p("s1", model)], [table]))
         self.assertNotIn("IP_FV_MODEL", [f["concept"] for f in got])
         got = sentence_facts(_filing([_p("s1", model), _p("s2", "투자부동산은 원가모형으로 측정하고 있습니다.")]))
@@ -1388,6 +1390,39 @@ class IpFairValueSentenceTest(unittest.TestCase):
         table["fs_scope"], table["file"] = "consolidated", "R_00761.xml"
         got = sentence_facts(_filing([_p("s1", model)], [table]))
         self.assertEqual([(f["fs_scope"], f["concept"]) for f in got], [("separate", "IP_FV_MODEL")])
+
+    def test_round2_cost_evidence_does_not_block_true_fv_model(self):
+        # 수정 2차: 전환 회사의 과거 원가모형 문장(20260309001896 등), 「원가모형으로 평가되었을 경우의 장부금액」 공시
+        # (20260317000660 등), 전기·비교 표의 상각누계 행은 원가모형 근거가 아니다
+        from dart_search_mcp.ledger.facts import sentence_facts
+        model = "최초 인식 후 투자부동산은 공정가치로 측정됩니다."
+        for cost in ("회사는 과거에 모든 투자부동산을 취득원가에서 감가상각누계액을 차감한 원가모형을 적용하여 측정하였으며, "
+                     "당기 중 공정가치모형으로 변경하였습니다.",
+                     "투자부동산이 원가모형으로 평가되었을 경우의 장부금액은 다음과 같습니다."):
+            got = sentence_facts(_filing([_p("s1", model), _p("s2", cost)]))
+            self.assertIn("IP_FV_MODEL", [f["concept"] for f in got], cost)
+
+        def tbl(periods, title="투자부동산 내역", value=-5):
+            cols = [{"col": i, "role": "value", "period": pr, "header_path": [pr]} for i, pr in enumerate(periods, 1)]
+            return {"file": "R_00760.xml", "fs_scope": "separate", "title": title, "columns": cols,
+                    "region": {"kind": "note", "note_title": "투자부동산"},
+                    "rows": [{"label": "감가상각누계액", "label_path": ["감가상각누계액"],
+                              "cells": [{"col": i, "value": value} for i in range(1, len(periods) + 1)]}]}
+        for t in (tbl(["prior_end"]), tbl(["current_end"], title="원가모형으로 평가되었을 경우의 장부금액"),
+                  tbl(["current_end"], value=0)):
+            got = sentence_facts(_filing([_p("s1", model)], [t]))
+            self.assertIn("IP_FV_MODEL", [f["concept"] for f in got], t["title"])
+        got = sentence_facts(_filing([_p("s1", model)], [tbl(["current_end", "prior_end"])]))
+        self.assertNotIn("IP_FV_MODEL", [f["concept"] for f in got])
+
+    def test_round2_negation_scoped_to_measurement_verb(self):
+        # 20260319000246: 「…공정가치모형을 적용하며 감가상각을 하지 않습니다」 는 모형 문장 그대로, 20260408000296 은 계속 막는다
+        from dart_search_mcp.ledger.facts import sentence_facts
+        got = sentence_facts(_filing([_p("s1", "투자부동산은 공정가치모형을 적용하며 감가상각을 하지 않습니다.")]))
+        self.assertIn("IP_FV_MODEL", [f["concept"] for f in got])
+        got = sentence_facts(_filing([_p("s1", "따라서 당사는투자부동산을 공정가치로 측정하지는 않지만 투자부동산의 공정가치를 "
+                                                "주석으로 공시합니다.")]))
+        self.assertNotIn("IP_FV_MODEL", [f["concept"] for f in got])
 
     def test_cost_model_or_construction_not_model_marker(self):
         from dart_search_mcp.ledger.facts import sentence_facts
