@@ -731,7 +731,12 @@ _IP_FV_MODEL = re.compile(
     r"|최초\s*인식\s*(이\s*)?후[^.]{0,40}공정가치로\s*(측정|계상))"
     r"|최초\s*인식\s*(이\s*)?후[^.]{0,10}투자부동산[^.]{0,40}공정가치로\s*(측정|계상)"
     r"|투자부동산을\s*공정가치로\s*(평가|측정|계상)")
-_IP_FV_MODEL_EXCLUDE = re.compile(r"원가\s*모형(?!에서)|건설\s*중인|신뢰성\s*있게\s*(산정|측정)할\s*수\s*없|하는\s*경우|할\s*수\s*있")
+# 수정 1차: 부정문(「공정가치로 측정하지는 않지만」)·다른 회사(피투자회사·종속기업·관계기업)의 모형 문장도 아니다
+_IP_FV_MODEL_EXCLUDE = re.compile(r"원가\s*모형(?!에서)|건설\s*중인|신뢰성\s*있게\s*(산정|측정)할\s*수\s*없|하는\s*경우|할\s*수\s*있"
+                                  r"|않|아니|피투자|종속기업|관계기업")
+# 같은 범위에 원가모형 근거(투자부동산 표의 감가상각누계 행, 원가모형 문장)가 있으면 모형 표시를 내지 않는다
+_IP_COST_ROW = re.compile(r"상각누계|상가누계")
+_IP_COST_SENT = re.compile(r"투자부동산[^.]{0,60}원가\s*모형(?!에서)|원가\s*모형(?!에서)[^.]{0,60}투자부동산")
 # 「투자부동산의 장부금액은 공정가치와 중요한 차이가 없습니다」(금액 없음) — 회계사 Q4 대기(s118 부류) → 판정은 확인 필요
 _IP_FV_NO_DIFF = re.compile(r"투자부동산[^.]{0,40}(장부\s*(금|가)액|공정가치)[^.]{0,30}(중요한|유의적인|유의한|중요하지\s*않은)?\s*차이가?\s*"
                             r"(없|미미|중요하지\s*않)")
@@ -780,6 +785,15 @@ def sentence_facts(filing: dict, *, concepts_path: Path | None = None) -> list[d
     by_file = {t.get("file"): t.get("fs_scope") for t in filing.get("tables") or [] if t.get("file") and t.get("fs_scope")}
     out: list[dict] = []
     seen: set = set()
+    cost_scopes = set()  # 원가모형 근거가 있는 범위(수정 1차)
+    for t in filing.get("tables") or []:
+        if "투자부동산" in ((t.get("region") or {}).get("note_title") or "") and any(
+                _IP_COST_ROW.search(_WS_RE.sub("", x or "")) for r in t.get("rows") or []
+                for x in [r.get("label"), *(r.get("label_path") or [])]):
+            cost_scopes.add(t.get("fs_scope") or _file_scope(t.get("file") or "", by_file))
+    for p in filing.get("paragraphs") or []:
+        if _IP_COST_SENT.search(p.get("text") or ""):
+            cost_scopes.add(_file_scope(p.get("file") or "", by_file))
     for p in filing.get("paragraphs") or []:
         text = p.get("text") or ""
         if "투자부동산" not in text or "공정가치" not in text:
@@ -787,7 +801,8 @@ def sentence_facts(filing: dict, *, concepts_path: Path | None = None) -> list[d
         scope = _file_scope(p.get("file") or "", by_file)
         if not scope:
             continue
-        if (scope, "model") not in seen and _IP_FV_MODEL.search(text) and not _IP_FV_MODEL_EXCLUDE.search(text):
+        if (scope, "model") not in seen and scope not in cost_scopes and _IP_FV_MODEL.search(text) \
+                and not _IP_FV_MODEL_EXCLUDE.search(text):
             seen.add((scope, "model"))
             out.append(_model_fact(filing, p, scope, version))
         if (scope, "leadin") not in seen and _IP_FV_LEADIN.search(text):

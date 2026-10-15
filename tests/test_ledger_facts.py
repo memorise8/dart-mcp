@@ -1186,6 +1186,13 @@ class LeaseIpFixC11Test(unittest.TestCase):
         self.assertEqual(got, {"단기리스료": "LEASE_SHORT_TERM_EXP",
                                "단기리스료가 아닌 소액자산 리스료": "LEASE_LOW_VALUE_EXP"})
 
+    def test_short_term_not_without_ga_is_low_value(self):
+        # 수정 1차: 「단기리스아닌소액자산리스료」(조사 「가」 없음, c11에서 4행)도 소액 행
+        t = _table([("단기리스료", [0, 0]), ("단기리스아닌소액자산리스료", [120, 80])], note_title="리스", title="리스 비용",
+                   periods=("current_period", "prior_period"), headers=["당기", "전기"])
+        got = {f["label"]: f["concept"] for f in self.facts(t)}
+        self.assertEqual(got["단기리스아닌소액자산리스료"], "LEASE_LOW_VALUE_EXP")
+
     def test_parenthesized_lease_costs_kept_negative(self):
         # s083 트레져헌터 20260508000176 주석 14 리스: 「(22,385,400)」 괄호 금액은 음수 사실로 남는다(판정이 부호를 무시)
         t = _table([("단기리스료", [-22385400, -33353260]), ("단기리스가 아닌 소액자산 리스료", [-9286674, -10086590])],
@@ -1355,6 +1362,32 @@ class IpFairValueSentenceTest(unittest.TestCase):
                   "당기말과 전기말 현재 공정가치로 측정되는 투자부동산의 서열체계에 따른 수준별 공정가치 측정치는 다음과 같습니다."):
             got = sentence_facts(_filing([_p("s489", t)]))
             self.assertEqual([f["concept"] for f in got], ["IP_FV_LEADIN"], t)
+
+    def test_model_marker_negation_and_other_entity(self):
+        # 수정 1차: 부정문(20260408000296)·다른 회사의 공정가치 모형(20260105000006·20251230000872)은 모형 표시가 아니다
+        from dart_search_mcp.ledger.facts import sentence_facts
+        for t in ("따라서 당사는투자부동산을 공정가치로 측정하지는 않지만 투자부동산의 공정가치를 주석으로 공시합니다.",
+                  "당사는 투자부동산을 공정가치로 측정하지 아니하고 원가에서 감가상각누계액을 차감한 금액으로 표시합니다.",
+                  "지분법 피투자회사가 보유한 투자부동산의 후속측정 방법을 원가모형에서 공정가치모형으로 변경하였습니다.",
+                  "종속기업이 보유하고 있는 투자부동산은 최초 인식 후 공정가치로 측정합니다.",
+                  "관계기업이 보유한 투자부동산은 공정가치모형을 적용하고 있습니다."):
+            got = sentence_facts(_filing([_p("s1", t)]))
+            self.assertNotIn("IP_FV_MODEL", [f["concept"] for f in got], t)
+
+    def test_model_marker_gated_by_cost_model_evidence(self):
+        # 같은 범위에 투자부동산 표의 감가상각누계 행이나 원가모형 문장이 있으면 모형 표시를 내지 않는다
+        from dart_search_mcp.ledger.facts import sentence_facts
+        model = "최초 인식 후 투자부동산은 공정가치로 측정됩니다."
+        table = {"file": "R_00760.xml", "fs_scope": "separate", "region": {"kind": "note", "note_title": "투자부동산"},
+                 "rows": [{"label": "감가상각누계액", "label_path": ["감가상각누계액"]}]}
+        got = sentence_facts(_filing([_p("s1", model)], [table]))
+        self.assertNotIn("IP_FV_MODEL", [f["concept"] for f in got])
+        got = sentence_facts(_filing([_p("s1", model), _p("s2", "투자부동산은 원가모형으로 측정하고 있습니다.")]))
+        self.assertNotIn("IP_FV_MODEL", [f["concept"] for f in got])
+        # 연결 범위의 누계 행은 별도 모형 표시를 막지 않는다
+        table["fs_scope"], table["file"] = "consolidated", "R_00761.xml"
+        got = sentence_facts(_filing([_p("s1", model)], [table]))
+        self.assertEqual([(f["fs_scope"], f["concept"]) for f in got], [("separate", "IP_FV_MODEL")])
 
     def test_cost_model_or_construction_not_model_marker(self):
         from dart_search_mcp.ledger.facts import sentence_facts

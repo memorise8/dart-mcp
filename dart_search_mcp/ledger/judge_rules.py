@@ -83,7 +83,7 @@ def _pos(facts: list[dict], *concepts: str) -> list[dict]:
 
 
 def _pos_abs(facts: list[dict], *concepts: str) -> list[dict]:
-    """부호와 무관하게 금액이 있는 사실 — 괄호(음수)로 표시한 부채 금액(EMB_DERIV_*)용."""
+    """부호와 무관하게 금액이 있는 사실 — 괄호(음수)로 표시한 금액: 부채(EMB_DERIV_*)와 리스료(LEASE_*_EXP, r4)."""
     return [f for c in concepts for f in _usable(facts, c) if abs(_num(f.get("amount"))) > 0]
 
 
@@ -613,8 +613,9 @@ def _ip(ctx: Ctx) -> dict | None:
         res["evidence"] = line
         res["basis_period"] = _side(c)
         return res
-    if model:  # 공정가치 모형: 당기말 장부금액이 공정가치이자 장부금액(회계사 v2 s120)
-        best = _pick(car)
+    cur_car = [x for x in car if _side(x) == "current"]
+    if model and cur_car:  # 공정가치 모형: 당기말 장부금액이 공정가치이자 장부금액(회계사 v2 s120). 당기말 없으면 안 씀(수정 1차)
+        best = _pick(cur_car)
         res = _from_facts("FV_EQUALS", [best], ctx.tables, extra_refs=[_fact_ref(model[0])])
         res["evidence"] = f"{evidence_line(best, ctx.tables)} / 공정가치 모형: {(model[0].get('text') or '').strip()[:200]}"
         return res

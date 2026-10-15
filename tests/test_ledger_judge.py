@@ -956,6 +956,11 @@ class IpSentenceAndModelTest(unittest.TestCase):
         self.assertIn("합계 212,096,826천원 (당기말", r["evidence"])
         self.assertIn("s926", r["source_refs"])
 
+    def test_model_needs_current_carrying(self):
+        # 수정 1차(20260316000872): 당기말 장부금액이 없으면 모형 규칙을 쓰지 않는다(전기말로 FV_EQUALS 내지 않음)
+        r = judge([F("IP_CARRYING", 2162070, "prior_end", mult=1000, label="건물"), FVM()])["IP_FAIR_VALUE"]
+        self.assertNotEqual(r["value"], "FV_EQUALS")
+
     def test_model_mark_alone_is_not_used(self):
         # 공정가치 모형은 2층 문장 사실(IP_FV_MODEL)로만 본다 — 정책 표시(marks)는 그대로 판단불가 근거일 뿐
         m = M("IP_FAIR_VALUE", "company_statement", "당사는 투자부동산에 대한 후속측정을 공정가치로 평가하고 있습니다.")
