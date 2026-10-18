@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 
@@ -91,6 +91,11 @@ class Concept:
     table_text_note: bool = False  # c12 table_total: table_patterns 를 주석 제목에도 맞춘다(주석 제목이 table_exclude 에 안 걸릴 때)
     entity_rows: bool = False  # c12 table_total: 금액 행 절반 이상이 투자처 이름(㈜·주식회사·조합·Inc…)인 표만
     yields_to_total: bool = False  # c12 행 개념: 같은 표에서 같은 id 의 table_total 이 걸리면 그 합계 행에 양보한다
+    pl_column_patterns: tuple = ()  # c12: 손익·평가 열(어느 단계든) 칸은 이 개념이 아니라 DERIV_PL_COLUMN 대리 사실(orig_concept)
+    no_movement_table: bool = False  # c12 수정 1차: 변동표(기초 열·행 + 흐름 열)에서는 잔액을 읽지 않는다
+    subtitle_period: bool = False  # c12 수정 1차: 표 제목이 기간 소제목뿐(「〈전기〉」「② 당기」)이면 그 기간을 쓴다
+    since: str = ""  # c12 수정 1차: 이 판에서 새로 생긴 개념 항목이면 그 판(사실에 since 로 단다)
+    c11_label_patterns: tuple = ()  # c12 수정 1차: c11 때의 행 이름 패턴 — 이것으로 안 걸리면 c12 새 사실
     topic: str = ""
     version: str = ""
     _rx: dict = field(default_factory=dict, compare=False, hash=False, repr=False)
@@ -128,6 +133,11 @@ def load_concepts(path: Path | None = None) -> list[Concept]:
                            table_text_note=bool(c.get("table_text_note")),
                            entity_rows=bool(c.get("entity_rows")),
                            yields_to_total=bool(c.get("yields_to_total")),
+                           pl_column_patterns=tuple(c.get("pl_column_patterns") or ()),
+                           no_movement_table=bool(c.get("no_movement_table")),
+                           subtitle_period=bool(c.get("subtitle_period")),
+                           since=c.get("since", ""),
+                           c11_label_patterns=tuple(c.get("c11_label_patterns") or ()),
                            topic=c.get("topic", ""),
                            version=version))
     return out
@@ -406,6 +416,8 @@ def _candidates(table: dict, concepts: list[Concept]):
     regions = [(ok and not (c.row_exclude_patterns and not c.mode
                             and any(rx.search(n) for rx in c.rx("row_exclude_patterns") for n in all_names)), unk)
                for c, (ok, unk) in zip(concepts, regions)]
+    movement = _is_movement_table(table)
+    regions = [(ok and not (c.no_movement_table and movement), unk) for c, (ok, unk) in zip(concepts, regions)]
     # 행 이름 개념의 table_exclude_patterns(c12): 표 제목에 걸리면 그 표에는 이 개념을 쓰지 않는다(변동·손익 표)
     regions = [(ok and not (c.table_exclude_patterns and not c.mode
                             and any(rx.search(title) for rx in c.rx("table_exclude_patterns"))), unk)
@@ -440,7 +452,8 @@ def _candidates(table: dict, concepts: list[Concept]):
                 continue
             col_rx = c.rx("column_patterns")
             col_ex = c.rx("column_exclude_patterns")
-            picked = []
+            pl_rx = c.rx("pl_column_patterns")
+            picked, pl_picked = [], []
             for cell in row.get("cells") or []:
                 col = cols.get(cell["col"])
                 if col is None or cell.get("value") is None:
@@ -451,6 +464,12 @@ def _candidates(table: dict, concepts: list[Concept]):
                     continue
                 if col_ex and any(rx.search(_WS_RE.sub("", h or "")) for rx in col_ex for h in col.get("header_path") or []):
                     continue  # 「자산」 열의 내재파생상품 행은 부채 개념이 아니다(T11b 수정 1차)
+                if pl_rx and any(rx.search(_WS_RE.sub("", h or "")) for rx in pl_rx for h in col.get("header_path") or []):
+                    if not col_rx or any(rx.search(_header_last(col)) for rx in col_rx):
+                        period, inferred = _cell_period(c, col, has_end, has_period, bool(col_rx), row_period)
+                        if period is not None:
+                            pl_picked.append((cell, col, period, inferred))
+                    continue  # 손익 열(c12): 판정에 쓰지 않는 대리 사실로만 남긴다
                 if col_rx and not any(rx.search(_header_last(col)) for rx in col_rx):
                     continue
                 period, inferred = _cell_period(c, col, has_end, has_period, bool(col_rx), row_period)
@@ -461,6 +480,9 @@ def _candidates(table: dict, concepts: list[Concept]):
                 picked = _prefer_total_columns(picked)
             for cell, col, period, inferred in picked:
                 out.setdefault((i, cell["col"]), []).append((level, order, c, period, inferred, row, cell, col))
+            for cell, col, period, inferred in pl_picked:
+                out.setdefault((i, cell["col"]), []).append((level, order, _pl_proxy(c), period, inferred, row, cell, col,
+                                                             None, {"orig_concept": c.id}))
     for order, c in enumerate(concepts):
         if c.mode == "table_total" and regions[order][0]:
             _table_total(c, order, table, cols, has_end, has_period, out)
@@ -471,18 +493,53 @@ _TOTAL_LABEL_RE = re.compile(r"^(합계|총계|계|총합계)$")
 _TERM_KINDS = {"current_end", "prior_end", "current_term", "prior_term", "close"}
 
 
+@lru_cache(maxsize=None)
+def _pl_proxy(c: Concept) -> Concept:
+    """손익 열 칸의 대리 개념: 판정 개념 묶음에 없는 id. 원래 개념은 사실의 orig_concept(전환권 값 동결 확인용, r5)."""
+    return replace(c, id="DERIV_PL_COLUMN", pl_column_patterns=(), _rx={})
+
+
+_OPENING_RE = re.compile(r"^(기초|당기초|전기초)(잔액|금액|장부(금|가)액|순장부(금|가)액)?$")
+_CLOSING_RE = re.compile(r"^(기말|당기말|전기말)(잔액|금액|장부(금|가)액|순장부(금|가)액)?$")
+
+
+def _is_movement_table(table: dict) -> bool:
+    """변동표(c12 수정 1차): 값 열에 기초 열과 흐름 열(취득·처분·평가·증감…)이 함께 있거나, 행에 기초·기말 행이 함께 있다."""
+    cols = [c for c in table.get("columns") or [] if c.get("role") == "value"]
+    heads = [_WS_RE.sub("", _header_last(c)) for c in cols]
+    opening = any(c.get("period") == "opening" or _OPENING_RE.match(h) for c, h in zip(cols, heads))
+    if opening and any(_FLOW_HEADER_RE.search(h) or re.search(r"평가|법인세효과|실현", h) for h in heads
+                       if not _OPENING_RE.match(h) and not _CLOSING_RE.match(h)):
+        return True
+    names = {norm_label(r.get("label")) for r in table.get("rows") or []}
+    return any(_OPENING_RE.match(n) for n in names) and any(_CLOSING_RE.match(n) for n in names)
+
+
+_SUBTITLE_PERIOD_RE = re.compile(r"^[-–·①-⑳\d.()〈〉<>\[\]]*(당기|전기)말?[〉>)\]]*$")
+
+
+def _subtitle_side(table: dict) -> str | None:
+    m = _SUBTITLE_PERIOD_RE.match(_WS_RE.sub("", table.get("title") or ""))
+    return ("current" if m.group(1) == "당기" else "prior") if m else None
+
+
 def _table_total(c: Concept, order: int, table: dict, cols: dict, has_end: bool, has_period: bool, out: dict) -> None:
     """mode table_total: 표 제목(+ 첫 소제목 행)이 개념을 정하는 표의 합계 행(또는 한 행짜리 표의 그 행)."""
     rows = table.get("rows") or []
     title = _WS_RE.sub("", table.get("title") or "")
     sub = norm_label(rows[0].get("label")) if rows and _is_blank_header(rows[0]) else ""
     text = title + " " + sub
+    via_note = False
     if c.table_text_note:  # c12: 「(3) 시장성 있는 지분증권의 내역」 표는 주석 제목이 FVOCI 다(성우하이텍 s056)
         nt = _WS_RE.sub("", (table.get("region") or {}).get("note_title") or "")
+        via_note = not all(rx.search(text) for rx in c.rx("table_patterns"))
         if nt and not any(rx.search(nt) for rx in c.rx("table_exclude_patterns")):
             text = nt + " " + text
     if not all(rx.search(text) for rx in c.rx("table_patterns")):
         return
+    if c.c11_label_patterns and not via_note:  # c11 표 제목 패턴(옛 낱말)으로도 걸리는가
+        tt = title + " " + sub
+        via_note = not all(re.search(p, tt) for p in c.c11_label_patterns)
     if any(rx.search(t) for rx in c.rx("table_exclude_patterns") for t in (title, sub) if t):
         return
     for r in rows:
@@ -515,6 +572,8 @@ def _table_total(c: Concept, order: int, table: dict, cols: dict, has_end: bool,
     row = rows[idx]
     row_period = _row_period(row)
     extra = _total_parts(table, idx) if basis == "table_total" else {}
+    if via_note:
+        extra = {**extra, "since": "c12"}
     picked = []
     for cell in row.get("cells") or []:
         col = cols.get(cell["col"])
@@ -557,7 +616,7 @@ def _table_total(c: Concept, order: int, table: dict, cols: dict, has_end: bool,
 _ENTITY_RE = re.compile(r"㈜|\(주\)|주식회사|유한(책임)?회사|\(유\)|조합|협회|재단|공사$|Inc\b|INC\b|Ltd|LTD|L\.L\.C|LLC|Corp|CORP"
                         r"|Co\.|CO\.|GmbH|Limited|LIMITED|Pte|PTE|B\.V|S\.A|JSC|\bAG\b|Company|Holdings|Technologies")
 # 합계가 더한 행 이름에서 뗄 뒤 표지(「(주1)」「(*1)」). 회사 이름의 「(주)」는 남긴다
-_COMP_TAIL_RE = re.compile(r"(?:\s|\(\*\d*\)|\*\d*\)?|\(주(?:석[\d,\s~-]*|\d+)\)|주\d+\))+$")
+_COMP_TAIL_RE = re.compile(r"(?:\s|\(\*+\d*\)|\*+\d*\)?|\(주(?:석[\d,\s~-]*|\d+)\)|주\d+\))+$")
 _COMPONENTS_MAX = 30
 
 
@@ -653,6 +712,15 @@ def extract_facts(tables: list[dict], concepts: list[Concept], *, stats: Counter
                 fact["match_basis"] = basis_kind
             if extra:
                 fact.update(extra)
+            if c.since:
+                fact["since"] = c.since
+            elif c.c11_label_patterns and not basis_kind and not any(
+                    re.search(p, t) for p in c.c11_label_patterns for t in (norm_label(row.get("label")), _joined_path(row))):
+                fact["since"] = "c12"  # c12 낱말(「기타포괄손익인식」 등)로만 걸린 행
+            side = _subtitle_side(table) if c.subtitle_period else None
+            if side and period in END | PERIOD and not period.startswith(side):
+                fact["period"] = f"{side}_end" if period in END else f"{side}_period"
+                fact["period_from_title"] = True
             _ok, unknown, title_only = _region_match(c, table)
             if unknown:
                 fact["region_unknown"] = True
@@ -664,6 +732,10 @@ def extract_facts(tables: list[dict], concepts: list[Concept], *, stats: Counter
             if stats is not None:
                 stats[f"concept:{c.id}"] += 1
     return facts
+
+
+def _joined_path(row: dict) -> str:
+    return _row_texts(row)[2]
 
 
 def _row_matches(table: dict, concepts: list[Concept]) -> dict[int, set[str]]:
@@ -750,7 +822,7 @@ def coverage(tables: list[dict], concepts: list[Concept], topics: dict | None = 
         for i, row in enumerate(rows):
             if not _is_amount_row(table, row):
                 continue
-            hit_topics = {ids[x] for x in matched.get(i, ())}
+            hit_topics = {ids[x] for x in matched.get(i, ()) if x in ids}  # 대리 개념(DERIV_PL_COLUMN)은 주제 없음
             context = [title, *parents[i], _WS_RE.sub("", _footnote_text(table, row))]
             for t, ok in rel.items():
                 if not ok:

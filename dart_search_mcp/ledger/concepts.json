@@ -1,6 +1,6 @@
 {
  "concepts_version": "c12",
- "note": "2층 ① 개념 사전. 패턴은 공백을 지운 행 이름(앞 번호·「차감:」, 뒤 각주 표지 뗌)에 대한 정규식. regions: statement_bs·statement_is | note:<정규식>(주석 제목 또는 표 제목). column_patterns가 있으면 「행 × 열」 개념(열 header_path 마지막 요소). 같은 id가 여럿이면 같은 개념의 다른 표 모양(예: 열이 자산 종류인 변동표)이다. context_exclude_patterns는 상위 행(값 빈 머리 행 포함)에 있으면 안 되는 낱말. column_exclude_patterns는 열 머리글 어느 단계에도 있으면 안 되는 낱말(그 칸만 뺀다). title_region이 참인 개념(사채·전환권·내재파생)만 주석 제목이 안 맞을 때 표 제목으로 구간을 맞춘다. topics는 측정에만 쓴다: 정의 B = keywords 행 중 exclusions(이름·이유 붙은 규칙)에 안 걸린 행. table_context가 참이면 context_patterns를 같은 표의 다른 행 이름에도 맞춘다(전환사채 행이 있는 표의 사채할인발행차금). mode가 table_total인 항목(c6)은 행 이름이 아니라 표 제목(+ 첫 소제목 행)이 table_patterns를 모두 갖출 때 그 표의 합계 행(합계 없으면 한 행짜리 표의 그 행)을 쓴다: table_exclude_patterns(제목·소제목), row_exclude_patterns(표의 모든 행), column_patterns·column_exclude_patterns(잔액 열만), replaces(같은 칸에 이 개념만 있으면 대신함). section_patterns(table_total): 표의 값 빈 구획 머리 행은 모두 이 패턴(지분 낱말 또는 중립 머리)에 맞아야 한다.",
+ "note": "2층 ① 개념 사전. 패턴은 공백을 지운 행 이름(앞 번호·「차감:」, 뒤 각주 표지 뗌)에 대한 정규식. regions: statement_bs·statement_is | note:<정규식>(주석 제목 또는 표 제목). column_patterns가 있으면 「행 × 열」 개념(열 header_path 마지막 요소). 같은 id가 여럿이면 같은 개념의 다른 표 모양(예: 열이 자산 종류인 변동표)이다. context_exclude_patterns는 상위 행(값 빈 머리 행 포함)에 있으면 안 되는 낱말. column_exclude_patterns는 열 머리글 어느 단계에도 있으면 안 되는 낱말(그 칸만 뺀다). title_region이 참인 개념(사채·전환권·내재파생)만 주석 제목이 안 맞을 때 표 제목으로 구간을 맞춘다. topics는 측정에만 쓴다: 정의 B = keywords 행 중 exclusions(이름·이유 붙은 규칙)에 안 걸린 행. table_context가 참이면 context_patterns를 같은 표의 다른 행 이름에도 맞춘다(전환사채 행이 있는 표의 사채할인발행차금). mode가 table_total인 항목(c6)은 행 이름이 아니라 표 제목(+ 첫 소제목 행)이 table_patterns를 모두 갖출 때 그 표의 합계 행(합계 없으면 한 행짜리 표의 그 행)을 쓴다: table_exclude_patterns(제목·소제목), row_exclude_patterns(표의 모든 행), column_patterns·column_exclude_patterns(잔액 열만), replaces(같은 칸에 이 개념만 있으면 대신함). section_patterns(table_total): 표의 값 빈 구획 머리 행은 모두 이 패턴(지분 낱말 또는 중립 머리)에 맞아야 한다. c12 수정 1차: pl_column_patterns(손익 열 칸 → DERIV_PL_COLUMN 대리 사실, orig_concept), no_movement_table(변동표에서 잔액 안 읽음), subtitle_period(제목이 기간 소제목뿐이면 그 기간), since(새 항목 표시), c11_label_patterns(c11 패턴으로 안 걸리면 since c12).",
  "topics": {
   "conversion": {
    "name": "전환권",
@@ -214,7 +214,7 @@
    "value_kind": "balance",
    "target": "conversion",
    "title_region": true,
-   "column_exclude_patterns": [
+   "pl_column_patterns": [
     "(?<!당기)(?<!포괄)손익|수익|비용|이익|손실|평가(?!금액|액|후)|환산"
    ]
   },
@@ -237,7 +237,7 @@
     "조정"
    ],
    "title_region": true,
-   "column_exclude_patterns": [
+   "pl_column_patterns": [
     "(?<!당기)(?<!포괄)손익|수익|비용|이익|손실|평가(?!금액|액|후)|환산"
    ]
   },
@@ -392,7 +392,7 @@
    "value_kind": "balance",
    "target": "by_label",
    "title_region": true,
-   "column_exclude_patterns": [
+   "pl_column_patterns": [
     "(?<!당기)(?<!포괄)손익|수익|비용|이익|손실|평가(?!금액|액|후)|환산"
    ]
   },
@@ -409,8 +409,7 @@
     "자산"
    ],
    "column_exclude_patterns": [
-    "^(?!.*부채).*자산",
-    "(?<!당기)(?<!포괄)손익|수익|비용|이익|손실|평가(?!금액|액|후)|환산"
+    "^(?!.*부채).*자산"
    ],
    "regions": [
     "note:사채|파생|공정가치|우선주|금융상품|금융부채|차입금"
@@ -421,7 +420,10 @@
    ],
    "value_kind": "balance",
    "target": "by_label",
-   "title_region": true
+   "title_region": true,
+   "pl_column_patterns": [
+    "(?<!당기)(?<!포괄)손익|수익|비용|이익|손실|평가(?!금액|액|후)|환산"
+   ]
   },
   {
    "id": "EMB_DERIV_LIABILITY",
@@ -443,15 +445,15 @@
     "평가|(?<!당기)(?<!포괄)손익|이익|손실|증가|감소",
     "자산"
    ],
-   "column_exclude_patterns": [
-    "(?<!당기)(?<!포괄)손익|수익|비용|이익|손실|평가(?!금액|액|후)|환산"
-   ],
    "value_kind": "balance",
    "target": "by_label",
    "title_region": true,
    "why": "c12(s039 육일씨엔에쓰): 값 빈 부모 행 「파생상품부채」 아래 「조기상환권」 행. 사채·우선주·파생 주석에서, 행·부모·제목에 파생 낱말이 있고 부모 행에 자산이 없을 때만",
    "table_exclude_patterns": [
     "인식한평가손익|평가손익의?내역|관련손익의?내역|손익의?내역|변동내역|변동내용|민감도"
+   ],
+   "pl_column_patterns": [
+    "(?<!당기)(?<!포괄)손익|수익|비용|이익|손실|평가(?!금액|액|후)|환산"
    ]
   },
   {
@@ -478,7 +480,7 @@
    "value_kind": "balance",
    "target": "by_label",
    "title_region": true,
-   "column_exclude_patterns": [
+   "pl_column_patterns": [
     "(?<!당기)(?<!포괄)손익|수익|비용|이익|손실|평가(?!금액|액|후)|환산"
    ]
   },
@@ -505,6 +507,10 @@
    "value_kind": "balance",
    "column_exclude_patterns": [
     "부채|기술|투입변수|평가기법"
+   ],
+   "c11_label_patterns": [
+    "기타포괄손익.?공정가치.*(지분|주식|출자)",
+    "(지분|주식).*기타포괄손익.?공정가치"
    ]
   },
   {
@@ -535,7 +541,10 @@
    "value_kind": "balance",
    "why": "c12(s056 성우하이텍): 주석 제목이 FVOCI(당기손익·상각후원가·관계기업 함께 쓴 주석 제외)인 주석 안의 지분·주식·출자 행. 주석 제목을 모르는 표는 받지 않는다",
    "own_label_only": true,
-   "yields_to_total": true
+   "yields_to_total": true,
+   "since": "c12",
+   "no_movement_table": true,
+   "subtitle_period": true
   },
   {
    "id": "FVOCI_EQUITY",
@@ -566,7 +575,10 @@
    "yields_to_total": true,
    "column_exclude_patterns": [
     "부채|기술|투입변수|평가기법"
-   ]
+   ],
+   "since": "c12",
+   "no_movement_table": true,
+   "subtitle_period": true
   },
   {
    "id": "FVOCI_EQUITY",
@@ -602,7 +614,11 @@
    "section_patterns": [
     "지분|주식|출자|^\\(?(기타)?(비?유동(항목|자산|금융자산)?|국내|해외)(법인)?\\)?$|^기타포괄손익.?공정가치.*$|^\\(?단위.*$"
    ],
-   "table_text_note": true
+   "table_text_note": true,
+   "c11_label_patterns": [
+    "기타포괄손익.?공정가치",
+    "지분|주식|출자"
+   ]
   },
   {
    "id": "FVOCI_EQUITY",
@@ -638,7 +654,10 @@
     "지분|주식|출자|^\\(?(기타)?(비?유동(항목|자산|금융자산)?|국내|해외)(법인)?\\)?$|^기타포괄손익.?공정가치.*$|^\\(?단위.*$"
    ],
    "note_title_required": true,
-   "entity_rows": true
+   "entity_rows": true,
+   "since": "c12",
+   "no_movement_table": true,
+   "subtitle_period": true
   },
   {
    "id": "FVPL_EQUITY",

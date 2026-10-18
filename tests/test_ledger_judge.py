@@ -1186,5 +1186,75 @@ class C12ReadFailedTest(unittest.TestCase):
         self.assertEqual((r["value"], r["held_reason"]), ("UNDETERMINED", "no_facts"))
 
 
+
+class C12Fix1JudgeTest(unittest.TestCase):
+    """e54903f 리뷰 수정 1차(r5): DESIGNATED 는 당기 FVOCI 잔액, 전환권 값 동결."""
+
+    def eq(self, amount, period, since="c12"):
+        f = F("FVOCI_EQUITY", amount, period, label="시장성 있는 지분증권", mult=1000)
+        if since:
+            f["since"] = since
+        return f
+
+    def test_new_prior_only_balance_needs_review(self):
+        # 20260402001564 모양: c12 새 사실이 전기에만 0 초과, 당기 0
+        r = judge([self.eq(0, "current_end"), self.eq(500, "prior_end")])["FVOCI_DESIGNATION"]
+        self.assertEqual((r["value"], r["held_reason"]), ("UNDETERMINED", "needs_review"))
+        self.assertIn("전기만 FVOCI 잔액", r["evidence"])
+
+    def test_current_balance_designated(self):
+        r = judge([self.eq(300, "current_end"), self.eq(500, "prior_end")])["FVOCI_DESIGNATION"]
+        self.assertEqual((r["value"], r["basis_period"]), ("DESIGNATED", "current"))
+
+    def test_c11_prior_only_rows_keep_c11_value(self):
+        # c11 부터 있던 사실(표시 없음)로 전기만 있는 행은 c11 값(DESIGNATED, 전기) 그대로
+        r = judge([self.eq(500, "prior_end", since=None)])["FVOCI_DESIGNATION"]
+        self.assertEqual((r["value"], r["basis_period"]), ("DESIGNATED", "prior"))
+
+    def test_statement_needs_current_balance(self):
+        # 20260325000813 모양: 지정 문장 + FVOCI 금융자산 총액이 전기에만
+        cur0 = F("FVOCI_FA_TOTAL", 0, "current_end", label="기타포괄손익-공정가치측정금융자산")
+        prior = F("FVOCI_FA_TOTAL", 900, "prior_end", label="기타포괄손익-공정가치측정금융자산")
+        r = judge([cur0, prior, STMT()])["FVOCI_DESIGNATION"]
+        self.assertEqual((r["value"], r["held_reason"]), ("UNDETERMINED", "needs_review"))
+        self.assertIn("전기만 FVOCI 잔액", r["evidence"])
+        cur = F("FVOCI_FA_TOTAL", 700, "current_end", label="기타포괄손익-공정가치측정금융자산")
+        self.assertEqual(judge([cur, prior, STMT()])["FVOCI_DESIGNATION"]["value"], "DESIGNATED")
+
+
+def PLF(concept, amount, period="prior_end", label="파생상품부채(전환사채전환권및상환권)", target="conversion"):
+    f = F("DERIV_PL_COLUMN", amount, period, label=label, target=target, basis="label", column="평가이익")
+    f["orig_concept"] = concept
+    return f
+
+
+class C12ConvFreezeTest(unittest.TestCase):
+    """전환권(CONV)은 회계사 의견이 갈린 주제 — c12 에서 손익 열 사실만 빠져 값이 바뀌면 확인 필요로 둔다."""
+
+    def test_pl_column_change_puts_conv_in_review(self):
+        # 20260318000934 모양: 사채 기록 EQUITY + (c11) 손익 열 파생상품부채 → c11 needs_review, c12 EQUITY
+        ins = [I("equity", cur={"equity_component": 100})]
+        facts = [F("CONV_OPTION_EQUITY", 100, label="전환권대가"), PLF("EMB_DERIV_LIABILITY", 66833)]
+        r = judge(facts, ins)["CONVERSION_OPTION_CLASS"]
+        self.assertEqual((r["value"], r["held_reason"]), ("UNDETERMINED", "needs_review"))
+        self.assertIn("c12 근거 변경 — 전환권 규칙 결정 대기", r["evidence"])
+
+    def test_pl_column_only_liability_row_in_review_not_dropped(self):
+        # 20260316000965 모양: 부채 근거가 손익 열 「신주인수권」뿐 — c11 LIABILITY, c12 행 없음 → 확인 필요
+        r = judge([PLF("CONV_OPTION_LIABILITY", 3947, label="신주인수권")])
+        self.assertEqual((r["CONVERSION_OPTION_CLASS"]["value"], r["CONVERSION_OPTION_CLASS"]["held_reason"]),
+                         ("UNDETERMINED", "needs_review"))
+
+    def test_same_value_without_proxy_effect_unchanged(self):
+        ins = [I("equity", cur={"equity_component": 100})]
+        facts = [F("CONV_OPTION_EQUITY", 100, label="전환권대가"), PLF("EMB_DERIV_LIABILITY", 5, target="redemption",
+                                                                      label="조기상환청구권")]
+        r = judge(facts, ins)["CONVERSION_OPTION_CLASS"]
+        self.assertEqual(r["value"], "EQUITY")
+        # 대리 사실은 EMB 판정에 쓰지 않는다
+        self.assertNotEqual(judge([PLF("EMB_DERIV_LIABILITY", 5, target="redemption", label="조기상환청구권"),
+                                   F("HOST_LIABILITY", 10)])["EMBEDDED_DERIVATIVE_SEPARATION"]["value"], "SEPARATED")
+
+
 if __name__ == "__main__":
     unittest.main()

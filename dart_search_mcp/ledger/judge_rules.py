@@ -485,15 +485,26 @@ def _fvoci(ctx: Ctx) -> dict | None:
     eq = _pos(ctx.facts, "FVOCI_EQUITY")
     reserve = _nonzero(ctx.facts, "FVOCI_EQUITY_RESERVE")
     stmt = _fvoci_stmt(ctx)
-    if eq or reserve:
-        cur = [f for f in eq + reserve if _side(f) == "current"]
-        res = _from_facts("DESIGNATED", cur or (eq + reserve), ctx.tables)
+    cur = [f for f in eq + reserve if _side(f) == "current"]
+    # 수정 1차: DESIGNATED 는 당기 FVOCI 지분 잔액이 있어야 한다. 전기에만 있으면 c11 부터 있던 사실(since 없음)일 때만
+    # c11 값(DESIGNATED, 전기)을 지키고, c12 새 사실뿐이면 확인 필요(지정 안 함으로는 정하지 않는다 — 없음 규칙은 범위 밖)
+    legacy = [f for f in eq + reserve if f.get("since") != "c12"]
+    prior_only = None
+    if (eq or reserve) and not cur and not legacy:
+        prior_only = _review("전기만 FVOCI 잔액",
+                             f"확인 필요: 전기만 FVOCI 잔액(당기 잔액 없음): {evidence_line(_pick(eq + reserve), ctx.tables)}")
+    elif eq or reserve:
+        res = _from_facts("DESIGNATED", cur or legacy, ctx.tables)
         if stmt:  # r5: 지정 문장도 근거로 붙인다
             res["evidence"] = f"{res['evidence']} / 지정 문장: {(stmt[0].get('text') or '').strip()[:200]}"
             res["source_refs"].append(_fact_ref(stmt[0]))
         return res
     total = _pos(ctx.facts, "FVOCI_FA_TOTAL") + _nonzero(ctx.facts, "FVOCI_FA_RESERVE")
     held = _pos(ctx.facts, "FVOCI_FA_TOTAL")
+    if stmt and held and not [f for f in held if _side(f) == "current"] and not prior_only:  # 수정 1차: 문장 길도 당기 잔액
+        return _review("전기만 FVOCI 잔액", f"확인 필요: 전기만 FVOCI 잔액(지정 문장 있음, 당기 잔액 없음): "
+                                       f"{evidence_line(_pick(held), ctx.tables)}")
+    held = [f for f in held if _side(f) == "current"]
     if stmt and held:
         # r5(회계사 두 명 s056·s058): 「…지정하는 취소불가능한 선택권을 적용하였습니다」 「…기타포괄손익으로 인식하도록
         # 지정하였습니다」 — 지분상품 지정을 회사가 직접 밝힌 문장 + FVOCI 금융자산 잔액(0 초과). 총액만 있어 지분인지
@@ -503,6 +514,8 @@ def _fvoci(ctx: Ctx) -> dict | None:
         return _res("DESIGNATED", evidence=f"{(stmt[0].get('text') or '').strip()[:300]} / {evidence_line(best, ctx.tables)}",
                     basis=_basis(held), refs=[_fact_ref(stmt[0])] + [_fact_ref(f) for f in held], kind="company_statement",
                     heading=_heading((best.get("source") or {}).get("table_id"), ctx.tables))
+    if prior_only:
+        return prior_only
     fvpl = _pos(ctx.facts, "FVPL_EQUITY")
     if fvpl and not total:
         return _from_facts("NOT_DESIGNATED", fvpl, ctx.tables)
@@ -829,6 +842,28 @@ def _row(rcept_no: str, fs_scope: str, topic: str, res: dict, meta: dict) -> dic
     }
 
 
+_CONV_FROZEN_NOTE = "c12 근거 변경 — 전환권 규칙 결정 대기"
+
+
+def _conv_frozen(ctx: Ctx, runs: tuple, facts: list[dict], marks, meta: dict, rules: dict, fs_scope: str) -> dict | None:
+    """r5 수정 1차: 전환권은 회계사 의견이 갈린 주제라 이번 판에서 값을 c11 에 묶는다. c12 가 손익 열 칸을 판정에서 뺀
+    (DERIV_PL_COLUMN 대리 사실) 것 때문에 값·사유가 c11 과 달라지면 확인 필요로 둔다."""
+    res = _consensus(ctx, "CONVERSION_OPTION_CLASS", runs, _conv_run)
+    proxy = [f for f in facts if f.get("concept") == "DERIV_PL_COLUMN" and f.get("orig_concept")]
+    if not proxy:
+        return res
+    restored = [f for f in facts if f.get("concept") != "DERIV_PL_COLUMN"] + \
+        [{**f, "concept": f["orig_concept"]} for f in proxy]
+    ctx11 = Ctx(restored, ctx.marks, meta, rules, fs_scope)
+    ctx11.targeted_no_records = ctx.targeted_no_records
+    old = _consensus(ctx11, "CONVERSION_OPTION_CLASS", runs, _conv_run)
+    key = lambda r: None if r is None else (r["value"], r["held_reason"])  # noqa: E731
+    if key(old) == key(res):
+        return res
+    was = "행 없음" if old is None else old["value"] + (f"/{old['held_reason']}" if old["held_reason"] else "")
+    return _review(_CONV_FROZEN_NOTE, f"확인 필요: {_CONV_FROZEN_NOTE} (c11 손익 열 사실 포함 시 {was})")
+
+
 def judge_filing(rcept_no: str, fs_scope: str, facts: list[dict], instruments, marks: list[dict],
                  meta: dict | None = None, *, rules_path: Path | None = None) -> list[dict]:
     """공시 하나 × fs_scope → 주제마다 한 행(근거가 전혀 없고 정책 문장도 없는 주제는 행 없음)."""
@@ -839,7 +874,7 @@ def judge_filing(rcept_no: str, fs_scope: str, facts: list[dict], instruments, m
     runs = _runs(instruments)
     ctx.targeted_no_records = bool(meta.get("instruments_targeted")) and not (runs[0] or runs[1])
     judged = {
-        "CONVERSION_OPTION_CLASS": _consensus(ctx, "CONVERSION_OPTION_CLASS", runs, _conv_run),
+        "CONVERSION_OPTION_CLASS": _conv_frozen(ctx, runs, facts, marks, meta, rules, fs_scope),
         "EMBEDDED_DERIVATIVE_SEPARATION": _consensus(ctx, "EMBEDDED_DERIVATIVE_SEPARATION", runs, _emb_run),
         "FVOCI_DESIGNATION": _fvoci(ctx),
         "DEV_COST_CAPITALIZATION": _dev(ctx),
