@@ -1007,5 +1007,184 @@ class IpSentenceAndModelTest(unittest.TestCase):
         self.assertEqual(r["value"], "FV_DIFFERS")
 
 
+
+def STMT(sid="s929", text="연결실체는 단기매매항목이 아닌 전략적 투자목적으로 보유하는 지분상품에 대해 최초 적용일에 "
+                          "기타포괄손익-공정가치측정항목으로 지정하는 취소불가능한 선택권을 적용하였습니다."):
+    return {"rcept_no": R, "fs_scope": "separate", "concept": "FVOCI_DESIGNATION_STMT", "period": "current_end",
+            "amount": None, "unit_kind": None, "amount_krw": None, "label": "기타포괄손익-공정가치 지정 문장",
+            "label_path": [], "column": "", "target": None, "target_basis": None,
+            "source": {"sentence_id": sid, "page": 1, "file": "R_00760.xml"}, "source_status": "sentence",
+            "concepts_version": "c12", "match_basis": "sentence", "text": text}
+
+
+class C12FvociTest(unittest.TestCase):
+    """회계사 두 명 합의 수정(r5): FVOCI 지정 문장, 합계 근거 줄."""
+
+    def test_rules_version_r5(self):
+        from dart_search_mcp.ledger.judge_rules import load_rules
+        self.assertEqual(load_rules()["rules_version"], "r5")
+
+    def test_statement_with_total_only_is_designated(self):
+        # s058 효성티앤씨: 주석 11 FVOCI 금융자산 총액 7,303백만원 + 주석 30 「…기타포괄손익으로 인식하도록 지정하였습니다」
+        total = F("FVOCI_FA_TOTAL", 7303, label="기타포괄손익-공정가치측정금융자산", mult=1000000)
+        r = judge([total])["FVOCI_DESIGNATION"]
+        self.assertEqual((r["value"], r["held_reason"]), ("UNDETERMINED", "no_facts"))
+        st = STMT(sid="t:R:00760:t614:title", text="회사는 특정 지분상품투자의 공정가치를 기타포괄손익으로 인식하도록 지정하였습니다(주석 5).")
+        r = judge([total, st])["FVOCI_DESIGNATION"]
+        self.assertEqual((r["value"], r["basis_period"]), ("DESIGNATED", "current"))
+        self.assertIn("인식하도록 지정하였습니다", r["evidence"])
+        self.assertIn("7,303백만원", r["evidence"])
+        self.assertIn("t:R:00760:t614:title", r["source_refs"])
+
+    def test_statement_without_fvoci_balance_changes_nothing(self):
+        # s052 우리벤처파트너스(두 명 모두 NOT_DESIGNATED 맞음): 우리금융지주 주식을 FVOCI 로 지정했으나 같은 해 전량 처분 —
+        # 지정 문장만으로는 기말 보유를 알 수 없다
+        st = STMT(text="연결실체는 주식의 포괄적 교환으로 취득한 우리금융지주 주식을 기타포괄손익-공정가치 측정 항목으로 지정하였습니다.")
+        fvpl = F("FVPL_EQUITY", 50, label="당기손익-공정가치측정 지분상품")
+        self.assertEqual(judge([fvpl, st])["FVOCI_DESIGNATION"]["value"], "NOT_DESIGNATED")
+        self.assertNotIn("FVOCI_DESIGNATION", judge([st]))
+        m = M("FVOCI_DESIGNATION")
+        self.assertEqual(judge([st], marks=[m])["FVOCI_DESIGNATION"]["held_reason"], "policy_only")
+        zero = F("FVOCI_FA_TOTAL", 0, label="기타포괄손익-공정가치측정금융자산")
+        r = judge([zero, st], marks=[m])["FVOCI_DESIGNATION"]
+        self.assertEqual(r["value"], "UNDETERMINED")
+
+    def test_policy_mark_alone_still_policy_only(self):
+        m = M("FVOCI_DESIGNATION", text="단기매매항목이 아닌 지분상품은 기타포괄손익-공정가치로 지정할 수 있습니다.")
+        r = judge([], marks=[m])["FVOCI_DESIGNATION"]
+        self.assertEqual(r["held_reason"], "policy_only")
+
+    def test_equity_facts_keep_value_and_add_statement(self):
+        eq = F("FVOCI_EQUITY", 22825786, label="시장성 있는 지분증권", mult=1000)
+        r = judge([eq, STMT()])["FVOCI_DESIGNATION"]
+        self.assertEqual(r["value"], "DESIGNATED")
+        self.assertTrue(r["evidence"].startswith("시장성 있는 지분증권 22,825,786천원"))
+        self.assertIn("s929", r["source_refs"])
+
+    def test_total_evidence_line_shows_components(self):
+        # s055 로체시스템즈: 근거 줄이 「합계」만 보여 무엇의 합계인지 몰랐다(회계사 두 명)
+        f = F("FVOCI_EQUITY", 1085544, label="합계", mult=1000)
+        f.update({"match_basis": "table_total", "section": "지분상품(비상장주식)",
+                  "components": ["(주)베스테크", "(주)에이마크", "윈텔코퍼레이션(주)"]})
+        self.assertEqual(evidence_line(f), "지분상품(비상장주식) 합계(구성: (주)베스테크·(주)에이마크·윈텔코퍼레이션(주)) "
+                                           "1,085,544천원 (당기말)")
+        f["components"] = [f"투자처{i}" for i in range(1, 8)]
+        f["section"] = None
+        self.assertEqual(evidence_line(f), "합계(구성: 투자처1·투자처2·투자처3·투자처4 외 3건) 1,085,544천원 (당기말)")
+
+
+    def test_path_matched_equity_row_shows_path(self):
+        # s058 효성티앤씨 t102: 「금융자산 / 비상장 주식 / … 수준 3」 × 「기타포괄손익인식금융자산」 열
+        f = F("FVOCI_EQUITY", 7273, label="공정가치 서열체계 수준 3", mult=1000000)
+        f["label_path"] = ["금융자산", "비상장 주식", "공정가치 서열체계의 모든 수준", "공정가치 서열체계 수준 3"]
+        self.assertEqual(evidence_line(f), "금융자산 / 비상장 주식 / 공정가치 서열체계의 모든 수준 / 공정가치 서열체계 수준 3 "
+                                           "7,273백만원 (당기말)")
+
+
+class C12EmbTest(unittest.TestCase):
+    def test_yukil_redemption_option_fact_separates_despite_unconfirmed_runs(self):
+        # s039 육일씨엔에쓰: 두 실행 모두 embedded_separation unconfirmed, 「조기상환권」 172,558천원(대상 상환권, 행 이름)
+        facts = [F("EMB_DERIV_LIABILITY", 172558, label="조기상환권", target="redemption", basis="label", mult=1000),
+                 F("HOST_LIABILITY", 1740945, label="유동성전환사채", mult=1000)]
+        ins = {"run1": [I("equity", cur={"host_carrying": 1740945, "equity_component": 260415})],
+               "run2": [I("equity", cur={"host_carrying": 1740945, "equity_component": 260415})]}
+        r = judge(facts, ins, read_failed_topics={"EMBEDDED_DERIVATIVE_SEPARATION"})["EMBEDDED_DERIVATIVE_SEPARATION"]
+        self.assertEqual((r["value"], r["basis_period"]), ("SEPARATED", "current"))
+        self.assertIn("조기상환권 172,558천원", r["evidence"])
+
+
+def PM(text, sid="s1686", kind="policy"):
+    return M("PPA_MEASUREMENT_PERIOD", kind=kind, text=text, sid=sid)
+
+
+_COWAY = ("연결회사의 사업결합 회계처리는 당기말 현재 잠정금액을 보고한 것으로, 취득일로부터 1년 이내의 측정기간 내에 "
+          "사업결합과 관련된 사실과 상황에 대하여 새롭게 입수한 정보가 있는 경우에 조정될 수 있습니다.")
+
+
+class C12PpaTest(unittest.TestCase):
+    """s136 코웨이: v1 행은 관계없는 자본관리 문장에 「조정될 수 있습니다」 꼬리로 conditional — 회사 문장으로 잠정."""
+
+    V1_COND = {"value": "UNDETERMINED", "evidence": "판정 불가: 조정하고, 주주들에게 자본을 반환하며", "held_reason": "conditional",
+               "sentence_kind": "company_statement"}
+
+    def bc(self):
+        # 코웨이 t295 사업결합 표는 기간 열이 없다(period unknown)
+        return [F("BC_NET_ASSETS_FV", 9775426, "unknown", label="순자산공정가치", mult=1000),
+                F("BC_CONSIDERATION", 9775426, "unknown", label="총 이전대가", mult=1000)]
+
+    def test_coway_provisional_sentence_with_bc_table(self):
+        r = judge(self.bc(), marks=[PM(_COWAY)], v1_ppa=self.V1_COND)["PPA_MEASUREMENT_PERIOD"]
+        self.assertEqual((r["value"], r["basis_period"], r["sentence_kind"]), ("PROVISIONAL", "current", "company_statement"))
+        self.assertIn("당기말 현재 잠정금액을 보고한 것으로", r["evidence"])
+        self.assertIn("s1686", r["source_refs"])
+        # v1 행이 없어도 같다
+        self.assertEqual(judge(self.bc(), marks=[PM(_COWAY)])["PPA_MEASUREMENT_PERIOD"]["value"], "PROVISIONAL")
+
+    def test_provisional_sentence_needs_bc_table(self):
+        r = judge([], marks=[PM(_COWAY)], v1_ppa=self.V1_COND)["PPA_MEASUREMENT_PERIOD"]
+        self.assertEqual((r["value"], r["held_reason"]), ("UNDETERMINED", "conditional"))
+
+    def test_determined_v1_not_overridden(self):
+        v1 = {"value": "FINAL", "evidence": "확정", "held_reason": ""}
+        r = judge(self.bc(), marks=[PM(_COWAY)], v1_ppa=v1, bc_filing=True)["PPA_MEASUREMENT_PERIOD"]
+        self.assertEqual(r["value"], "FINAL")
+
+    def test_other_sentences_not_provisional(self):
+        for text in (
+            # 측정기간 정책 형태(「완료되지 못한다면」)
+            "사업결합 회계처리가 보고기간말 현재 완료되지 못한다면, 회계처리가 완료되지 못한 항목의 잠정금액을 재무제표에 보고하고 있습니다.",
+            # 잠정금액이 확정금액으로 조정됨(확정 쪽 — 이번 범위 밖)
+            "취득일 현재 존재해왔던 사실과 사건에 대하여, 보고기간종료일 현재 새롭게 입수한 정보를 토대로 사업결합에서 인식한 "
+            "잠정금액은 다음과 같이 사업결합 회계처리에서확정금액으로 조정되었습니다.",
+            # 관계기업 지분 취득(사업결합 아님)
+            "회사는 당기 중 GC Labtech에 대한 유의적인 영향력을 취득하였습니다. 보고기간말 현재 기업인수가격배분(PPA) 등이 "
+            "완료되지 않았음에 따라 잠정금액을 통하여 계상된 상기 장부금액은 측정기간 동안 조정될 수 있습니다.",
+        ):
+            r = judge(self.bc(), marks=[PM(text)], v1_ppa=self.V1_COND)["PPA_MEASUREMENT_PERIOD"]
+            self.assertEqual(r["held_reason"], "conditional", text)
+
+
+class C12ReadFailedTest(unittest.TestCase):
+    """읽지 못한 표는 잔액표·범주표일 때만 주제를 막는다(r5)."""
+
+    def rf(self, title, note="전환사채"):
+        from dart_search_mcp.ledger.judge_rules import scope_meta
+        return scope_meta([T("R:00760:t141", note, [], title=title, status="read_failed")], "separate")["read_failed_topics"]
+
+    def test_terms_tables_do_not_block(self):
+        for title in ("(2) 전환사채의 발행조건에 관한 주요사항은 다음과 같습니다.",
+                      "(3) 당기말 현재 전환되지 아니한 상환전환우선주부채의 상세 발행내역은 다음과 같습니다.",
+                      "11.3 회사는 전기 중 우선주를 발행하였으며 세부내용은 다음과 같습니다.",
+                      "2) 주요 계약내용발행된 상환전환우선주의 전환과 상환에 관한 사항은 다음과 같습니다.",
+                      "(가) 제15회차 무기명식 이권부 무보증 사모 전환사채"):
+            self.assertEqual(self.rf(title), set(), title)
+
+    def test_balance_category_or_untitled_tables_block(self):
+        self.assertEqual(self.rf("(1) 당기말 현재 전환사채의 장부금액 내역은 다음과 같습니다."),
+                         {"CONVERSION_OPTION_CLASS", "EMBEDDED_DERIVATIVE_SEPARATION"})
+        self.assertEqual(self.rf("", note="차입금및사채"), {"CONVERSION_OPTION_CLASS", "EMBEDDED_DERIVATIVE_SEPARATION"})
+        self.assertIn("FVOCI_DESIGNATION", self.rf("(1) 범주별 금융상품", note="금융상품"))
+
+    def test_terms_table_still_blocks_absence_values(self):
+        # 발행조건 표만 못 읽어도 「해당 없음」 같은 없음 값은 정하지 않는다(그 규칙은 회계사 의견이 갈려 범위 밖)
+        from dart_search_mcp.ledger.judge_rules import scope_meta
+        meta = scope_meta([T("R:00760:t068", "자본금과 주식발행초과금", [], status="read_failed",
+                             title="11.3 회사는 전기 중 우선주를 발행하였으며 세부내용은 다음과 같습니다.")], "separate")
+        self.assertEqual(meta["read_failed_topics"], set())
+        self.assertIn("EMBEDDED_DERIVATIVE_SEPARATION", meta["read_failed_any_topics"])
+        marks = [M("EMBEDDED_DERIVATIVE_SEPARATION")]
+        r = judge([], marks=marks, category_table=True)["EMBEDDED_DERIVATIVE_SEPARATION"]
+        self.assertEqual(r["value"], "NOT_APPLICABLE")
+        r = judge([], marks=marks, category_table=True, read_failed_topics=meta["read_failed_topics"],
+                  read_failed_any_topics=meta["read_failed_any_topics"])["EMBEDDED_DERIVATIVE_SEPARATION"]
+        self.assertEqual((r["value"], r["held_reason"]), ("UNDETERMINED", "read_failed"))
+
+    def test_yukil_terms_table_no_longer_read_failed(self):
+        # s039: 발행조건 표 t141 만 못 읽었다 — 사실이 없을 때 read_failed 가 아니라 원래 사유가 남는다
+        meta = self.rf("(2) 전환사채의 발행조건에 관한 주요사항은 다음과 같습니다.")
+        r = judge([F("HOST_LIABILITY", 100)], read_failed_topics=meta)["EMBEDDED_DERIVATIVE_SEPARATION"]
+        self.assertEqual((r["value"], r["held_reason"]), ("UNDETERMINED", "no_facts"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -100,7 +100,9 @@ def process(job: dict) -> dict:
     filing_meta = {"ppa_scope": "consolidated" if "consolidated" in scopes else scopes[0],
                    "bc_filing": any(f.get("concept") in bc_concepts and
                                     f.get("period") in ("current_end", "current_period", "prior_end", "prior_period")
-                                    for f in job["facts"])}
+                                    for f in job["facts"]),
+                   # r5: 잠정 문장 규칙의 사업결합 표 확인(기간 열 없는 표도 표는 있다 — 코웨이 t295)
+                   "bc_table_filing": any(f.get("concept") in bc_concepts[:2] and f.get("amount") for f in job["facts"])}
     rows, records = [], []
     for scope in scopes:
         facts = [f for f in job["facts"] if (f.get("fs_scope") or "separate") == scope]

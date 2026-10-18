@@ -1,5 +1,5 @@
 {
- "concepts_version": "c11",
+ "concepts_version": "c12",
  "note": "2층 ① 개념 사전. 패턴은 공백을 지운 행 이름(앞 번호·「차감:」, 뒤 각주 표지 뗌)에 대한 정규식. regions: statement_bs·statement_is | note:<정규식>(주석 제목 또는 표 제목). column_patterns가 있으면 「행 × 열」 개념(열 header_path 마지막 요소). 같은 id가 여럿이면 같은 개념의 다른 표 모양(예: 열이 자산 종류인 변동표)이다. context_exclude_patterns는 상위 행(값 빈 머리 행 포함)에 있으면 안 되는 낱말. column_exclude_patterns는 열 머리글 어느 단계에도 있으면 안 되는 낱말(그 칸만 뺀다). title_region이 참인 개념(사채·전환권·내재파생)만 주석 제목이 안 맞을 때 표 제목으로 구간을 맞춘다. topics는 측정에만 쓴다: 정의 B = keywords 행 중 exclusions(이름·이유 붙은 규칙)에 안 걸린 행. table_context가 참이면 context_patterns를 같은 표의 다른 행 이름에도 맞춘다(전환사채 행이 있는 표의 사채할인발행차금). mode가 table_total인 항목(c6)은 행 이름이 아니라 표 제목(+ 첫 소제목 행)이 table_patterns를 모두 갖출 때 그 표의 합계 행(합계 없으면 한 행짜리 표의 그 행)을 쓴다: table_exclude_patterns(제목·소제목), row_exclude_patterns(표의 모든 행), column_patterns·column_exclude_patterns(잔액 열만), replaces(같은 칸에 이 개념만 있으면 대신함). section_patterns(table_total): 표의 값 빈 구획 머리 행은 모두 이 패턴(지분 낱말 또는 중립 머리)에 맞아야 한다.",
  "topics": {
   "conversion": {
@@ -213,7 +213,10 @@
    ],
    "value_kind": "balance",
    "target": "conversion",
-   "title_region": true
+   "title_region": true,
+   "column_exclude_patterns": [
+    "(?<!당기)(?<!포괄)손익|수익|비용|이익|손실|평가(?!금액|액|후)|환산"
+   ]
   },
   {
    "id": "CONV_OPTION_LIABILITY",
@@ -233,7 +236,10 @@
     "대가",
     "조정"
    ],
-   "title_region": true
+   "title_region": true,
+   "column_exclude_patterns": [
+    "(?<!당기)(?<!포괄)손익|수익|비용|이익|손실|평가(?!금액|액|후)|환산"
+   ]
   },
   {
    "id": "HOST_LIABILITY",
@@ -385,7 +391,10 @@
    ],
    "value_kind": "balance",
    "target": "by_label",
-   "title_region": true
+   "title_region": true,
+   "column_exclude_patterns": [
+    "(?<!당기)(?<!포괄)손익|수익|비용|이익|손실|평가(?!금액|액|후)|환산"
+   ]
   },
   {
    "id": "EMB_DERIV_LIABILITY",
@@ -400,7 +409,8 @@
     "자산"
    ],
    "column_exclude_patterns": [
-    "^(?!.*부채).*자산"
+    "^(?!.*부채).*자산",
+    "(?<!당기)(?<!포괄)손익|수익|비용|이익|손실|평가(?!금액|액|후)|환산"
    ],
    "regions": [
     "note:사채|파생|공정가치|우선주|금융상품|금융부채|차입금"
@@ -412,6 +422,37 @@
    "value_kind": "balance",
    "target": "by_label",
    "title_region": true
+  },
+  {
+   "id": "EMB_DERIV_LIABILITY",
+   "topic": "embedded",
+   "label_patterns": [
+    "^(조기)?상환권(\\(.*\\))?$"
+   ],
+   "context_patterns": [
+    "파생"
+   ],
+   "context_exclude_patterns": [
+    "자산"
+   ],
+   "regions": [
+    "note:사채|우선주|파생|복합금융|전환"
+   ],
+   "exclude_patterns": [
+    "통화|이자율|선물환|스왑|위험회피",
+    "평가|(?<!당기)(?<!포괄)손익|이익|손실|증가|감소",
+    "자산"
+   ],
+   "column_exclude_patterns": [
+    "(?<!당기)(?<!포괄)손익|수익|비용|이익|손실|평가(?!금액|액|후)|환산"
+   ],
+   "value_kind": "balance",
+   "target": "by_label",
+   "title_region": true,
+   "why": "c12(s039 육일씨엔에쓰): 값 빈 부모 행 「파생상품부채」 아래 「조기상환권」 행. 사채·우선주·파생 주석에서, 행·부모·제목에 파생 낱말이 있고 부모 행에 자산이 없을 때만",
+   "table_exclude_patterns": [
+    "인식한평가손익|평가손익의?내역|관련손익의?내역|손익의?내역|변동내역|변동내용|민감도"
+   ]
   },
   {
    "id": "EMB_DERIV_ASSET",
@@ -436,14 +477,17 @@
    ],
    "value_kind": "balance",
    "target": "by_label",
-   "title_region": true
+   "title_region": true,
+   "column_exclude_patterns": [
+    "(?<!당기)(?<!포괄)손익|수익|비용|이익|손실|평가(?!금액|액|후)|환산"
+   ]
   },
   {
    "id": "FVOCI_EQUITY",
    "topic": "fvoci",
    "label_patterns": [
-    "기타포괄손익.?공정가치.*(지분|주식|출자)",
-    "(지분|주식).*기타포괄손익.?공정가치"
+    "기타포괄손익(.?공정가치|인식|으로인식).*(지분|주식|출자)",
+    "(지분|주식).*기타포괄손익(.?공정가치|인식|으로인식)"
    ],
    "regions": [
     "statement_bs",
@@ -453,12 +497,76 @@
     "채무",
     "채권",
     "사채",
-    "평가",
+    "평가(?!를)",
     "처분",
     "대체",
     "(?<!당기)(?<!포괄)손익"
    ],
-   "value_kind": "balance"
+   "value_kind": "balance",
+   "column_exclude_patterns": [
+    "부채|기술|투입변수|평가기법"
+   ]
+  },
+  {
+   "id": "FVOCI_EQUITY",
+   "topic": "fvoci",
+   "label_patterns": [
+    "(지분|주식|출자)"
+   ],
+   "regions": [
+    "note:^(?!.*(당기손익|상각후원가|관계기업|종속기업|매각예정)).*기타포괄손익(.?공정가치|인식|으로인식)"
+   ],
+   "note_title_required": true,
+   "exclude_patterns": [
+    "채무|채권|사채|국공채|수익증권|펀드|신종자본|전환|상환|파생|관계기업|종속기업|주식회사|㈜|당기손익|상각후원가|비지배|지분법|부채",
+    "평가|처분|대체|취득|증가|감소|배당|(?<!당기)(?<!포괄)손익|이익|손실|법인세|이연|담보|주식수|주당|지분율|매각예정",
+    "합계|소계|총계"
+   ],
+   "context_exclude_patterns": [
+    "당기손익|상각후원가|채무|채권|매각예정"
+   ],
+   "table_exclude_patterns": [
+    "당기손익|상각후원가|배당|수익|(?<!포괄)손익|처분|변동|증감|재분류|대체|제거|손상|평가|서열|수준|위험|민감도|담보|법인세|이연|인식(된|한)금액|포괄손익(으로|에)|미실현"
+   ],
+   "column_exclude_patterns": [
+    "취득|원가|평가|(?<!포괄)손익|지분율|주식수|비율|%|증감|처분|대체|기초|배당|손상|수준|Level|미실현|누계|변동|액면금액|순자산|자본금",
+    "부채|기술|투입변수|평가기법"
+   ],
+   "value_kind": "balance",
+   "why": "c12(s056 성우하이텍): 주석 제목이 FVOCI(당기손익·상각후원가·관계기업 함께 쓴 주석 제외)인 주석 안의 지분·주식·출자 행. 주석 제목을 모르는 표는 받지 않는다",
+   "own_label_only": true,
+   "yields_to_total": true
+  },
+  {
+   "id": "FVOCI_EQUITY",
+   "topic": "fvoci",
+   "label_patterns": [
+    "(지분|주식|출자)"
+   ],
+   "column_patterns": [
+    "^(?!.*(평가|처분|배당|취득|원가|변동|증감|(?<!포괄)손익)).*기타포괄손익.?공정가치(측정)?$",
+    "^(?!.*(평가|처분|배당|취득|원가|변동|증감|(?<!포괄)손익)).*기타포괄손익(.?공정가치|인식|으로인식).*(금융|자산|상품|항목)"
+   ],
+   "regions": [
+    "note:금융상품|공정가치|금융자산|기타포괄"
+   ],
+   "note_title_required": true,
+   "exclude_patterns": [
+    "채무|채권|사채|국공채|수익증권|펀드|신종자본|전환|상환|파생|관계기업|종속기업|주식회사|㈜|당기손익|상각후원가|비지배|지분법|부채",
+    "평가|처분|대체|취득|증가|감소|배당|(?<!당기)(?<!포괄)손익|이익|손실|법인세|이연|담보|주식수|주당|지분율|매각예정"
+   ],
+   "context_exclude_patterns": [
+    "당기손익|상각후원가|채무|채권|매각예정"
+   ],
+   "table_exclude_patterns": [
+    "순손익|금융수익|금융비용|배당|처분|변동|증감|재분류|대체|제거|손상|민감도|담보|법인세|이연|평가손익|(?<!당기)(?<!포괄)손익|인식(된|한)금액|미실현"
+   ],
+   "value_kind": "balance",
+   "why": "c12(s058 효성티앤씨): 지분 행 × FVOCI 열(옛 낱말 「기타포괄손익인식금융자산」, 「공정가치평가를 기타포괄손익으로 인식하는 금융자산」 포함)",
+   "yields_to_total": true,
+   "column_exclude_patterns": [
+    "부채|기술|투입변수|평가기법"
+   ]
   },
   {
    "id": "FVOCI_EQUITY",
@@ -469,7 +577,7 @@
     "note:금융상품|공정가치|기타포괄|금융자산"
    ],
    "table_patterns": [
-    "기타포괄손익.?공정가치",
+    "기타포괄손익(.?공정가치|인식|으로인식)",
     "지분|주식|출자"
    ],
    "table_exclude_patterns": [
@@ -493,7 +601,44 @@
    "why": "표 제목(또는 바로 아래 소제목 행)이 「기타포괄손익-공정가치 + 지분상품·주식·출자」인 표의 합계 행(합계 없으면 한 행짜리 표만) — 행이 투자처 이름뿐인 표(T6b)",
    "section_patterns": [
     "지분|주식|출자|^\\(?(기타)?(비?유동(항목|자산|금융자산)?|국내|해외)(법인)?\\)?$|^기타포괄손익.?공정가치.*$|^\\(?단위.*$"
-   ]
+   ],
+   "table_text_note": true
+  },
+  {
+   "id": "FVOCI_EQUITY",
+   "topic": "fvoci",
+   "mode": "table_total",
+   "label_patterns": [],
+   "regions": [
+    "note:^(?!.*(당기손익|상각후원가|관계기업|종속기업|매각예정)).*기타포괄손익(.?공정가치|인식|으로인식)"
+   ],
+   "table_patterns": [
+    "기타포괄손익(.?공정가치|인식|으로인식)"
+   ],
+   "table_exclude_patterns": [
+    "채무|채권|사채|국공채|당기손익|상각후원가|배당|수익|(?<!포괄)손익|처분|변동|증감|재분류|대체|제거|손상|평가|서열|수준|위험|민감도"
+   ],
+   "row_exclude_patterns": [
+    "채무|채권|사채|국공채|당기손익|상각후원가|평가(손익|이익|손실|차익|차손)|처분|배당|^기초|^취득|대체|재분류|법인세|이연|수익증권|매각예정|국채|공채|금융채|특수채|수익권|(?<![A-Za-z])CP(?![A-Za-z])|어음|파생|투자조합|펀드|투자신탁|신탁|ELS|DLS|예금|대여금"
+   ],
+   "column_patterns": [
+    "^(기말)?(순)?장부(금|가)액(\\(.*\\))?$",
+    "^공정가치(\\(.*\\))?$",
+    "^(합계|총계|계|금액|기말잔액|잔액)$"
+   ],
+   "column_exclude_patterns": [
+    "취득|원가|평가|(?<!포괄)손익|지분율|주식수|비율|%|증감|처분|대체|기초|배당|손상|수준|Level|미실현|누계|변동|액면금액|순자산|자본금"
+   ],
+   "replaces": [
+    "FVOCI_FA_TOTAL"
+   ],
+   "value_kind": "balance",
+   "why": "c12(s059 삼라마이다스): 주석·표 제목이 FVOCI 이고 금액 행 절반 이상이 투자처 이름(㈜·주식회사·조합…)인 표의 합계 행(제목에 지분 낱말 없음). 채무·수익증권·펀드 행이 있으면 안 쓴다",
+   "section_patterns": [
+    "지분|주식|출자|^\\(?(기타)?(비?유동(항목|자산|금융자산)?|국내|해외)(법인)?\\)?$|^기타포괄손익.?공정가치.*$|^\\(?단위.*$"
+   ],
+   "note_title_required": true,
+   "entity_rows": true
   },
   {
    "id": "FVPL_EQUITY",

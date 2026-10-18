@@ -87,6 +87,10 @@ class Concept:
     column_exclude_patterns: tuple = ()  # 열 머리글 어느 단계에도 있으면 안 됨(table_total, 행 이름 개념 모두)
     section_patterns: tuple = ()  # table_total: 값 빈 구획 머리 행은 모두 이 중 하나에 맞아야 함(지분·중립 머리)
     replaces: tuple = ()  # table_total: 같은 칸에 이 개념만 걸려 있으면 대신한다
+    note_title_required: bool = False  # c12: 주석 제목으로만 구간을 맞춘다(주석 제목 모름·표 제목만 맞음은 안 받음)
+    table_text_note: bool = False  # c12 table_total: table_patterns 를 주석 제목에도 맞춘다(주석 제목이 table_exclude 에 안 걸릴 때)
+    entity_rows: bool = False  # c12 table_total: 금액 행 절반 이상이 투자처 이름(㈜·주식회사·조합·Inc…)인 표만
+    yields_to_total: bool = False  # c12 행 개념: 같은 표에서 같은 id 의 table_total 이 걸리면 그 합계 행에 양보한다
     topic: str = ""
     version: str = ""
     _rx: dict = field(default_factory=dict, compare=False, hash=False, repr=False)
@@ -120,6 +124,10 @@ def load_concepts(path: Path | None = None) -> list[Concept]:
                            column_exclude_patterns=tuple(c.get("column_exclude_patterns") or ()),
                            section_patterns=tuple(c.get("section_patterns") or ()),
                            replaces=tuple(c.get("replaces") or ()),
+                           note_title_required=bool(c.get("note_title_required")),
+                           table_text_note=bool(c.get("table_text_note")),
+                           entity_rows=bool(c.get("entity_rows")),
+                           yields_to_total=bool(c.get("yields_to_total")),
                            topic=c.get("topic", ""),
                            version=version))
     return out
@@ -184,6 +192,8 @@ def _region_match(concept: Concept, table: dict) -> tuple[bool, bool, bool]:
             title_only = True
         elif not nt:
             unknown = True
+    if concept.note_title_required:  # c12: 주석 제목이 맞을 때만(위에서 이미 돌려줌)
+        return False, False, False
     if title_only:
         return True, False, True
     if unknown:
@@ -396,6 +406,10 @@ def _candidates(table: dict, concepts: list[Concept]):
     regions = [(ok and not (c.row_exclude_patterns and not c.mode
                             and any(rx.search(n) for rx in c.rx("row_exclude_patterns") for n in all_names)), unk)
                for c, (ok, unk) in zip(concepts, regions)]
+    # 행 이름 개념의 table_exclude_patterns(c12): 표 제목에 걸리면 그 표에는 이 개념을 쓰지 않는다(변동·손익 표)
+    regions = [(ok and not (c.table_exclude_patterns and not c.mode
+                            and any(rx.search(title) for rx in c.rx("table_exclude_patterns"))), unk)
+               for c, (ok, unk) in zip(concepts, regions)]
     out: dict = {}
     for i, row in enumerate(rows):
         label, path_parents, joined = _row_texts(row)
@@ -463,6 +477,10 @@ def _table_total(c: Concept, order: int, table: dict, cols: dict, has_end: bool,
     title = _WS_RE.sub("", table.get("title") or "")
     sub = norm_label(rows[0].get("label")) if rows and _is_blank_header(rows[0]) else ""
     text = title + " " + sub
+    if c.table_text_note:  # c12: 「(3) 시장성 있는 지분증권의 내역」 표는 주석 제목이 FVOCI 다(성우하이텍 s056)
+        nt = _WS_RE.sub("", (table.get("region") or {}).get("note_title") or "")
+        if nt and not any(rx.search(nt) for rx in c.rx("table_exclude_patterns")):
+            text = nt + " " + text
     if not all(rx.search(text) for rx in c.rx("table_patterns")):
         return
     if any(rx.search(t) for rx in c.rx("table_exclude_patterns") for t in (title, sub) if t):
@@ -475,8 +493,13 @@ def _table_total(c: Concept, order: int, table: dict, cols: dict, has_end: bool,
     if sec_rx and any(_is_blank_header(r) and not any(rx.search(norm_label(r.get("label"))) for rx in sec_rx)
                       for r in rows):
         return  # 뒤쪽 구획(「수익증권」「기타」)이 지분이 아니면 합계가 다른 것을 담는다 — 첫 소제목만 보면 안 된다
-    if any(x[2].id == c.id for cs in out.values() for x in cs):
+    if any(x[2].id == c.id and not x[2].yields_to_total for cs in out.values() for x in cs):
         return  # 행 이름으로 이미 걸렸다(「기타포괄손익-공정가치측정 지분상품」 행 + 합계) — 겹쳐 내지 않는다
+    if c.entity_rows:  # c12: 투자처 이름 표(삼라마이다스 s059) — 금액 행 둘 이상, 절반 이상이 회사·조합 이름
+        items = [r for r in rows if r.get("kind") == "item" and _is_amount_row(table, r)]
+        named = [r for r in items if _ENTITY_RE.search(r.get("label") or "")]
+        if len(items) < 2 or 2 * len(named) < len(items):
+            return
     totals = [i for i, r in enumerate(rows) if r.get("kind") == "total"]
     if totals:
         if len(totals) != 1 or not _TOTAL_LABEL_RE.match(norm_label(rows[totals[0]].get("label"))):
@@ -491,6 +514,7 @@ def _table_total(c: Concept, order: int, table: dict, cols: dict, has_end: bool,
         idx, basis = items[0], "table_single_row"
     row = rows[idx]
     row_period = _row_period(row)
+    extra = _total_parts(table, idx) if basis == "table_total" else {}
     picked = []
     for cell in row.get("cells") or []:
         col = cols.get(cell["col"])
@@ -513,6 +537,11 @@ def _table_total(c: Concept, order: int, table: dict, cols: dict, has_end: bool,
     by_period: dict = {}
     for p in picked:
         by_period.setdefault(p[2], []).append(p)
+    if picked:  # c12: 양보하는 행 개념(FVOCI 주석의 지분 행)은 합계 행이 걸린 표에서 빠진다(합계 + 구성 행 이름이 근거)
+        for key in list(out):
+            out[key] = [x for x in out[key] if not (x[2].yields_to_total and x[2].id == c.id)]
+            if not out[key]:
+                del out[key]
     for group in by_period.values():
         if len(group) > 1:
             group = ([p for p in group if re.search(r"장부", _header_last(p[1]))]
@@ -521,7 +550,42 @@ def _table_total(c: Concept, order: int, table: dict, cols: dict, has_end: bool,
             key = (idx, cell["col"])
             if any(x[2].id not in c.replaces for x in out.get(key, [])):
                 continue  # 행 이름으로 걸린 다른 개념이 앞선다
-            out[key] = [(0, order, c, period, inferred, row, cell, col, basis)]
+            out[key] = [(0, order, c, period, inferred, row, cell, col, basis, extra)]
+
+
+# 투자처 이름 표지(c12): 회사·조합·법인 이름
+_ENTITY_RE = re.compile(r"㈜|\(주\)|주식회사|유한(책임)?회사|\(유\)|조합|협회|재단|공사$|Inc\b|INC\b|Ltd|LTD|L\.L\.C|LLC|Corp|CORP"
+                        r"|Co\.|CO\.|GmbH|Limited|LIMITED|Pte|PTE|B\.V|S\.A|JSC|\bAG\b|Company|Holdings|Technologies")
+# 합계가 더한 행 이름에서 뗄 뒤 표지(「(주1)」「(*1)」). 회사 이름의 「(주)」는 남긴다
+_COMP_TAIL_RE = re.compile(r"(?:\s|\(\*\d*\)|\*\d*\)?|\(주(?:석[\d,\s~-]*|\d+)\)|주\d+\))+$")
+_COMPONENTS_MAX = 30
+
+
+def _clean_component(label: str) -> str:
+    return _COMP_TAIL_RE.sub("", _WS_RE.sub(" ", (label or "").strip())).strip()
+
+
+def _total_parts(table: dict, idx: int) -> dict:
+    """합계 행이 더한 것(c12, 회계사 두 명 요청): 같은 표의 앞쪽(앞 합계 행 뒤부터) 금액 item 행 이름. 그 사이에 소계 행이
+    있으면 소계가 묶은 구획 이름(값 빈 머리 행)을 대신 쓴다. 구획 이름은 합계 행 경로의 부모, 없으면 구획이 하나일 때 그
+    머리 행. 근거 줄이 「합계」만 보이지 않게 한다."""
+    rows = table.get("rows") or []
+    start = 0
+    for k in range(idx - 1, -1, -1):
+        if rows[k].get("kind") == "total":
+            start = k + 1
+            break
+    span = rows[start:idx]
+    heads = [_clean_component(r.get("label")) for r in span if _is_blank_header(r)]
+    if any(r.get("kind") == "subtotal" for r in span) and heads:
+        comps, section = heads, None
+    else:
+        comps = [_clean_component(r.get("label")) for r in span if r.get("kind") == "item" and _is_amount_row(table, r)]
+        section = heads[0] if len(heads) == 1 else None
+    path = [p for p in (rows[idx].get("label_path") or [])[:-1] if p]
+    if path:
+        section = _clean_component(path[-1])
+    return {"components": comps[:_COMPONENTS_MAX], "components_total": len(comps), "section": section}
 
 
 def _prefer_total_columns(picked: list) -> list:
@@ -554,6 +618,7 @@ def extract_facts(tables: list[dict], concepts: list[Concept], *, stats: Counter
             cs.sort(key=lambda x: (x[0], x[1]))
             level, _order, c, period, inferred, row, cell, col = cs[0][:8]
             basis_kind = cs[0][8] if len(cs[0]) > 8 else None
+            extra = cs[0][9] if len(cs[0]) > 9 else None
             rivals = sorted({x[2].id for x in cs[1:] if x[0] == level and x[2].id != c.id})
             if rivals and stats is not None:
                 if i not in conflict_rows:
@@ -586,6 +651,8 @@ def extract_facts(tables: list[dict], concepts: list[Concept], *, stats: Counter
                 fact["period_inferred"] = True
             if basis_kind:
                 fact["match_basis"] = basis_kind
+            if extra:
+                fact.update(extra)
             _ok, unknown, title_only = _region_match(c, table)
             if unknown:
                 fact["region_unknown"] = True
@@ -801,7 +868,8 @@ def _sentence_fact(filing: dict, p: dict, scope: str, period: str, amt: str, uni
 
 _MARKER_LABEL = {"IP_FV_MODEL": "투자부동산 공정가치 모형", "IP_FV_NO_MATERIAL_DIFF": "투자부동산 공정가치·장부금액 차이 없음(문장)",
                  "IP_FV_LEADIN": "투자부동산 공정가치 공시 머리 문장",
-                 "IP_FV_MODEL_BLOCKED": "투자부동산 공정가치 모형 문장(원가모형 근거와 충돌)"}
+                 "IP_FV_MODEL_BLOCKED": "투자부동산 공정가치 모형 문장(원가모형 근거와 충돌)",
+                 "FVOCI_DESIGNATION_STMT": "기타포괄손익-공정가치 지정 문장"}
 # 「투자부동산의 공정가치는 다음과 같습니다」 — 공정가치 표가 뒤따른다(금액을 못 읽어도 공시는 했다)
 _IP_FV_LEADIN = re.compile(r"투자부동산[^.]{0,30}공정가치[^.]{0,30}다음과\s*같")
 
@@ -814,6 +882,66 @@ def _model_fact(filing: dict, p: dict, scope: str, version: str, concept: str = 
             "source": {"sentence_id": p.get("id"), "page": p.get("page"), "file": p.get("file")},
             "source_status": "sentence", "concepts_version": version, "match_basis": "sentence",
             "text": (p.get("text") or "").strip()[:300]}
+
+
+# ---------- FVOCI 지정 문장(c12) ----------
+# 회사가 보유 지분상품을 FVOCI 로 지정했다는 직접 문장(회계사 두 명: s055·s056·s058 근거). 일반 정책 「지정할 수 있다」는
+# 근거가 아니다(두 명 모두). 보유 내역 주석(회계정책·작성기준 주석이 아닌 주석)의 문장만 쓴다. 문단은 앞쪽 「N. 제목」
+# 문단으로 주석을 알고, 값 열 없는 글 표는 그 표의 주석 제목을 쓴다. 주석을 모르면 쓰지 않는다.
+_FV_DESIG = re.compile(r"취소\s*(불가능한|불가)\s*선택(권)?을\s*(적용|하였|했|선택)"
+                       r"|기타포괄손익[^.]{0,30}?(으로|로)\s*(인식|표시)하도록\s*지정(하였|했)"
+                       r"|기타포괄손익[^.]{0,40}?(으로|로)\s*지정(하였|했|하고\s*있)")
+_FV_DESIG_NEG = re.compile(r"할\s*수\s*있|지정하지|지정되지|않았|않습니다|피투자|관계기업|종속기업")
+_FV_DESIG_EQ = re.compile(r"지분|주식")
+_NOTE_HEAD = re.compile(r"^\s*(\d{1,2})\s*\.\s*([^\d\s].{1,})")
+_POLICY_NOTE = re.compile(r"회계정책|작성\s*기준|재무제표의?\s*작성|회계처리\s*방침|회계기준|일반\s*사항|회사의\s*개요")
+_SENT_END = re.compile(r"(?<=[다\)]\.)\s*")
+
+
+def _fv_designation(text: str) -> str | None:
+    """글 하나에서 FVOCI 지정 문장(문장 하나)."""
+    if "기타포괄손익" not in (text or ""):
+        return None
+    for sent in _SENT_END.split(text):
+        if "기타포괄손익" in sent and _FV_DESIG_EQ.search(sent) and _FV_DESIG.search(sent) \
+                and not _FV_DESIG_NEG.search(sent):
+            return sent.strip()
+    return None
+
+
+def _fv_designation_facts(filing: dict, by_file: dict, version: str) -> list[dict]:
+    out, seen = [], set()
+    head: dict = {}
+    cands = []
+    for p in filing.get("paragraphs") or []:
+        text = p.get("text") or ""
+        m = _NOTE_HEAD.match(text)
+        if m and len(text) < 150:
+            head[p.get("file")] = m.group(2)
+        sent = _fv_designation(text)
+        if sent:
+            cands.append((head.get(p.get("file")), _file_scope(p.get("file") or "", by_file),
+                          {"sentence_id": p.get("id"), "page": p.get("page"), "file": p.get("file")}, sent))
+    for t in filing.get("tables") or []:
+        if any(c.get("role") == "value" for c in t.get("columns") or []):
+            continue  # 값 열 없는 글 표의 제목만(효성티앤씨 t614)
+        sent = _fv_designation(t.get("title") or "")
+        if sent:
+            region = t.get("region") or {}
+            cands.append((region.get("note_title") if region.get("kind") == "note" else None,
+                          t.get("fs_scope") or _file_scope(t.get("file") or "", by_file),
+                          {"sentence_id": f"t:{t.get('table_id')}:title", "page": t.get("page"), "file": t.get("file")},
+                          sent))
+    for note, scope, src, sent in cands:
+        if not note or not scope or _POLICY_NOTE.search(note) or scope in seen:
+            continue
+        seen.add(scope)
+        out.append({"rcept_no": filing.get("rcept_no"), "amends_rcept_no": filing.get("amends_rcept_no"), "fs_scope": scope,
+                    "concept": "FVOCI_DESIGNATION_STMT", "period": "current_end", "amount": None, "unit_kind": None,
+                    "amount_krw": None, "label": _MARKER_LABEL["FVOCI_DESIGNATION_STMT"], "label_path": [], "column": "",
+                    "target": None, "target_basis": None, "source": src, "source_status": "sentence",
+                    "concepts_version": version, "match_basis": "sentence", "note_title": note, "text": sent[:300]})
+    return out
 
 
 def sentence_facts(filing: dict, *, concepts_path: Path | None = None) -> list[dict]:
@@ -869,4 +997,5 @@ def sentence_facts(filing: dict, *, concepts_path: Path | None = None) -> list[d
                 continue
             seen.add((scope, period))
             out.append(_sentence_fact(filing, p, scope, period, amt, unit, version))
+    out += _fv_designation_facts(filing, by_file, version)  # c12
     return out

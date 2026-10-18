@@ -12,7 +12,8 @@ meta 키(모두 선택):
   tables                      {table_id: {"note_no","note_title","kind","multiplier"}} — 근거 줄의 주석·단위
   movement_table              무형자산 주석에 변동표가 있는가(None 이면 증가·상각 사실로 짐작)
   category_table              금융상품 범주표가 있는가(내재파생 NOT_APPLICABLE 의 조건)
-  read_failed_topics          관련 주석 표를 읽지 못한 주제 집합
+  read_failed_topics          관련 잔액표·범주표(또는 제목 없는 표)를 읽지 못한 주제 집합(r5)
+  read_failed_any_topics      관련 주석 표를 하나라도 읽지 못한 주제 집합 — 「없음」 값만 막는다(r5)
   instruments_targeted        이 공시·범위가 2층 ② 사채·우선주 대상이었는가(어느 실행이든 skipped 아닌 줄, R35)
   v1_ppa                      옛 topic_judge 의 PPA_MEASUREMENT_PERIOD 행(Q7 유지)
 """
@@ -39,6 +40,8 @@ _STATEMENT_LABEL = {"statement_bs": "재무상태표", "statement_is": "손익�
 _FIELD_LABEL = {"equity_component": "자본요소", "derivative_liability": "파생상품부채",
                 "derivative_asset": "파생상품자산", "host_carrying": "부채요소", "face": "액면"}
 _SENT_SPLIT_RE = re.compile(r"(?<=다\.)\s*")
+_COMPONENTS_SHOWN = 4
+_WS_RE = re.compile(r"\s+")
 _CELL_RE = re.compile(r"^(?P<tid>.+):r(?P<row>\d+):c(?P<col>\d+)$")
 
 
@@ -55,6 +58,10 @@ def _load(path: str) -> dict:
     rx["whole_fvpl"] = re.compile(j["whole_fvpl_designation_statement"]["pattern"])
     rx["ip_fv_sentence"] = re.compile(j["ip_fair_value_in_sentence"])
     rx["bc_accounts"] = {v: re.compile(p) for v, p in j["bc_cost_accounts"].items()}
+    pp = j["ppa_provisional_statement"]
+    rx["ppa_prov"] = tuple(re.compile(pp[k]) for k in ("pattern", "requires", "exclude"))
+    rb = j["read_failed_blocking"]
+    rx["rf_nonbalance"], rx["rf_balance"] = re.compile(rb["nonbalance"]), re.compile(rb["balance"])
     j["rx"] = rx
     return j
 
@@ -171,6 +178,15 @@ def evidence_line(fact: dict, tables: dict | None = None) -> str:
         where.append(head)
     where = [w for w in where if w]
     label = (fact.get("label") or fact.get("concept") or "").strip()
+    path = [p.strip() for p in fact.get("label_path") or [] if p and p.strip()]
+    if fact.get("concept") == "FVOCI_EQUITY" and len(path) > 1 and not fact.get("components"):
+        # c12: 경로(「금융자산 / 비상장 주식 / 수준 3」)로 걸린 지분 행은 경로를 보인다(행 이름만으로는 무엇인지 모름)
+        label = " / ".join(dict.fromkeys(path))
+    comps = fact.get("components") or []
+    if comps:  # c12: 합계 행은 무엇의 합계인지(구획·더한 행 이름) 보인다(회계사 두 명, s055·S053)
+        n = max(fact.get("components_total") or 0, len(comps))
+        shown = "·".join(comps[:_COMPONENTS_SHOWN]) + (f" 외 {n - _COMPONENTS_SHOWN}건" if n > _COMPONENTS_SHOWN else "")
+        label = " ".join(x for x in (fact.get("section"), f"{label}(구성: {shown})") if x)
     return f"{label} {amt}" + (f" ({', '.join(where)})" if where else "")
 
 
@@ -459,14 +475,34 @@ def _consensus(ctx: Ctx, topic: str, runs: tuple, fn) -> dict | None:
 
 # ---------------------------------------------------------------- 주제별 사실 판정
 
+def _fvoci_stmt(ctx: Ctx) -> list[dict]:
+    """회사가 보유 지분상품을 FVOCI 로 지정했다는 직접 문장(c12 2층 문장 사실, 보유 내역 주석의 문장만)."""
+    return [f for f in ctx.facts if f.get("concept") == "FVOCI_DESIGNATION_STMT"]
+
+
 def _fvoci(ctx: Ctx) -> dict | None:
     topic = "FVOCI_DESIGNATION"
     eq = _pos(ctx.facts, "FVOCI_EQUITY")
     reserve = _nonzero(ctx.facts, "FVOCI_EQUITY_RESERVE")
+    stmt = _fvoci_stmt(ctx)
     if eq or reserve:
         cur = [f for f in eq + reserve if _side(f) == "current"]
-        return _from_facts("DESIGNATED", cur or (eq + reserve), ctx.tables)
+        res = _from_facts("DESIGNATED", cur or (eq + reserve), ctx.tables)
+        if stmt:  # r5: 지정 문장도 근거로 붙인다
+            res["evidence"] = f"{res['evidence']} / 지정 문장: {(stmt[0].get('text') or '').strip()[:200]}"
+            res["source_refs"].append(_fact_ref(stmt[0]))
+        return res
     total = _pos(ctx.facts, "FVOCI_FA_TOTAL") + _nonzero(ctx.facts, "FVOCI_FA_RESERVE")
+    held = _pos(ctx.facts, "FVOCI_FA_TOTAL")
+    if stmt and held:
+        # r5(회계사 두 명 s056·s058): 「…지정하는 취소불가능한 선택권을 적용하였습니다」 「…기타포괄손익으로 인식하도록
+        # 지정하였습니다」 — 지분상품 지정을 회사가 직접 밝힌 문장 + FVOCI 금융자산 잔액(0 초과). 총액만 있어 지분인지
+        # 모르던 것을 정한다. 문장만으로는 정하지 않는다: 지정 후 전량 처분해 기말 잔액이 없을 수 있다(s052 우리벤처파트너스).
+        # basis_period 는 잔액의 기간(당기 우선)
+        best = _pick(held)
+        return _res("DESIGNATED", evidence=f"{(stmt[0].get('text') or '').strip()[:300]} / {evidence_line(best, ctx.tables)}",
+                    basis=_basis(held), refs=[_fact_ref(stmt[0])] + [_fact_ref(f) for f in held], kind="company_statement",
+                    heading=_heading((best.get("source") or {}).get("table_id"), ctx.tables))
     fvpl = _pos(ctx.facts, "FVPL_EQUITY")
     if fvpl and not total:
         return _from_facts("NOT_DESIGNATED", fvpl, ctx.tables)
@@ -474,8 +510,8 @@ def _fvoci(ctx: Ctx) -> dict | None:
         return ctx.und(topic, "fvoci_total_only")
     if _pos(ctx.facts, "FVOCI_DEBT") or _nonzero(ctx.facts, "FVOCI_DEBT_RESERVE"):
         return ctx.und(topic, "fvoci_debt_only")
-    if _topic_facts(ctx, topic):
-        return ctx.und(topic, "fvoci_no_equity")
+    if [f for f in _topic_facts(ctx, topic) if f.get("concept") != "FVOCI_DESIGNATION_STMT"]:
+        return ctx.und(topic, "fvoci_no_equity")  # 지정 문장(금액 없음)만으로는 사유를 바꾸지 않는다(r5)
     return ctx.und(topic, None)
 
 
@@ -644,6 +680,10 @@ def _ppa(ctx: Ctx) -> dict | None:
     if ctx.meta.get("ppa_scope") and ctx.meta["ppa_scope"] != ctx.fs_scope:
         return None
     v1 = ctx.meta.get("v1_ppa")
+    if not v1 or (v1.get("value") or UND) == UND:
+        prov = _ppa_provisional(ctx)
+        if prov:
+            return prov
     if not v1:
         return ctx.und(topic, None)
     value = v1.get("value") or UND
@@ -660,6 +700,24 @@ def _ppa(ctx: Ctx) -> dict | None:
     if value != UND and not res["basis_period"]:
         res["basis_period"] = "current"  # v1 문장은 이 보고서의 문장 — 당기(I2)
     return res
+
+
+def _ppa_provisional(ctx: Ctx) -> dict | None:
+    """r5(회계사 두 명 s136 코웨이): 「연결회사의 사업결합 회계처리는 당기말 현재 잠정금액을 보고한 것으로 …」 — 회사 문장
+    (정책 표시로 잡혀도)이 당기말 잠정을 직접 말하고, 공시에 사업결합 표(이전대가·순자산 공정가치, 기간 무관)가 있으면
+    PROVISIONAL. 측정기간 정책 형태(「완료되지 못한다면」)·확정으로 조정된 문장·관계기업 지분 문장은 아니다.
+    v1 이 정한 값(FINAL·PROVISIONAL 등)은 바꾸지 않는다(_ppa 가 v1 UND·없음일 때만 부른다)."""
+    pat, req, exc = ctx.rx["ppa_prov"]
+    bc = [f for f in ctx.facts if f.get("concept") in ("BC_CONSIDERATION", "BC_NET_ASSETS_FV")
+          and _num(f.get("amount")) != 0]
+    if not (bc or ctx.meta.get("bc_table_filing")):
+        return None
+    for m in _topic_marks(ctx.marks, "PPA_MEASUREMENT_PERIOD"):
+        for sent in _SENT_SPLIT_RE.split(m.get("text") or ""):
+            if pat.search(sent) and req.search(sent) and not exc.search(sent):
+                return _res("PROVISIONAL", evidence=sent.strip()[:300], basis="current",
+                            refs=[m.get("sentence_id")] + [_fact_ref(f) for f in bc], kind="company_statement")
+    return None
 
 
 def _bc_cost(ctx: Ctx) -> dict | None:
@@ -695,6 +753,18 @@ def _table_head(t: dict) -> str:
     return " ".join([region.get("note_title") or "", t.get("title") or ""])
 
 
+def _rf_blocks(t: dict, rules: dict) -> bool:
+    """r5: 읽지 못한 표가 주제를 막는가 — 잔액표·범주표(제목에 장부금액·내역·범주…)만. 발행조건·계약 내용·변동·손익
+    표는 막지 않는다(회계사 두 명 s039: 발행조건 표 하나로 판단불가). 제목이 없는 표는 무슨 표인지 몰라 막는다.
+    막지 않는 표도 read_failed_any_topics 에 남아 「없음」 값(해당 없음·지정 안 함 등)은 계속 막는다."""
+    title = _WS_RE.sub("", t.get("title") or "")
+    if not title:
+        return True
+    if rules["rx"]["rf_nonbalance"].search(title):
+        return False
+    return bool(rules["rx"]["rf_balance"].search(title))
+
+
 def scope_meta(tables: list[dict], fs_scope: str, *, rules_path: Path | None = None) -> dict:
     """1층 표 기록(한 공시) → judge_filing meta 의 표 정보(그 fs_scope 표만).
 
@@ -708,7 +778,8 @@ def scope_meta(tables: list[dict], fs_scope: str, *, rules_path: Path | None = N
     mv_tokens = [re.compile(w) for w in mv["tokens"]]
     cat_note, cat_head, cat_row = re.compile(cat["note"]), re.compile(cat["head"]), re.compile(cat["row"])
     topic_notes = {t: re.compile(p) for t, p in rules["topic_notes"].items()}
-    out = {"tables": {}, "movement_table": False, "category_table": False, "read_failed_topics": set()}
+    out = {"tables": {}, "movement_table": False, "category_table": False, "read_failed_topics": set(),
+           "read_failed_any_topics": set()}
     for t in tables:
         if (t.get("fs_scope") or "") != fs_scope:
             continue
@@ -719,7 +790,10 @@ def scope_meta(tables: list[dict], fs_scope: str, *, rules_path: Path | None = N
         note = region.get("note_title") or ""
         head = _table_head(t)
         if t.get("status") == "read_failed":
-            out["read_failed_topics"].update(k for k, rx in topic_notes.items() if rx.search(head))
+            hit = {k for k, rx in topic_notes.items() if rx.search(head)}
+            out["read_failed_any_topics"].update(hit)
+            if _rf_blocks(t, rules):
+                out["read_failed_topics"].update(hit)
             continue
         labels = [r.get("label") or "" for r in t.get("rows") or []]
         if mv_note.search(note):
@@ -775,6 +849,9 @@ def judge_filing(rcept_no: str, fs_scope: str, facts: list[dict], instruments, m
         "BUSINESS_COMBINATION_COST_CLASS": _bc_cost(ctx),
     }
     failed = set(meta.get("read_failed_topics") or ())
+    # r5: 없음에 기댄 값(해당 없음 등)은 어떤 표든 못 읽었으면 여전히 막는다 — 잔액·범주표가 아닌 표를 못 읽은 것으로
+    # 새 「없음」 값이 생기지 않게(그 값들의 규칙은 회계사 의견이 갈려 이번 범위 밖)
+    failed_any = failed | set(meta.get("read_failed_any_topics") or ())
     absence = rules["read_failed_absence_values"]
     out = []
     for topic in TOPICS:
@@ -783,8 +860,8 @@ def judge_filing(rcept_no: str, fs_scope: str, facts: list[dict], instruments, m
             res = _res(UND, held="read_failed", evidence=ctx.reasons["read_failed"])
         if res is None:
             continue
-        if topic in failed and (res["value"] == UND and res["held_reason"] in ("no_facts", "policy_only")
-                                or res["value"] in absence.get(topic, ())):
+        if (topic in failed and res["value"] == UND and res["held_reason"] in ("no_facts", "policy_only")) \
+                or (topic in failed_any and res["value"] in absence.get(topic, ())):
             # 없음에 기댄 값(해당 없음 등)도 관련 주석 표를 읽지 못했으면 정할 수 없다(I1)
             res = _res(UND, held="read_failed", evidence=ctx.reasons["read_failed"])
         out.append(_row(rcept_no, fs_scope, topic, res, meta))

@@ -1,5 +1,5 @@
 {
-  "rules_version": "r4",
+  "rules_version": "r5",
   "exception_patterns": {
     "dev_amortization": {
       "topic": "DEV_COST_CAPITALIZATION",
@@ -33,7 +33,8 @@
         "FVOCI_DEBT",
         "FVOCI_DEBT_RESERVE",
         "FVOCI_FA_TOTAL",
-        "FVOCI_FA_RESERVE"
+        "FVOCI_FA_RESERVE",
+        "FVOCI_DESIGNATION_STMT"
       ],
       "DEV_COST_CAPITALIZATION": [
         "DEV_COST_ADDITION",
@@ -108,6 +109,17 @@
     "whole_fvpl_designation_statement": {
       "why": "d8: 복합계약(상품) 전체를 당기손익-공정가치로 지정했다는 문장 = 분리 안 함. 분리 근거와 함께 있으면 확인 필요(T11b W2). 「지정할 수 있」 같은 일반 정책, 「복합계약 전체를 고려」(SPPI)는 안 걸린다",
       "pattern": "(복합계약|상품|금융부채|우선주|사채)\\s*전체를\\s*당기손익[^.]{0,40}?지정(하였|했|하고\\s*있|되었|됐|되어\\s*있)"
+    },
+    "ppa_provisional_statement": {
+      "why": "r5(회계사 두 명 s136 코웨이): 회사 문장이 당기말(보고기간말) 현재 사업결합 회계처리가 잠정이라고 직접 말함 → PROVISIONAL(공시에 사업결합 표가 있고 v1 이 UND·없음일 때만). 측정기간 정책 형태(「완료되지 못한다면」), 확정으로 조정된 문장, 관계기업·지분법 문장은 아니다",
+      "pattern": "(당기말|보고기간\\s*말|보고기간\\s*종료일)\\s*현재[^.]{0,40}?잠정(\\s*금액|적으로|치)[^.]{0,40}?(보고|표시|산정|결정|인식|계상)",
+      "requires": "사업결합",
+      "exclude": "완료되지\\s*(못|않)(한다면|하는\\s*경우)|확정\\s*금액으로|확정되었|확정하였|관계기업|공동기업|유의적인\\s*영향력|지분법"
+    },
+    "read_failed_blocking": {
+      "why": "r5(회계사 두 명 s039): 읽지 못한 표는 잔액표·범주표일 때만 주제를 막는다. 공백 지운 표 제목에 맞춘다. 발행조건·계약·세부내용·변동·손익 표는 막지 않는다(nonbalance 가 먼저). 제목 없는 표는 무슨 표인지 몰라 막는다. 둘 다 아닌 제목(회차 이름 등)은 막지 않는다",
+      "nonbalance": "조건|주요사항|주요내용|계약|세부내용|발행내역|변동|증감|손익|수익|비용|민감도|가정|만기|일정|이자율|행사|전환가액|평가기법|투입변수|현금흐름",
+      "balance": "장부|잔액|내역|구성|현황|명세|범주|금액|내용|분류|합계"
     },
     "ip_fair_value_in_sentence": "공정가치[^.]{0,60}\\d{1,3}(,\\d{3})+",
     "bc_cost_accounts": {

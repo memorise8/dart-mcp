@@ -818,13 +818,18 @@ class T6bTest(unittest.TestCase):
         rows = [("국공채", [10, 8]), ("회사채", [5, 5]), ("합계", [15, 13])]
         self.assertEqual(self._equity(rows, title="(2) 기타포괄손익-공정가치 측정 채무상품"), [])
         rows = [("A사 주식", [10, 8]), ("B사 주식", [5, 5]), ("합계", [15, 13])]
-        self.assertEqual(self._equity(rows, title="기타포괄손익-공정가치 측정 지분상품 및 채무상품"), [])
+        # c12: 합계 행은 쓰지 않는다. 다만 FVOCI 주석 안의 지분 행(「A사 주식」)은 행 사실이 된다(성우하이텍 s056)
+        got = self._equity(rows, title="기타포괄손익-공정가치 측정 지분상품 및 채무상품")
+        self.assertEqual([f for f in got if f.get("match_basis") == "table_total"], [])
+        self.assertEqual({f["label"] for f in got}, {"A사 주식", "B사 주식"})
         self.assertEqual(self._equity(rows, title="당기손익-공정가치 및 기타포괄손익-공정가치 측정 지분상품"), [])
 
     def test_debt_row_in_equity_titled_table_no_fact(self):
         # 20260311004362 t082 모양: 제목은 지분증권 지정, 행에 「채무증권」 → 합계가 채무를 포함
         rows = [("시장성 없는 지분증권", [10, 8]), ("채무증권", [5, 5]), ("합 계", [15, 13])]
-        self.assertEqual(self._equity(rows, title="장기로 보유할 지분증권을 기타포괄손익-공정가치 측정 항목으로 지정하였습니다."), [])
+        # c12: 합계(채무 포함)는 쓰지 않고, 지분 행만 행 사실이 된다
+        got = self._equity(rows, title="장기로 보유할 지분증권을 기타포괄손익-공정가치 측정 항목으로 지정하였습니다.")
+        self.assertEqual({(f["label"], f["amount"]) for f in got}, {("시장성 없는 지분증권", 10), ("시장성 없는 지분증권", 8)})
 
     def test_fvpl_section_row_no_fact(self):
         # 20260311004398 t112 모양: 소제목은 FVOCI 이지만 같은 표에 당기손익-공정가치 구획
@@ -860,7 +865,9 @@ class T6bTest(unittest.TestCase):
         # 20260318001659 t099 모양: 뒤쪽 「매각예정자산」 구획
         rows = [("상장주식", [None, None]), ("㈜A", [10, 20]), ("비상장주식", [5, 5]), ("매각예정자산", [None, None]),
                 ("비상장주식(주2)", [0, 7]), ("합 계", [15, 32])]
-        self.assertEqual(self._equity(rows, title="기타포괄손익-공정가치 측정 금융자산 내역"), [])
+        # c12: 합계는 쓰지 않는다. 지분 행 「비상장주식」은 행 사실, 매각예정 구획 아래 행은 아니다
+        got = self._equity(rows, title="기타포괄손익-공정가치 측정 금융자산 내역")
+        self.assertEqual({(f["label"], f["amount"]) for f in got}, {("비상장주식", 5)})
         # 뒤쪽 구획이 지분도 중립도 아니면(「기타」) 사실 없음
         rows = [("상장주식", [None, None]), ("㈜A", [10, 20]), ("기타", [None, None]), ("B", [1, 1]), ("합계", [11, 21])]
         self.assertEqual(self._equity(rows, title="기타포괄손익-공정가치 측정 금융자산 내역"), [])
@@ -1111,7 +1118,7 @@ class T11bFix1Test(unittest.TestCase):
         return extract_facts(list(tables), self.concepts)
 
     def test_version_c10_or_later(self):  # c11 = 리스·투자부동산 수정(LeaseIpFixC11Test)
-        self.assertIn(self.concepts[0].version, ("c10", "c11"))
+        self.assertIn(self.concepts[0].version, ("c10", "c11", "c12"))
 
     def test_instrument_embedded_derivative_in_asset_column_not_liability(self):
         # 20260323001209 t106 모양: 열이 [당기말, 파생상품자산] / [당기말, 파생상품부채]
@@ -1163,9 +1170,9 @@ class LeaseIpFixC11Test(unittest.TestCase):
     def facts(self, *tables):
         return extract_facts(list(tables), self.concepts)
 
-    def test_version_c11(self):
+    def test_version_c11_or_later(self):
         meta = json.loads(CONCEPTS_PATH.read_text(encoding="utf-8"))
-        self.assertEqual(meta["concepts_version"], "c11")
+        self.assertIn(meta["concepts_version"], ("c11", "c12"))
 
     def test_starflex_low_value_recognition_exemption_row(self):
         # s088 스타플렉스 20260323001102 주석 13 사용권자산(연결, 천원): 소액기초자산 인식면제 행을 못 읽어 SHORT_TERM 이었다
@@ -1277,7 +1284,7 @@ class IpFairValueSentenceTest(unittest.TestCase):
                           ("consolidated", "current_end", 15857, 15857000000, "s1186")})
         for f in got:
             self.assertEqual((f["concept"], f["unit_kind"], f["match_basis"]), ("IP_FAIR_VALUE", "krw", "sentence"))
-            self.assertEqual(f["concepts_version"], "c11")
+            self.assertIn(f["concepts_version"], ("c11", "c12"))
 
     def test_prior_in_parentheses_and_units(self):
         from dart_search_mcp.ledger.facts import sentence_facts
@@ -1492,6 +1499,319 @@ class IpFairValueSentenceTest(unittest.TestCase):
         tables = [{"file": "R.xml", "fs_scope": "consolidated"}]
         got = sentence_facts(_filing([_p("s1", "당기말 현재 투자부동산의 공정가치는 1,643백만원입니다.", file="R.xml")], tables))
         self.assertEqual([f["fs_scope"] for f in got], ["consolidated"])
+
+
+
+class C12AgreedFixTest(unittest.TestCase):
+    """회계사 두 명이 같은 답을 준 v2 표본(10-19) 수정(c12) — 실제 표본의 표·문장 조각."""
+
+    def setUp(self):
+        self.concepts = load_concepts()
+
+    def facts(self, *tables):
+        return extract_facts(list(tables), self.concepts)
+
+    def test_version_c12(self):
+        meta = json.loads(CONCEPTS_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(meta["concepts_version"], "c12")
+
+    # ---- 1. FVOCI: FVOCI 주석 안의 지분 행 ----
+    def test_seongwoo_equity_rows_in_fvoci_note(self):
+        # s056 성우하이텍 20260319000729 연결 t043(천원): 행 이름에 FVOCI 낱말이 없고, 표 제목에도 지분이 없다
+        t = _table([("시장성 있는 지분증권", [22825786, 17809551]), ("시장성 없는 지분증권", [18315981, 17886521]),
+                    ("합 계", [41141767, 35696072])],
+                   note_title="기타포괄손익-공정가치측정금융자산", unit=KRW1000, headers=["당기말", "전기말"],
+                   title="7. 기타포괄손익-공정가치측정금융자산(1) 당기말과 전기말 현재 기타포괄손익-공정가치측정금융자산의 내역은 다음과 같습니다.")
+        got = {(f["label"], f["period"], f["amount"]) for f in _by(self.facts(t), "FVOCI_EQUITY")}
+        self.assertEqual(got, {("시장성 있는 지분증권", "current_end", 22825786), ("시장성 있는 지분증권", "prior_end", 17809551),
+                               ("시장성 없는 지분증권", "current_end", 18315981), ("시장성 없는 지분증권", "prior_end", 17886521)})
+
+    def test_equity_rows_outside_pure_fvoci_note_not_matched(self):
+        rows = [("시장성 있는 지분증권", [100, 90]), ("시장성 없는 지분증권", [50, 40]), ("합 계", [150, 130])]
+        for note in ("당기손익-공정가치측정금융자산", "당기손익-공정가치측정금융자산 및 기타포괄손익-공정가치측정금융자산",
+                     "금융자산", "관계기업투자"):
+            t = _table(rows, note_title=note, title="(1) 내역", headers=["당기말", "전기말"])
+            self.assertEqual(_by(self.facts(t), "FVOCI_EQUITY"), [], note)
+        # 주석 제목을 못 읽은 표(region_unknown)는 받지 않는다 — 행 이름만으로는 FVOCI 인지 알 수 없다
+        t = _table(rows, note_title=None, title="(1) 내역", headers=["당기말", "전기말"])
+        self.assertEqual(_by(self.facts(t), "FVOCI_EQUITY"), [])
+
+    def test_fvoci_note_debt_flow_or_entity_rows_not_equity_rows(self):
+        note = "기타포괄손익-공정가치측정금융자산"
+        t = _table([("채무증권", [10, 8]), ("국공채", [5, 5])], note_title=note, title="(1) 내역", headers=["당기말", "전기말"])
+        self.assertEqual(_by(self.facts(t), "FVOCI_EQUITY"), [])
+        # 변동표(제목에 변동)·평가손익 행은 잔액이 아니다
+        t = _table([("상장주식", [10, 8])], note_title=note, title="(2) 당기와 전기 중 기타포괄손익-공정가치측정금융자산의 변동 내역",
+                   headers=["당기말", "전기말"])
+        self.assertEqual(_by(self.facts(t), "FVOCI_EQUITY"), [])
+        t = _table([("지분상품 평가손익", [10, 8])], note_title=note, title="(1) 내역", headers=["당기말", "전기말"])
+        self.assertEqual(_by(self.facts(t), "FVOCI_EQUITY"), [])
+        # 투자처 이름 행(「…주식회사」)은 행 사실로 쓰지 않는다(합계 행 규칙이 맡는다)
+        t = _table([("삼성전자주식회사", [10, 8]), ("합계", [10, 8])], note_title=note, title="(1) 내역", headers=["당기말", "전기말"])
+        self.assertFalse([f for f in _by(self.facts(t), "FVOCI_EQUITY") if f["label"] == "삼성전자주식회사"])
+
+    # ---- 1. FVOCI: 표 제목 합계 행이 주석 제목도 본다 ----
+    def test_seongwoo_entity_table_total_uses_note_title(self):
+        # s056 성우하이텍 t045: 제목 「(3) … 시장성 있는 지분증권의 내역」(FVOCI 낱말 없음), 주석 제목이 FVOCI
+        t = _table([("현대제철(주)", [17631277, 17631277, 11952926]), ("(주)케이엔엔", [5193032, 5193032, 5855034]),
+                    ("KG모빌리티", [1477, 1477, 1591]), ("합 계", [22825786, 22825786, 17809551])],
+                   note_title="기타포괄손익-공정가치측정금융자산", unit=KRW1000,
+                   periods=("current_end", "current_end", "prior_end"),
+                   headers=[["당기말", "공정가치"], ["당기말", "장부금액"], ["전기말", "장부금액"]],
+                   title="(3) 당기말과 전기말 현재 시장성 있는 지분증권의 내역은 다음과 같습니다.")
+        got = _by(self.facts(t), "FVOCI_EQUITY")
+        self.assertEqual({(f["period"], f["amount"], f["column"]) for f in got},
+                         {("current_end", 22825786, "장부금액"), ("prior_end", 17809551, "장부금액")})
+        # 근거 줄이 무엇의 합계인지 보이게 합계 행이 더한 행 이름을 단다(회계사 두 명 요청, s055·S053)
+        self.assertEqual(got[0]["components"], ["현대제철(주)", "(주)케이엔엔", "KG모빌리티"])
+
+    def test_rochesystems_total_has_section_and_components(self):
+        # s055 로체시스템즈 20260317000688 연결 t051: 구획 「지분상품(비상장주식)」 + 투자처 3 + 합계
+        t = _table([("지분상품(비상장주식)", [None, None]), ("(주)베스테크(주1)", [1050000, 1050000]),
+                    ("(주)에이마크", [17215, 17215]), ("윈텔코퍼레이션(주)", [18329, 18329]), ("합계", [1085544, 1085544])],
+                   note_title="기타포괄손익-공정가치측정금융자산", unit=KRW1000, headers=["당기말", "전기말"],
+                   title="당기말 및 전기말 현재 기타포괄손익-공정가치측정금융자산의 내역은 다음과 같습니다.")
+        got = [f for f in _by(self.facts(t), "FVOCI_EQUITY") if f["period"] == "current_end"]
+        self.assertEqual([(f["label"], f["amount"], f["match_basis"]) for f in got], [("합계", 1085544, "table_total")])
+        self.assertEqual(got[0]["section"], "지분상품(비상장주식)")
+        self.assertEqual(got[0]["components"], ["(주)베스테크", "(주)에이마크", "윈텔코퍼레이션(주)"])
+
+    # ---- 1. FVOCI: 투자처 이름 표(제목·소제목에 지분 낱말 없음) ----
+    def _samla(self, extra=(), note_title="기타포괄손익-공정가치측정금융자산"):
+        rows = [(["비유동항목", "㈜한국경제신문"], [160638, 160638], 1), (["비유동항목", "㈜기협기술금융"], [300000, 300000], 1),
+                (["비유동항목", "에스엠중공업㈜"], [9597161, 7773589], 1), (["비유동항목", "에스엠벡셀"], [32053805, 3021858], 1),
+                (["비유동항목", "전문건설공제조합"], [0, 18648960], 1), *extra,
+                (["비유동항목", "합 계"], [44475529, 44111864], 1)]
+        return _table(rows, note_title=note_title, unit=KRW1000, headers=[["당기", "장부금액"], ["전기", "장부금액"]],
+                      title="보고기간종료일 현재 기타포괄손익-공정가치측정금융자산의 내용은 다음과 같습니다.")
+
+    def test_samla_entity_name_table_total(self):
+        # s059 삼라마이다스 20260414000104 연결 t065(천원)
+        got = _by(self.facts(self._samla()), "FVOCI_EQUITY")
+        self.assertEqual({(f["period"], f["amount"]) for f in got}, {("current_end", 44475529), ("prior_end", 44111864)})
+        self.assertEqual(got[0]["section"], "비유동항목")
+
+    def test_entity_name_table_with_debt_or_fund_row_or_fvpl_note_not_matched(self):
+        self.assertEqual(_by(self.facts(self._samla(extra=[(["비유동항목", "㈜신한은행 후순위채권"], [100, 100], 1)])),
+                             "FVOCI_EQUITY"), [])
+        self.assertEqual(_by(self.facts(self._samla(extra=[(["비유동항목", "케이투자조합 수익증권"], [100, 100], 1)])),
+                             "FVOCI_EQUITY"), [])
+        self.assertEqual(_by(self.facts(self._samla(note_title="당기손익-공정가치측정금융자산")), "FVOCI_EQUITY"), [])
+        # 이름 표지(㈜·조합…)가 있는 행이 절반 미만이면 투자처 표로 보지 않는다
+        t = _table([("단기투자자산", [10, 10]), ("장기투자자산", [20, 20]), ("기타", [5, 5]), ("합계", [35, 35])],
+                   note_title="기타포괄손익-공정가치측정금융자산", headers=["당기말", "전기말"],
+                   title="기타포괄손익-공정가치측정금융자산의 내용은 다음과 같습니다.")
+        self.assertEqual(_by(self.facts(t), "FVOCI_EQUITY"), [])
+
+    # ---- 1. FVOCI: 열 머리글의 FVOCI(옛 낱말 「기타포괄손익인식」) × 지분 행 ----
+    def test_hyosung_fvoci_column_old_wording(self):
+        # s058 효성티앤씨 20260311004548 별도 t102(백만원) 모양 — 실제 표는 기간 열이 없다(여기서는 당기말로 둠)
+        rows = [(["금융자산", "상장주식", "공정가치 서열체계의 모든 수준 합계"], [30, 20885], 1),
+                (["금융자산", "비상장 주식", "공정가치 서열체계의 모든 수준 합계"], [7273, 0], 1),
+                (["금융자산", "파생상품", "공정가치 서열체계의 모든 수준 합계"], [0, 1371], 1),
+                (["금융자산", "수익증권", "공정가치 서열체계의 모든 수준 합계"], [0, 5570], 1)]
+        t = _table(rows, note_title="금융상품 공정가치", title="기타포괄손익인식금융자산 당기손익인식금융자산",
+                   periods=("current_end", "current_end"), headers=["기타포괄손익인식금융자산", "당기손익인식금융자산"])
+        got = {(f["label_path"][1], f["amount"]) for f in _by(self.facts(t), "FVOCI_EQUITY")}
+        self.assertEqual(got, {("상장주식", 30), ("비상장 주식", 7273)})
+
+    def test_fvoci_column_not_from_pl_or_fvpl_columns(self):
+        t = _table([("상장주식", [5, 6])], note_title="금융상품", title="범주별 금융상품",
+                   periods=("current_end", "current_end"), headers=["당기손익인식금융자산", "상각후원가측정금융자산"])
+        self.assertEqual(_by(self.facts(t), "FVOCI_EQUITY"), [])
+        t = _table([("지분상품", [5])], note_title="금융상품", title="범주별 순손익", periods=("current_period",),
+                   headers=["기타포괄손익-공정가치측정금융자산"])
+        self.assertEqual(_by(self.facts(t), "FVOCI_EQUITY"), [])
+
+    def test_c12_review_false_positives(self):
+        note = "기타포괄손익-공정가치 측정 금융자산"
+        # 20260401004773 t041 「(2) 포괄손익으로 인식된 금액」(흐름)
+        t = _table([("출자금", [-79027, 163807])], note_title=note, title="(2) 포괄손익으로 인식된 금액",
+                   periods=("current_period", "prior_period"), headers=["당기", "전기"])
+        self.assertEqual(_by(self.facts(t), "FVOCI_EQUITY"), [])
+        # 20260401003961 t066 「미실현보유손익의 구성내역」 × 열 「전기/기타포괄손익-공정가치금융자산」
+        t = _table([("출자금", [193915, 314721])], note_title="당기손익-공정가치측정 금융자산",
+                   title="(4) 보고기간말 현재 당기손익-공정가치측정 금융자산의 미실현보유손익의 구성내역은 다음과 같습니다.",
+                   periods=("current_end", "prior_end"),
+                   headers=[["당기", "당기손익-공정가치금융자산"], ["전기", "기타포괄손익-공정가치금융자산"]])
+        self.assertEqual(_by(self.facts(t), "FVOCI_EQUITY"), [])
+        # 범주표의 「비지배지분부채」 행(지분 낱말)은 지분상품이 아니다(20260319000859 t121)
+        t = _table([("비지배지분부채", [0]), ("지분증권", [16028416])], note_title="범주별 금융상품", title="범주별 장부금액",
+                   periods=("current_end",), headers=["기타포괄손익-공정가치 측정금융상품"])
+        self.assertEqual({f["label"] for f in _by(self.facts(t), "FVOCI_EQUITY")}, {"지분증권"})
+        # 공정가치 서열 표의 「…투입변수에 대한 기술,부채」 열은 금액 열이 아니다(20260311004548 연결 t093)
+        t = _table([(["공정가치 평가를 기타포괄 손익 으로 인식하는 금융자산", "비상장주식", "RedGene"], [200, 0], 2)],
+                   note_title="공정가치", title="금융 자산, 공정 가치", periods=("current_end", "current_end"),
+                   headers=["금융 자산, 공정 가치", "공정가치 측정에 사용된 투입변수에 대한 기술,부채"])
+        self.assertEqual({(f["column"], f["amount"]) for f in _by(self.facts(t), "FVOCI_EQUITY")},
+                         {("금융 자산, 공정 가치", 200)})
+
+    def test_oci_recognised_amount_column_not_fvoci(self):
+        # 20260318000761 「기타포괄손익인식액」 열은 기타포괄손익으로 인식한 금액(흐름)이다
+        t = _table([("지분증권", [535776])], note_title="기타포괄손익금융자산", title="〈당기〉", periods=("current_end",),
+                   headers=["기타포괄손익인식액"])
+        self.assertEqual(_by(self.facts(t), "FVOCI_EQUITY"), [])
+
+    def test_total_after_subtotals_lists_sections(self):
+        # 20260318000745 t056 「① 당기말」: 구획(활성시장 있는·없는 지분증권)마다 소계, 끝에 합계
+        t = _table([("활성시장이 있는 지분증권", [None, None]), ("㈜대한항공", [1082, 1082]), ("소 계", [1082, 1082]),
+                    ("활성시장이 없는 지분증권(*1)", [None, None]), ("㈜선운", [7313, 7313]), ("소 계", [7313, 7313]),
+                    ("합 계", [8395, 8395])],
+                   note_title="기타포괄손익-공정가치측정금융자산", title="① 당기말", periods=("current_end", "current_end"),
+                   headers=["공정가치", "장부금액"])
+        for r in t["rows"]:
+            if r["label"] == "소 계":
+                r["kind"] = "subtotal"
+        got = _by(self.facts(t), "FVOCI_EQUITY")
+        self.assertEqual([(f["amount"], f["column"]) for f in got], [(8395, "장부금액")])
+        self.assertEqual(got[0]["components"], ["활성시장이 있는 지분증권", "활성시장이 없는 지분증권"])
+
+    def test_old_wording_row_label(self):
+        # 「기타포괄손익인식」(옛 낱말) 행 이름
+        t = _table([("기타포괄손익인식지분상품", [10, 8])], note_title="금융상품", title="범주별 금융상품", headers=["당기말", "전기말"])
+        self.assertEqual({f["amount"] for f in _by(self.facts(t), "FVOCI_EQUITY")}, {10, 8})
+        t = _table([("공정가치평가를 기타포괄손익으로 인식하는 지분상품", [10, 8])], note_title="금융상품", title="범주별 금융상품",
+                   headers=["당기말", "전기말"])
+        self.assertEqual({f["amount"] for f in _by(self.facts(t), "FVOCI_EQUITY")}, {10, 8})
+
+    # ---- 2. EMB: 「(조기)상환권」 행 ----
+    def _yukil(self):
+        # s039 육일씨엔에쓰 20260319000768 연결 t143(천원): 값 빈 부모 행 「파생상품부채(*1)」 아래 「조기상환권」
+        return _table([("파생상품부채(*1)", [None, None]), ("전환권대가", [0, 0]), ("조기상환권", [172558, 1215318]),
+                       ("파생상품자산(*2)", [None, None]), ("매도청구권", [0, 0])],
+                      note_title="전환사채", unit=KRW1000, headers=["당기말", "전기말"],
+                      title="(3) 당기말과 전기말 현재 파생상품부채 및 파생상품자산의 내역은 다음과 같습니다.")
+
+    def test_yukil_early_redemption_option_row(self):
+        got = [f for f in self.facts(self._yukil()) if f["label"] == "조기상환권"]
+        self.assertEqual({(f["concept"], f["period"], f["amount"], f["target"], f["target_basis"]) for f in got},
+                         {("EMB_DERIV_LIABILITY", "current_end", 172558, "redemption", "label"),
+                          ("EMB_DERIV_LIABILITY", "prior_end", 1215318, "redemption", "label")})
+
+    def test_bare_redemption_option_needs_liability_parent_and_bond_note(self):
+        # 자산 구획 아래 「상환권」은 부채가 아니다
+        t = _table([("파생상품자산", [None, None]), ("상환권", [5, 5])], note_title="전환사채", headers=["당기말", "전기말"],
+                   title="(3) 파생상품의 내역")
+        self.assertEqual([f for f in self.facts(t) if f["concept"] == "EMB_DERIV_LIABILITY"], [])
+        # 사채·우선주·파생 주석이 아니면(예: 공정가치 서열 주석) 「상환권」 행만으로 쓰지 않는다
+        t = _table([("파생상품부채", [None, None]), ("조기상환권", [5, 5])], note_title="공정가치", headers=["당기말", "전기말"],
+                   title="(1) 공정가치 서열체계")
+        self.assertEqual([f for f in self.facts(t) if f["label"] == "조기상환권"], [])
+
+    def test_bare_redemption_option_asset_label_or_pl_table_not_liability(self):
+        # 「상환권(파생상품자산)」 행, 「(4) 파생금융자산과 부채에서 인식한 평가손익」 표(당기·전기 열)는 부채 잔액이 아니다
+        t = _table([("상환권(파생상품자산)", [5, 5])], note_title="차입금 및 사채", headers=["당기말", "전기말"],
+                   title="(2) 전환사채 당기말 및 전기말 전환사채의 내역은 다음과 같습니다. 파생상품")
+        self.assertEqual([f for f in self.facts(t) if f["concept"] == "EMB_DERIV_LIABILITY"], [])
+        t = _table([("조기상환권", [120, 80])], note_title="전환사채", periods=("current_period", "prior_period"),
+                   headers=["당기", "전기"], title="(4) 파생금융자산과 부채에서 인식한 평가손익")
+        self.assertEqual([f for f in self.facts(t) if f["concept"] == "EMB_DERIV_LIABILITY"], [])
+
+    # ---- 5. 손익 열의 파생상품 행은 잔액 사실이 아니다 ----
+    def test_yukil_pl_column_derivative_row_dropped(self):
+        # s039 t238 「(7) … 범주별 순손익」: 행 「파생상품부채(자산)」 × 열 「파생상품평가손익」 655,182 가 잔액 사실이 되어
+        # 전환권 자본 판정을 막았다
+        t = _table([("상각후원가 측정금융자산", [0, 0]), ("파생상품부채(자산)", [0, 655182]), ("합 계", [0, 655182])],
+                   note_title="금융상품", unit=KRW1000, periods=("current_period", "current_period"),
+                   headers=["이자수익", "파생상품평가손익"],
+                   title="(7) 당기 및 전기 중 금융자산, 금융부채의 범주별 순손익은 다음과 같습니다.1) 당기 전환사채")
+        self.assertEqual([f for f in self.facts(t) if f["concept"].startswith("EMB_")], [])
+        for header in ("평가이익", "거래손실", "이자비용", "외화환산손익", "기타수익", "금융손익"):
+            t = _table([("전환사채 파생상품부채", [10])], note_title="파생상품", periods=("current_end",), headers=[header],
+                       title="파생상품 손익")
+            self.assertEqual([f for f in self.facts(t) if f["concept"].startswith("EMB_")], [], header)
+
+    def test_valuation_amount_column_is_balance(self):
+        # 「평가액」「평가금액」 열은 평가한 잔액(공정가치)이다 — 손익 열이 아니다(20260331001148 모양)
+        for header in ("평가액", "평가금액"):
+            t = _table([("전환사채 파생상품부채", [394218])], note_title="파생상품", periods=("current_end",), headers=[header],
+                       title="파생상품 내역")
+            self.assertEqual({(f["concept"], f["amount"]) for f in self.facts(t)}, {("EMB_DERIV_LIABILITY", 394218)}, header)
+
+    def test_pl_column_conversion_liability_dropped_too(self):
+        # EMB 를 손익 열에서 빼면 같은 칸이 CONV_OPTION_LIABILITY(「파생상품부채…전환권」)로 넘어갔다(20260316001316 t046 「평가」 열)
+        t = _table([(["파생상품부채", "제1회 사모 전환사채 상환권/전환권"], [20320838, 940992, 21261830], 1)], note_title="공정가치",
+                   periods=("current_end", "current_end", "current_end"), headers=[["기초"], ["평가"], ["기말"]],
+                   title="공정가치 서열체계 수준3 변동")
+        got = {(f["concept"], f["amount"]) for f in self.facts(t)}
+        self.assertNotIn(940992, {a for _, a in got})
+        # 「평가후 장부가액」은 잔액이다
+        t = _table([("전환권 파생상품부채", [500])], note_title="파생상품", periods=("current_end",), headers=["평가후장부가액"],
+                   title="파생상품 내역")
+        self.assertEqual({(f["concept"], f["amount"]) for f in self.facts(t)}, {("CONV_OPTION_LIABILITY", 500)})
+
+    def test_redemption_row_under_rcps_liability_is_not_derivative(self):
+        # 20260406002852 t089: 「상환전환우선주부채 / 상환권」 — 파생 낱말이 없는 부모 아래 「상환권」은 내재파생 행으로 보지 않는다
+        t = _table([(["상환전환우선주부채", "상환권"], [0, 0], 1)], note_title="상환전환우선주부채", headers=["당기말", "전기말"],
+                   title="(2) 상환전환우선주부채의 내역")
+        self.assertEqual([f for f in self.facts(t) if f["concept"] == "EMB_DERIV_LIABILITY"], [])
+
+    def test_fvpl_equity_row_in_fvoci_column_not_fvoci(self):
+        # 20260213002543 t040 범주표: 행 「당기손익-공정가치측정 지분상품」 × 열 「기타포괄손익-공정가치 측정 금융자산」
+        t = _table([("당기손익-공정가치측정 지분상품", [0, 0])], note_title="금융상품", title="범주별 금융상품",
+                   periods=("current_end", "current_end"), headers=["기타포괄손익-공정가치 측정 금융자산", "합계"])
+        self.assertEqual(_by(self.facts(t), "FVOCI_EQUITY"), [])
+
+    def test_category_table_fvpl_column_derivative_still_matched(self):
+        # 범주표의 「당기손익-공정가치측정금융부채」 열은 잔액 열이다(손익 열이 아님)
+        t = _table([("파생상품부채(전환사채)", [500])], note_title="금융상품", periods=("current_end",),
+                   headers=["당기손익-공정가치측정금융부채"], title="범주별 금융상품")
+        self.assertEqual({(f["concept"], f["amount"]) for f in self.facts(t)}, {("EMB_DERIV_LIABILITY", 500)})
+
+
+class FvociDesignationSentenceTest(unittest.TestCase):
+    """회사가 지분상품을 FVOCI 로 지정했다는 직접 문장(c12) → FVOCI_DESIGNATION_STMT 표시 사실(금액 없음)."""
+
+    def got(self, paragraphs, tables=()):
+        from dart_search_mcp.ledger.facts import sentence_facts
+        return [f for f in sentence_facts(_filing(paragraphs, tables)) if f["concept"] == "FVOCI_DESIGNATION_STMT"]
+
+    def test_seongwoo_irrevocable_election_sentence(self):
+        # s056 성우하이텍 20260319000729 연결 s928·s929
+        got = self.got([
+            _p("s928", "7. 기타포괄손익-공정가치측정금융자산(1) 당기말과 전기말 현재 기타포괄손익-공정가치측정금융자산의 내역은 다음과 같습니다.",
+               file="R_00761.xml"),
+            _p("s929", "연결실체는 단기매매항목이 아닌 전략적 투자목적으로 보유하는 지분상품에 대해 최초 적용일에 "
+                       "기타포괄손익-공정가치측정항목으로 지정하는 취소불가능한 선택권을 적용하였습니다.", file="R_00761.xml"),
+        ])
+        self.assertEqual([(f["fs_scope"], f["period"], f["amount"], f["source"]["sentence_id"]) for f in got],
+                         [("consolidated", "current_end", None, "s929")])
+        self.assertIn("취소불가능한 선택권을 적용하였습니다", got[0]["text"])
+
+    def test_hyosung_sentence_in_text_table_title(self):
+        # s058 효성티앤씨 20260311004548 별도 t614: 주석 30 기타자본구성요소의 글 표(값 열 없음) 제목
+        title = ("상기 기타포괄손익누계액의 변동내역은 법인세효과가 차감된 후의 금액입니다.회사는 특정 지분상품투자의 공정가치를 "
+                 "기타포괄손익으로 인식하도록 지정하였습니다(주석 5). 이러한 공정가치 변동은 자본 내에서 기타포괄손익-공정가치 측정 "
+                 "금융자산 잉여금으로 누적됩니다.")
+        t = {"table_id": "R:00760:t614", "file": "R_00760.xml", "fs_scope": "separate", "page": 9, "title": title,
+             "region": {"kind": "note", "note_no": "30", "note_title": "기타자본구성요소"},
+             "columns": [{"col": 0, "header_path": [""], "role": "label"}], "rows": []}
+        got = self.got([], [t])
+        self.assertEqual([(f["fs_scope"], f["source"]["sentence_id"]) for f in got], [("separate", "t:R:00760:t614:title")])
+        self.assertTrue(got[0]["text"].startswith("회사는 특정 지분상품투자의 공정가치를 기타포괄손익으로 인식하도록 지정하였습니다"))
+
+    def test_footnote_election_made(self):
+        got = self.got([_p("s1", "10. 기타금융자산"),
+                        _p("s2", "(*) 상기 금융자산은 단기매매항목이 아닌 지분상품으로 후속적인 공정가치 변동을 기타포괄손익으로 표시하는 "
+                                 "취소 불가능한 선택을 하였습니다.")])
+        self.assertEqual(len(got), 1)
+
+    def test_generic_policy_or_policy_note_or_negation_not_evidence(self):
+        # 「지정할 수 있다」 일반 정책은 근거가 아니다(회계사 두 명)
+        self.assertEqual(self.got([_p("s1", "9. 기타포괄손익-공정가치측정금융자산"),
+                                   _p("s2", "단기매매항목이 아닌 지분상품에 대한 투자는 최초 인식시점에 후속적인 공정가치 변동을 "
+                                            "기타포괄손익으로 표시할 것을 지정하는 취소불가능한 선택을 할 수 있습니다.")]), [])
+        # 회계정책 주석 안의 문장은 보유 내역 주석이 아니다
+        self.assertEqual(self.got([_p("s1", "2. 재무제표 작성기준 및 중요한 회계정책"),
+                                   _p("s2", "당사는 최초 인식시점에 단기매매항목이 아닌 모든 지분상품투자에 대하여 기타포괄손익-공정가치 "
+                                            "항목으로 지정하였습니다.")]), [])
+        # 주석 머리를 모르면 쓰지 않는다
+        self.assertEqual(self.got([_p("s2", "당사는 지분상품을 기타포괄손익-공정가치 측정 항목으로 지정하였습니다.")]), [])
+        self.assertEqual(self.got([_p("s1", "9. 금융자산"),
+                                   _p("s2", "당사는 보유 지분상품을 기타포괄손익-공정가치 측정 항목으로 지정하지 않았습니다.")]), [])
+        # 채무상품만 있는 문장(지분 낱말 없음)은 아니다
+        self.assertEqual(self.got([_p("s1", "9. 금융자산"),
+                                   _p("s2", "당사는 회사채를 기타포괄손익-공정가치 측정 항목으로 지정하였습니다.")]), [])
 
 
 if __name__ == "__main__":
