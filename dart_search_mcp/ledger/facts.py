@@ -92,7 +92,7 @@ class Concept:
     entity_rows: bool = False  # c12 table_total: 금액 행 절반 이상이 투자처 이름(㈜·주식회사·조합·Inc…)인 표만
     yields_to_total: bool = False  # c12 행 개념: 같은 표에서 같은 id 의 table_total 이 걸리면 그 합계 행에 양보한다
     pl_column_patterns: tuple = ()  # c12: 손익·평가 열(어느 단계든) 칸은 이 개념이 아니라 DERIV_PL_COLUMN 대리 사실(orig_concept)
-    no_movement_table: bool = False  # c12 수정 1차: 변동표(기초 열·행 + 흐름 열)에서는 잔액을 읽지 않는다
+    no_movement_table: bool = False  # c12 수정 1·2차: 적립금(미실현·평가손익) 변동표에서는 잔액을 읽지 않는다
     subtitle_period: bool = False  # c12 수정 1차: 표 제목이 기간 소제목뿐(「〈전기〉」「② 당기」)이면 그 기간을 쓴다
     since: str = ""  # c12 수정 1차: 이 판에서 새로 생긴 개념 항목이면 그 판(사실에 since 로 단다)
     c11_label_patterns: tuple = ()  # c12 수정 1차: c11 때의 행 이름 패턴 — 이것으로 안 걸리면 c12 새 사실
@@ -416,7 +416,7 @@ def _candidates(table: dict, concepts: list[Concept]):
     regions = [(ok and not (c.row_exclude_patterns and not c.mode
                             and any(rx.search(n) for rx in c.rx("row_exclude_patterns") for n in all_names)), unk)
                for c, (ok, unk) in zip(concepts, regions)]
-    movement = _is_movement_table(table)
+    movement = _is_reserve_movement(table)
     regions = [(ok and not (c.no_movement_table and movement), unk) for c, (ok, unk) in zip(concepts, regions)]
     # 행 이름 개념의 table_exclude_patterns(c12): 표 제목에 걸리면 그 표에는 이 개념을 쓰지 않는다(변동·손익 표)
     regions = [(ok and not (c.table_exclude_patterns and not c.mode
@@ -499,20 +499,21 @@ def _pl_proxy(c: Concept) -> Concept:
     return replace(c, id="DERIV_PL_COLUMN", pl_column_patterns=(), _rx={})
 
 
-_OPENING_RE = re.compile(r"^(기초|당기초|전기초)(잔액|금액|장부(금|가)액|순장부(금|가)액)?$")
-_CLOSING_RE = re.compile(r"^(기말|당기말|전기말)(잔액|금액|장부(금|가)액|순장부(금|가)액)?$")
+_RESERVE_TITLE_RE = re.compile(r"미실현|평가손익|기타포괄손익누계|적립금|잉여금")
+_RESERVE_ROW_RE = re.compile(r"미실현|평가손익|평가로인한|법인세효과")
+_TAX_EFFECT_RE = re.compile(r"법인세효과")
 
 
-def _is_movement_table(table: dict) -> bool:
-    """변동표(c12 수정 1차): 값 열에 기초 열과 흐름 열(취득·처분·평가·증감…)이 함께 있거나, 행에 기초·기말 행이 함께 있다."""
-    cols = [c for c in table.get("columns") or [] if c.get("role") == "value"]
-    heads = [_WS_RE.sub("", _header_last(c)) for c in cols]
-    opening = any(c.get("period") == "opening" or _OPENING_RE.match(h) for c, h in zip(cols, heads))
-    if opening and any(_FLOW_HEADER_RE.search(h) or re.search(r"평가|법인세효과|실현", h) for h in heads
-                       if not _OPENING_RE.match(h) and not _CLOSING_RE.match(h)):
+def _is_reserve_movement(table: dict) -> bool:
+    """적립금(미실현·평가손익) 변동표(c12 수정 2차): 제목이나 행 이름이 미실현·평가손익(평가로 인한 …, 법인세효과 행)이거나,
+    값 열에 법인세효과 열이 있다(자산 변동표에는 세효과 열이 없다). 자산 변동표(기초·취득·처분·평가·기말)는 막지 않는다 —
+    그 기말 열은 잔액이다(20260331003450 t078). 미실현손익 묶음 열은 열 제외 패턴이 따로 뺀다."""
+    if _RESERVE_TITLE_RE.search(_WS_RE.sub("", table.get("title") or "")):
         return True
-    names = {norm_label(r.get("label")) for r in table.get("rows") or []}
-    return any(_OPENING_RE.match(n) for n in names) and any(_CLOSING_RE.match(n) for n in names)
+    if any(_RESERVE_ROW_RE.search(norm_label(r.get("label"))) for r in table.get("rows") or []):
+        return True
+    return any(_TAX_EFFECT_RE.search(_WS_RE.sub("", _header_last(c))) for c in table.get("columns") or []
+               if c.get("role") == "value")
 
 
 _SUBTITLE_PERIOD_RE = re.compile(r"^[-–·①-⑳\d.()〈〉<>\[\]]*(당기|전기)말?[〉>)\]]*$")

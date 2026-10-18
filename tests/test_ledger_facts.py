@@ -1824,7 +1824,7 @@ class C12Fix1FactsTest(unittest.TestCase):
     def facts(self, *tables):
         return extract_facts(list(tables), self.concepts)
 
-    def test_split_movement_tables_give_no_fvoci_equity(self):
+    def test_split_reserve_movement_tables_give_no_fvoci_equity(self):
         note = "기타포괄손익-공정가치측정금융자산"
         # 20260331000133 t074 「② 전기」: 기초·평가·법인세효과·기말 열(미실현보유손익 변동표의 이어진 표)
         t = _table([("평가로 인한 기타포괄손익", [None, None, None, None]), ("지분증권", [-86271, -15839, 3310, -98800])],
@@ -1836,6 +1836,34 @@ class C12Fix1FactsTest(unittest.TestCase):
                    periods=("opening", "current_period", "current_period", "current_period", "current_end"),
                    headers=["기 초", "증가(감소)", "처분 등 실현", "법인세효과", "당기말"])
         self.assertEqual(_by(self.facts(t), "FVOCI_EQUITY"), [])
+        # 20260325000538 t165 「- 당기」: 평가손익 열·법인세효과 행(적립금 변동표)
+        t = _table([("채무증권", [-19743982, -25700787, -45143994]), ("지분증권", [0, -200780, -200780]),
+                    ("법인세효과", [5212411, 7346725, 12469813])], note_title=note, title="- 당기",
+                   periods=("opening", "current_period", "current_end"), headers=["기초잔액", "평가손익", "기말잔액"])
+        self.assertEqual(_by(self.facts(t), "FVOCI_EQUITY"), [])
+
+    def test_asset_movement_table_closing_balance_kept(self):
+        # 수정 2차: 20260331003450 t078 「〈당기〉」 자산 변동표(기초·평가·취득·처분·기말) — 기말 열은 당기말 잔액이다
+        note = "기타포괄손익-공정가치 측정 금융자산"
+        t = _table([("비상장주식", [326347157, 18109686, 1273689, -4950774, 340779758])], note_title=note, title="〈당기〉",
+                   periods=("opening", "current_period", "current_period", "current_period", "current_end"),
+                   headers=["기초", "평가", "취득", "처분", "기말(주1)"], unit=KRW1000)
+        got = _by(self.facts(t), "FVOCI_EQUITY")
+        self.assertEqual([(f["period"], f["amount"]) for f in got], [("current_end", 340779758)])
+        # 「〈전기〉」 이어진 표: 1층이 기말 열을 당기말로 읽어도 소제목 기간(전기말)을 쓴다
+        t["title"] = "〈전기〉"
+        got = _by(self.facts(t), "FVOCI_EQUITY")
+        self.assertEqual([(f["period"], f["amount"]) for f in got], [("prior_end", 340779758)])
+
+    def test_unrealised_columns_skipped_balance_columns_kept(self):
+        # 20260318001149 t042 「(당기말)」: 미실현손익(기초·평가·실현·기말) 열 + 장부금액(공정가치) 유동·비유동 열
+        t = _table([("채무상품", [15263485, 96911, 55208, 0, 15318693]), ("지분상품", [29066852, 789968, 557849, 2428538, 27196163])],
+                   note_title="기타포괄손익-공정가치 측정 금융자산", title="(당기말)", unit=KRW1000,
+                   periods=("current_end", "opening", "current_end", "current_end", "current_end"),
+                   headers=[["취득원가"], ["미실현손익", "기초잔액"], ["미실현손익", "기말잔액"], ["장부금액(공정가치)", "유동"],
+                            ["장부금액(공정가치)", "비유동"]])
+        got = _by(self.facts(t), "FVOCI_EQUITY")
+        self.assertEqual({(f["column"], f["amount"]) for f in got}, {("유동", 2428538), ("비유동", 27196163)})
 
     def test_period_from_subtitle(self):
         # 기간이 행·열에 없는 표(「〈전기〉」 소제목, 열 「장부금액」) — 소제목의 기간을 쓴다
