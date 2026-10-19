@@ -1,5 +1,5 @@
 {
-  "rules_version": "r5",
+  "rules_version": "r6",
   "exception_patterns": {
     "dev_amortization": {
       "topic": "DEV_COST_CAPITALIZATION",
@@ -58,7 +58,8 @@
       "PPA_MEASUREMENT_PERIOD": [
         "BC_CONSIDERATION",
         "BC_NET_ASSETS_FV",
-        "BC_RELATED_COST"
+        "BC_RELATED_COST",
+        "PPA_COMPLETED_STMT"
       ],
       "BUSINESS_COMBINATION_COST_CLASS": [
         "BC_RELATED_COST"

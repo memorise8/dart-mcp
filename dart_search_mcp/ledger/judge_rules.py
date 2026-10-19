@@ -179,7 +179,7 @@ def evidence_line(fact: dict, tables: dict | None = None) -> str:
     where = [w for w in where if w]
     label = (fact.get("label") or fact.get("concept") or "").strip()
     path = [p.strip() for p in fact.get("label_path") or [] if p and p.strip()]
-    if fact.get("concept") == "FVOCI_EQUITY" and len(path) > 1 and not fact.get("components"):
+    if fact.get("concept") in ("FVOCI_EQUITY", "RND_EXPENSE") and len(path) > 1 and not fact.get("components"):
         # c12: 경로(「금융자산 / 비상장 주식 / 수준 3」)로 걸린 지분 행은 경로를 보인다(행 이름만으로는 무엇인지 모름)
         label = " / ".join(dict.fromkeys(path))
     comps = fact.get("components") or []
@@ -295,15 +295,26 @@ def _from_records(value: str, picks: list[tuple[dict, str]], tables: dict, extra
     for rec, field in picks:
         side = _record_side(rec, field)
         line, r, h = _record_line(rec, field, side, tables)
-        lines.append(line)
+        lines.append((line, side))
         refs.extend(r)
         sides.add(side)
         head = head or h
     basis = "current" if "current" in sides else ("prior" if "prior" in sides else None)
     basis = basis or _period([rec for rec, _ in picks] + list(recs), facts)
-    ev = " / ".join(lines + ([extra_ev] if extra_ev else []))
+    ev = " / ".join([_join_sides(lines)] + ([extra_ev] if extra_ev else []))
     return _res(value, evidence=ev, basis=basis, refs=list(dict.fromkeys(refs)), kind="instrument_record",
                 heading=head)
+
+
+def _join_sides(items: list[tuple[str, str | None]]) -> str:
+    """c13(합의 규칙 3·25, v2q Q2): 근거 줄을 기간별로 나눠 보인다 — 당기 먼저, 전기는 「전기 기준」. 한 기간뿐이면 그대로."""
+    items = list(dict.fromkeys(items))  # 같은 문장(한 문장에 단기·소액 금액)은 한 번만
+    sides = {sd for _, sd in items if sd}
+    if len(sides) < 2:
+        return " / ".join(line for line, _ in items)
+    cur = [line for line, sd in items if sd != "prior"]
+    pri = [line for line, sd in items if sd == "prior"]
+    return f"당기: {' / '.join(cur)} / 전기 기준: {' / '.join(pri)}"
 
 
 def _non_conversion(f: dict) -> bool:
@@ -337,7 +348,7 @@ def _conv_run(ctx: Ctx, ins: list[dict]) -> dict | None:
         if cls:
             res = _from_facts(cls, feq + fli, ctx.tables)
             if cls == "BOTH":
-                res["evidence"] = f"{evidence_line(_pick(feq), ctx.tables)} / {evidence_line(_pick(fli), ctx.tables)}"
+                res["evidence"] = _join_sides([(evidence_line(_pick(x), ctx.tables), _side(_pick(x))) for x in (feq, fli)])
             return _equity_guard(ctx, res)
         return ctx.und(topic, "conv_no_class" if host(ctx.facts) else None)
     if not (eq or li):
@@ -518,7 +529,9 @@ def _fvoci(ctx: Ctx) -> dict | None:
         return prior_only
     fvpl = _pos(ctx.facts, "FVPL_EQUITY")
     if fvpl and not total:
-        return _from_facts("NOT_DESIGNATED", fvpl, ctx.tables)
+        res = _from_facts("NOT_DESIGNATED", fvpl, ctx.tables)
+        _fvoci_none_note(ctx, res)
+        return res
     if total:
         return ctx.und(topic, "fvoci_total_only")
     if _pos(ctx.facts, "FVOCI_DEBT") or _nonzero(ctx.facts, "FVOCI_DEBT_RESERVE"):
@@ -526,6 +539,16 @@ def _fvoci(ctx: Ctx) -> dict | None:
     if [f for f in _topic_facts(ctx, topic) if f.get("concept") != "FVOCI_DESIGNATION_STMT"]:
         return ctx.und(topic, "fvoci_no_equity")  # 지정 문장(금액 없음)만으로는 사유를 바꾸지 않는다(r5)
     return ctx.und(topic, None)
+
+
+def _fvoci_none_note(ctx: Ctx, res: dict) -> None:
+    """c13(합의 규칙 12·13, s042·s044·s048·s050): 범주별 금융상품 표에 FVOCI 가 없으면 근거 앞에 그 표를 먼저 보인다 — 표시만."""
+    tid = ctx.meta.get("category_table_id")
+    if not (ctx.meta.get("category_table") and ctx.meta.get("category_fvoci") is False and tid):
+        return
+    head = _heading(tid, ctx.tables)
+    res["evidence"] = f"FVOCI 없음(FVTPL만): 범주별 금융상품 표({head or tid}) / {res['evidence']}"
+    res["source_refs"] = list(res["source_refs"]) + [tid]
 
 
 def _dev_expensed(ctx: Ctx) -> dict | None:
@@ -546,8 +569,15 @@ def _dev(ctx: Ctx) -> dict | None:
     stmt = _dev_expensed(ctx)
     if stmt and not asset:
         # 문장 근거라 기간 사실이 없다 — 이 보고서의 문장이므로 basis_period 는 당기(I2)
-        return _res("EXPENSED", evidence=(stmt.get("text") or "").strip()[:300], basis="current",
-                    refs=[stmt.get("sentence_id")], kind="company_statement")
+        ev = (stmt.get("text") or "").strip()[:300]
+        rnd = _pos(ctx.facts, "RND_EXPENSE")
+        cur = [f for f in rnd if _side(f) == "current"] or rnd
+        refs = [stmt.get("sentence_id")]
+        if cur:  # c13(합의 규칙 17, s067·s069): 비용 처리면 그 금액을 보인다 — 표시만
+            shown = sorted(cur, key=lambda f: -abs(_num(f.get("amount"))))[:2]
+            ev += " / 비용 금액: " + " / ".join(evidence_line(f, ctx.tables) for f in shown)
+            refs += [_fact_ref(f) for f in shown]
+        return _res("EXPENSED", evidence=ev, basis="current", refs=refs, kind="company_statement")
     exc = [m for m in _topic_marks(ctx.marks, topic) if m.get("exception") == "dev_amortization"]
     movement = ctx.meta.get("movement_table")
     if movement is None:
@@ -570,18 +600,45 @@ def _lease_value(short: bool, low: bool) -> str | None:
     return "BOTH" if short and low else "SHORT_TERM" if short else "LOW_VALUE" if low else None
 
 
+_LEASE_CONCEPTS = ("LEASE_SHORT_TERM_EXP", "LEASE_LOW_VALUE_EXP", "LEASE_SHORT_LOW_EXP")
+_LEASE_POLICY_RE = re.compile(r"(단기|소액)[^.]{0,80}(면제|제외|정액|비용)|(면제|제외)[^.]{0,60}(단기|소액)")
+_COMBINED_NOTE = "단기·소액 합산 공시, 개별 금액 구분 불가"
+
+
+def _lease_policy(ctx: Ctx) -> dict | None:
+    """리스 정책 문장(단기·소액 인식면제) 표시 하나 — 현금유출액 문장은 빼고."""
+    return next((m for m in _topic_marks(ctx.marks, "LEASE_EXEMPTION") if m.get("kind") == "policy"
+                 and "현금유출" not in (m.get("text") or "") and _LEASE_POLICY_RE.search(m.get("text") or "")), None)
+
+
 def _lease(ctx: Ctx) -> dict | None:
+    res = _lease_core(ctx)
+    pol = _lease_policy(ctx)
+    if res and res["value"] != UND and pol:  # c13: 정책 문장을 보조 근거로 보인다(두 분 요청) — 표시만
+        res["evidence"] = f"{res['evidence']} / 정책: {(pol.get('text') or '').strip()[:200]}"
+        res["source_refs"] = list(res["source_refs"]) + [pol.get("sentence_id")]
+    return res
+
+
+def _lease_core(ctx: Ctx) -> dict | None:
     topic = "LEASE_EXEMPTION"
-    s_all, l_all = _usable(ctx.facts, "LEASE_SHORT_TERM_EXP"), _usable(ctx.facts, "LEASE_LOW_VALUE_EXP")
-    c_all = _usable(ctx.facts, "LEASE_SHORT_LOW_EXP")
+    # c13(합의 규칙 28·29): 현금유출액 문장 속 단기·소액 리스료(문장 사실)는 표 사실이 하나도 없고 정책 문장이 있을 때만
+    # 쓴다(정책 없이 문장만이면 C2 대기). 총 현금유출액은 2층에서 읽지 않는다
+    lease = [f for f in ctx.facts if f.get("concept") in _LEASE_CONCEPTS]
+    sent = [f for f in lease if f.get("match_basis") == "sentence"]
+    table = [f for f in lease if f.get("match_basis") != "sentence"]
+    keep = table if [f for f in table if _side(f)] else (sent if _lease_policy(ctx) else [])
+    facts = [f for f in ctx.facts if f.get("concept") not in _LEASE_CONCEPTS] + keep
+    s_all, l_all = _usable(facts, "LEASE_SHORT_TERM_EXP"), _usable(facts, "LEASE_LOW_VALUE_EXP")
+    c_all = _usable(facts, "LEASE_SHORT_LOW_EXP")
     # 리스료는 비용이라 괄호(음수)로 적는 회사가 많다 — 부호와 무관하게 금액이 있으면 면제 적용(회계사 v2 s083 등)
-    s, lo, c = _pos_abs(ctx.facts, "LEASE_SHORT_TERM_EXP"), _pos_abs(ctx.facts, "LEASE_LOW_VALUE_EXP"), \
-        _pos_abs(ctx.facts, "LEASE_SHORT_LOW_EXP")
+    s, lo, c = _pos_abs(facts, "LEASE_SHORT_TERM_EXP"), _pos_abs(facts, "LEASE_LOW_VALUE_EXP"), \
+        _pos_abs(facts, "LEASE_SHORT_LOW_EXP")
     value = _lease_value(bool(s), bool(lo))
     if value:
         res = _from_facts(value, s + lo, ctx.tables)
         if value == "BOTH":
-            res["evidence"] = f"{evidence_line(_pick(s), ctx.tables)} / {evidence_line(_pick(lo), ctx.tables)}"
+            res["evidence"] = _join_sides([(evidence_line(_pick(x), ctx.tables), _side(_pick(x))) for x in (s, lo)])
             # 두 칸이 같은 기간에 함께 있을 때만 그 기간을 쓴다
             sides = {_side(f) for f in s} & {_side(f) for f in lo}
             res["basis_period"] = "current" if "current" in sides else ("prior" if "prior" in sides else
@@ -590,7 +647,12 @@ def _lease(ctx: Ctx) -> dict | None:
     if c:
         if s_all or l_all:
             return _review(f"단기·소액 합산 행은 있으나 개별 행은 0: {evidence_line(_pick(c), ctx.tables)}")
-        return _from_facts("BOTH", c, ctx.tables)
+        # c13(합의 규칙 27, v2q Q5): 합친 한 줄만 — 면제 적용, 개별 금액 구분 불가. 값 이름은 C2 답을 기다리며 지금 값
+        # (BOTH)을 두고, 나중에 이름을 바꿀 수 있게 표지 lease_combined_row 를 단다
+        res = _from_facts("BOTH", c, ctx.tables)
+        res["evidence"] = f"{res['evidence']} — {_COMBINED_NOTE}"
+        res["flags"] = ["lease_combined_row"]
+        return res
     if (s_all and l_all) or c_all:
         res = _from_facts("NONE", s_all + l_all + c_all, ctx.tables)
         res["evidence"] = "단기·소액리스료 칸이 0 또는 「-」: " + " / ".join(
@@ -695,8 +757,12 @@ def _ppa(ctx: Ctx) -> dict | None:
     v1 = ctx.meta.get("v1_ppa")
     if not v1 or (v1.get("value") or UND) == UND:
         prov = _ppa_provisional(ctx)
-        if prov:
-            return prov
+        done = _ppa_completed(ctx)
+        if prov and done:
+            return _review("잠정 문장과 완료 문장이 함께 있음",
+                           f"확인 필요: 잠정 문장({prov['source_refs'][0]})과 완료 문장({done['source_refs'][0]})이 함께 있음")
+        if prov or done:
+            return prov or done
     if not v1:
         return ctx.und(topic, None)
     value = v1.get("value") or UND
@@ -731,6 +797,18 @@ def _ppa_provisional(ctx: Ctx) -> dict | None:
                 return _res("PROVISIONAL", evidence=sent.strip()[:300], basis="current",
                             refs=[m.get("sentence_id")] + [_fact_ref(f) for f in bc], kind="company_statement")
     return None
+
+
+def _ppa_completed(ctx: Ctx) -> dict | None:
+    """c13(두 분 규칙 23·31, s137 지란지교시큐리티): 「측정기간 내에 사업결합 회계처리를 완료하였습니다」 「매수가격배분이 완료」
+    「… 확정되었습니다」 회사 문장(2층 PPA_COMPLETED_STMT) + 공시에 사업결합 표 → FINAL. 측정기간 1년 경과만으로는 정하지
+    않는다(D6). v1 UND·없음일 때만."""
+    done = [f for f in ctx.facts if f.get("concept") == "PPA_COMPLETED_STMT"]
+    bc = [f for f in ctx.facts if f.get("concept") in ("BC_CONSIDERATION", "BC_NET_ASSETS_FV") and _num(f.get("amount")) != 0]
+    if not done or not (bc or ctx.meta.get("bc_table_filing")):
+        return None
+    return _res("FINAL", evidence=(done[0].get("text") or "").strip()[:300], basis="current",
+                refs=[_fact_ref(done[0])] + [_fact_ref(f) for f in bc], kind="company_statement")
 
 
 def _bc_cost(ctx: Ctx) -> dict | None:
@@ -778,6 +856,19 @@ def _rf_blocks(t: dict, rules: dict) -> bool:
     return bool(rules["rx"]["rf_balance"].search(title))
 
 
+_FVOCI_WORD = re.compile(r"기타포괄손익(.?공정가치|인식|으로인식)|FVOCI")
+
+
+def _category_has_fvoci(t: dict) -> bool:
+    fv_cols = {c.get("col") for c in t.get("columns") or [] if c.get("role", "value") == "value"
+               and any(_FVOCI_WORD.search(_WS_RE.sub("", h or "")) for h in c.get("header_path") or [])}
+    for r in t.get("rows") or []:
+        fv_row = any(_FVOCI_WORD.search(_WS_RE.sub("", x or "")) for x in [r.get("label"), *(r.get("label_path") or [])])
+        if any(_num(c.get("value")) != 0 and (fv_row or c.get("col") in fv_cols) for c in r.get("cells") or []):
+            return True
+    return False
+
+
 def scope_meta(tables: list[dict], fs_scope: str, *, rules_path: Path | None = None) -> dict:
     """1층 표 기록(한 공시) → judge_filing meta 의 표 정보(그 fs_scope 표만).
 
@@ -792,7 +883,7 @@ def scope_meta(tables: list[dict], fs_scope: str, *, rules_path: Path | None = N
     cat_note, cat_head, cat_row = re.compile(cat["note"]), re.compile(cat["head"]), re.compile(cat["row"])
     topic_notes = {t: re.compile(p) for t, p in rules["topic_notes"].items()}
     out = {"tables": {}, "movement_table": False, "category_table": False, "read_failed_topics": set(),
-           "read_failed_any_topics": set()}
+           "read_failed_any_topics": set(), "category_fvoci": False, "category_table_id": None}
     for t in tables:
         if (t.get("fs_scope") or "") != fs_scope:
             continue
@@ -817,6 +908,9 @@ def scope_meta(tables: list[dict], fs_scope: str, *, rules_path: Path | None = N
                 out["movement_table"] = True
         if cat_note.search(head) and (cat_head.search(t.get("title") or "") or any(cat_row.search(lb) for lb in labels)):
             out["category_table"] = True
+            out["category_table_id"] = out["category_table_id"] or t.get("table_id")
+            if _category_has_fvoci(t):  # c13: 범주표에 0 아닌 FVOCI 열·행이 있는가(열만 있고 모두 0이면 없음)
+                out["category_fvoci"] = True
     return out
 
 
@@ -839,6 +933,7 @@ def _row(rcept_no: str, fs_scope: str, topic: str, res: dict, meta: dict) -> dic
         "evidence_heading_path": res.get("heading") or "", "is_conditional": False,
         "parser_version": PARSER_VERSION, "fs_scope": fs_scope, "basis_period": res.get("basis_period"),
         "source_refs": [r for r in res.get("source_refs") or [] if r], "review_note": res.get("review_note"),
+        **({"value_flags": list(res["flags"])} if res.get("flags") else {}),
     }
 
 
@@ -899,5 +994,8 @@ def judge_filing(rcept_no: str, fs_scope: str, facts: list[dict], instruments, m
                 or (topic in failed_any and res["value"] in absence.get(topic, ())):
             # 없음에 기댄 값(해당 없음 등)도 관련 주석 표를 읽지 못했으면 정할 수 없다(I1)
             res = _res(UND, held="read_failed", evidence=ctx.reasons["read_failed"])
+        if res["value"] != UND and res.get("basis_period") == "prior" and not res["evidence"].startswith("당기에 없음"):
+            # c13(합의 규칙 3, v2q Q2): 당기 근거가 없고 전기 근거로 정한 값은 그렇게 밝힌다
+            res = {**res, "evidence": f"당기에 없음, 전기 기준: {res['evidence']}"}
         out.append(_row(rcept_no, fs_scope, topic, res, meta))
     return out

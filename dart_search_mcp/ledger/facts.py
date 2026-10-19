@@ -1017,6 +1017,77 @@ def _fv_designation_facts(filing: dict, by_file: dict, version: str) -> list[dic
     return out
 
 
+# ---------- 리스 현금유출액 문장(c13) ----------
+# 합의 규칙 28·29(v2q Q5 두 분): 정책 설명과 함께 현금유출액 문장에 단기·소액 리스료가 나뉘어 있으면 면제 적용 근거다
+# (s098 대봉엘에스). 「총 현금유출액」 금액은 비용 금액이 아니다 — 리스료 낱말에 붙은 단기·소액 금액만 읽는다.
+# 정책이 함께 있는지는 판정(_lease)이 본다. 단기·소액을 합친 문장은 읽지 않는다.
+_LEASE_AMT = r"(?:는|은)?\s*(?P<a>\d{1,3}(?:,\d{3})+|\d+)\s*(?P<u>백만원|천원|원)"
+_LEASE_SENT = {
+    "LEASE_SHORT_TERM_EXP": re.compile(r"(?<![가-힣])단기(?:리스|자산)?(?:\s*리스)?\s*(?:에\s*따른|와\s*관련된|관련)?\s*리스료\s*" + _LEASE_AMT),
+    "LEASE_LOW_VALUE_EXP": re.compile(r"(?<![가-힣])소액(?:\s*기초)?(?:자산)?(?:\s*리스)?\s*(?:에\s*따른|와\s*관련된|관련)?\s*리스료\s*"
+                                      + _LEASE_AMT),
+}
+_LEASE_COMBINED = re.compile(r"단기[^,.]{0,12}(및|와|과|,|또는|혹은)\s*소액")
+
+
+def _lease_sentence_facts(filing: dict, by_file: dict, version: str) -> list[dict]:
+    out, seen = [], set()
+    for p in filing.get("paragraphs") or []:
+        text = p.get("text") or ""
+        if "현금유출" not in text or "리스료" not in text:
+            continue
+        scope = _file_scope(p.get("file") or "", by_file)
+        if not scope:
+            continue
+        for sent in _SENT_END.split(text):
+            if "현금유출" not in sent or _LEASE_COMBINED.search(sent):
+                continue
+            period = "prior_period" if re.match(r"^\s*(\(\d+\)\s*)?전기", sent) else "current_period"
+            for concept, rx in _LEASE_SENT.items():
+                m = rx.search(sent)
+                if not m or (scope, concept, period) in seen:
+                    continue
+                seen.add((scope, concept, period))
+                amount = int(m["a"].replace(",", ""))
+                out.append({"rcept_no": filing.get("rcept_no"), "amends_rcept_no": filing.get("amends_rcept_no"),
+                            "fs_scope": scope, "concept": concept, "period": period, "amount": amount, "unit_kind": "krw",
+                            "amount_krw": amount * _SENT_UNITS[m["u"]], "label": m.group(0).split("리스료")[0].strip() + " 리스료",
+                            "label_path": [], "column": "", "target": None, "target_basis": None,
+                            "source": {"sentence_id": p.get("id"), "page": p.get("page"), "file": p.get("file")},
+                            "source_status": "sentence", "concepts_version": version, "match_basis": "sentence",
+                            "text": sent.strip()[:300]})
+    return out
+
+
+# ---------- PPA 완료 문장(c13) ----------
+# 두 분 규칙(31·23): 확정·완료가 명시되면 「확정」. s137 지란지교시큐리티 주석 39.(7) 「측정기간 내에 사업결합 회계처리를
+# 완료하였습니다」. 측정기간 1년 경과만으로 확정 짓는 추론은 넣지 않는다(D6). 법적 합병 완료(「합병을 완료」)는 아니다.
+_PPA_DONE = re.compile(r"(매수가격\s*배분|PPA|사업결합\s*(의\s*)?회계\s*처리|피취득자[^.]{0,30}공정가치(\s*평가)?)"
+                       r"[^.]{0,30}?(완료|확정)\s*(되었|되어|하였|했|됨)")
+_PPA_DONE_NEG = re.compile(r"(완료|확정)\s*되지|못한다면|않았|않아|않은|할\s*수|경우")
+
+
+def _ppa_completion_facts(filing: dict, by_file: dict, version: str) -> list[dict]:
+    out, seen = [], set()
+    for p in filing.get("paragraphs") or []:
+        text = p.get("text") or ""
+        if "완료" not in text and "확정" not in text:
+            continue
+        scope = _file_scope(p.get("file") or "", by_file)
+        for sent in _SENT_END.split(text):
+            if not scope or scope in seen or not _PPA_DONE.search(sent) or _PPA_DONE_NEG.search(sent):
+                continue
+            seen.add(scope)
+            out.append({"rcept_no": filing.get("rcept_no"), "amends_rcept_no": filing.get("amends_rcept_no"),
+                        "fs_scope": scope, "concept": "PPA_COMPLETED_STMT", "period": "current_end", "amount": None,
+                        "unit_kind": None, "amount_krw": None, "label": "사업결합 회계처리 완료 문장", "label_path": [],
+                        "column": "", "target": None, "target_basis": None,
+                        "source": {"sentence_id": p.get("id"), "page": p.get("page"), "file": p.get("file")},
+                        "source_status": "sentence", "concepts_version": version, "match_basis": "sentence",
+                        "text": sent.strip()[:300]})
+    return out
+
+
 def sentence_facts(filing: dict, *, concepts_path: Path | None = None) -> list[dict]:
     """1층 공시 기록(paragraphs·tables) → 문장에서 읽은 투자부동산 공정가치 사실(범위·기간마다 첫 문장 하나)과
     금액 없는 표시 사실 IP_FV_MODEL(공정가치 모형)·IP_FV_NO_MATERIAL_DIFF(차이 없음 문장)·IP_FV_LEADIN(공정가치
@@ -1071,4 +1142,6 @@ def sentence_facts(filing: dict, *, concepts_path: Path | None = None) -> list[d
             seen.add((scope, period))
             out.append(_sentence_fact(filing, p, scope, period, amt, unit, version))
     out += _fv_designation_facts(filing, by_file, version)  # c12
+    out += _lease_sentence_facts(filing, by_file, version)  # c13
+    out += _ppa_completion_facts(filing, by_file, version)  # c13
     return out

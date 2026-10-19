@@ -1118,7 +1118,7 @@ class T11bFix1Test(unittest.TestCase):
         return extract_facts(list(tables), self.concepts)
 
     def test_version_c10_or_later(self):  # c11 = 리스·투자부동산 수정(LeaseIpFixC11Test)
-        self.assertIn(self.concepts[0].version, ("c10", "c11", "c12"))
+        self.assertIn(self.concepts[0].version, ("c10", "c11", "c12", "c13"))
 
     def test_instrument_embedded_derivative_in_asset_column_not_liability(self):
         # 20260323001209 t106 모양: 열이 [당기말, 파생상품자산] / [당기말, 파생상품부채]
@@ -1172,7 +1172,7 @@ class LeaseIpFixC11Test(unittest.TestCase):
 
     def test_version_c11_or_later(self):
         meta = json.loads(CONCEPTS_PATH.read_text(encoding="utf-8"))
-        self.assertIn(meta["concepts_version"], ("c11", "c12"))
+        self.assertIn(meta["concepts_version"], ("c11", "c12", "c13"))
 
     def test_starflex_low_value_recognition_exemption_row(self):
         # s088 스타플렉스 20260323001102 주석 13 사용권자산(연결, 천원): 소액기초자산 인식면제 행을 못 읽어 SHORT_TERM 이었다
@@ -1284,7 +1284,7 @@ class IpFairValueSentenceTest(unittest.TestCase):
                           ("consolidated", "current_end", 15857, 15857000000, "s1186")})
         for f in got:
             self.assertEqual((f["concept"], f["unit_kind"], f["match_basis"]), ("IP_FAIR_VALUE", "krw", "sentence"))
-            self.assertIn(f["concepts_version"], ("c11", "c12"))
+            self.assertIn(f["concepts_version"], ("c11", "c12", "c13"))
 
     def test_prior_in_parentheses_and_units(self):
         from dart_search_mcp.ledger.facts import sentence_facts
@@ -1513,7 +1513,7 @@ class C12AgreedFixTest(unittest.TestCase):
 
     def test_version_c12(self):
         meta = json.loads(CONCEPTS_PATH.read_text(encoding="utf-8"))
-        self.assertEqual(meta["concepts_version"], "c12")
+        self.assertIn(meta["concepts_version"], ("c12", "c13"))
 
     # ---- 1. FVOCI: FVOCI 주석 안의 지분 행 ----
     def test_seongwoo_equity_rows_in_fvoci_note(self):
@@ -1913,6 +1913,72 @@ class C12Fix1FactsTest(unittest.TestCase):
         self.assertEqual({f.get("since") for f in _by(self.facts(t), "FVOCI_EQUITY")}, {"c12"})
         t = _table(rows, note_title=note, title="(1) 기타포괄손익-공정가치 측정 지분상품", headers=["당기말", "전기말"])
         self.assertEqual({f.get("since") for f in _by(self.facts(t), "FVOCI_EQUITY")}, {None})
+
+
+
+class LeaseCashOutflowSentenceTest(unittest.TestCase):
+    """c13(합의 규칙 28·29): 현금유출액 문장 속 단기·소액 리스료 → 리스 문장 사실. 총 현금유출액은 쓰지 않는다."""
+
+    def got(self, paragraphs):
+        from dart_search_mcp.ledger.facts import sentence_facts
+        return [f for f in sentence_facts(_filing(paragraphs)) if f["concept"].startswith("LEASE_")]
+
+    def test_daebong_sentences(self):
+        # s098 대봉엘에스 20260323001154 연결 s1079·s1080, 별도 s434
+        got = self.got([
+            _p("s1079", "당기 중 변동리스에 따른 리스료 8,031,888원, 소액자산 리스에 따른 리스료 124,303,438원, 단기자산에 따른 "
+                        "리스료 7,008,183원 및 관련 이자비용 59,880,643원을 포함하여 리스와 관련한 총 현금유출액은 830,452,195원입니다.",
+               file="R_00761.xml"),
+            _p("s1080", "전기 중 변동리스에 따른 리스료 4,390,776원, 소액자산 리스에 따른 리스료 27,801,024원, 단기자산에 따른 "
+                        "리스료 1,896,362원 및 관련 이자비용 34,570,227원을 포함하여 리스와 관련한 총 현금유출액은 654,461,468원입니다.",
+               file="R_00761.xml"),
+            _p("s434", "당기 중 변동리스에 따른 리스료 8,031,888원, 소액자산 리스에 따른 리스료 108,751,356원 및 관련 이자비용 "
+                       "13,827,336원을 포함하여 리스와 관련한 총 현금유출액은293,254,400원입니다."),
+        ])
+        self.assertEqual({(f["fs_scope"], f["concept"], f["period"], f["amount_krw"]) for f in got},
+                         {("consolidated", "LEASE_LOW_VALUE_EXP", "current_period", 124303438),
+                          ("consolidated", "LEASE_SHORT_TERM_EXP", "current_period", 7008183),
+                          ("consolidated", "LEASE_LOW_VALUE_EXP", "prior_period", 27801024),
+                          ("consolidated", "LEASE_SHORT_TERM_EXP", "prior_period", 1896362),
+                          ("separate", "LEASE_LOW_VALUE_EXP", "current_period", 108751356)})
+        self.assertTrue(all(f["match_basis"] == "sentence" for f in got))
+
+    def test_total_outflow_never_an_expense(self):
+        got = self.got([_p("s1", "당기 중 리스와 관련한 총 현금유출액은 830,452,195원입니다."),
+                        _p("s2", "단기리스 및 소액자산리스와 관련된 현금유출을 포함한 총 현금유출액은 5,000원입니다."),
+                        # 20260414002015: 「단기리스 또는 소액자산 리스료」는 합친 금액 — 소액으로 읽지 않는다
+                        _p("s3", "한편, 당기 중 리스부채의 총 현금유출은 286,853천원(전기: 227,939천원), 당기비용으로 인식한 단기리스 또는 "
+                                 "소액자산 리스료는 36,201천원(전기:29,489천원) 입니다.")])
+        self.assertEqual(got, [])
+
+
+
+class PpaCompletionSentenceTest(unittest.TestCase):
+    """c13: 사업결합 회계처리 완료를 명시한 회사 문장 → PPA_COMPLETED_STMT(금액 없음)."""
+
+    def got(self, paragraphs):
+        from dart_search_mcp.ledger.facts import sentence_facts
+        return [f for f in sentence_facts(_filing(paragraphs)) if f["concept"] == "PPA_COMPLETED_STMT"]
+
+    def test_jiran_measurement_period_completed(self):
+        # s137 지란지교시큐리티 20260323001717 연결 주석 39.(7) s1345
+        got = self.got([_p("s1345", "(7) 측정기간2024년 7월 19일 취득한 소프트웨어 개발 및 보안 사업부문과 관련된 영업권은 기업회계기준서 "
+                                    "제1103호 '사업결합' 문단 45에 따라 잠정금액으로 인식되었으며, 당기 중 식별가능 순자산에 대한 가치평가를 "
+                                    "반영하여 측정기간 내에 사업결합 회계처리를 완료하였습니다.", file="R_00761.xml")])
+        self.assertEqual([(f["fs_scope"], f["source"]["sentence_id"]) for f in got], [("consolidated", "s1345")])
+
+    def test_other_completion_wordings(self):
+        got = self.got([_p("s1", "당기 중 매수가격배분이 완료되어 영업권 금액이 조정되었습니다."),
+                        _p("s2", "당기 중 피취득자의 식별가능한 순자산 공정가치 평가가 확정되었습니다.", file="R_00761.xml")])
+        self.assertEqual({f["fs_scope"] for f in got}, {"separate", "consolidated"})
+
+    def test_not_completion(self):
+        self.assertEqual(self.got([
+            _p("s1", "2016년 8월 30일을 합병기일로 하여 합병을 완료하였습니다."),
+            _p("s2", "사업결합 회계처리가 보고기간말 현재 완료되지 못한다면, 잠정금액을 재무제표에 보고합니다."),
+            _p("s3", "당기말 현재 매수가격배분이 완료되지 않아 잠정금액으로 표시하였습니다."),
+            _p("s4", "배당을 받을 권리가 확정되는 시점에 당기손익으로 인식하고 있습니다."),
+        ]), [])
 
 
 if __name__ == "__main__":
