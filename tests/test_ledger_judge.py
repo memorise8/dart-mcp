@@ -1422,8 +1422,19 @@ class C13Fix1Test(unittest.TestCase):
         cat = T("R:00760:t080", "금융상품", ["상각후원가측정금융자산"], title="범주별 금융상품", headers=["상각후원가측정금융자산"])
         cat["rows"][0]["cells"] = [{"col": 1, "value": 100}]
         self.assertEqual(scope_meta([pol, pl, cat], "separate")["category_table_id"], "R:00760:t080")
+        # t080 은 표 제목이 「(1) 금융자산」(범주는 주석 제목에), 행 「상각후원가 금융자산」(띄어 씀) — 인용 후보로는 받는다
+        t080 = T("R:00760:t080", "범주별 금융상품", ["당기손익-공정가치측정금융자산", "상각후원가 금융자산"], title="(1) 금융자산",
+                 headers=["당기말"])
+        t080["rows"][0]["cells"] = [{"col": 1, "value": 4872144}]
+        m = scope_meta([pol, pl, t080], "separate")
+        self.assertEqual((m["category_table"], m["category_table_id"], m["category_fvoci"]), (True, "R:00760:t080", False))
         m = scope_meta([pol, pl], "separate")
         self.assertEqual((m["category_table"], m["category_table_id"]), (True, None))
+        # s050 피에이치에이 t032 「…범주별 장부금액과 순손익 내역」은 잔액 표 — 인용한다
+        t032 = T("R:00760:t032", "금융상품의 범주", ["현금및현금성자산"], headers=["상각후원가측정"],
+                 title="(1) 보고기간 종료일 현재의 금융자산의 범주별 장부금액과 순손익 내역은 다음과 같습니다.")
+        t032["rows"][0]["cells"] = [{"col": 1, "value": 85265973}]
+        self.assertEqual(scope_meta([pol, t032], "separate")["category_table_id"], "R:00760:t032")
 
 
 if __name__ == "__main__":

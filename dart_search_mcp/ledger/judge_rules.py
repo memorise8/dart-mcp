@@ -868,7 +868,8 @@ _PL_TITLE = re.compile(r"(?<!당기)(?<!포괄)손익|수익|비용")
 
 def _category_amount_table(t: dict) -> bool:
     """범주표로 근거에 댈 수 있는가: 숫자 칸이 있고, 주석·표 제목이 손익(금융손익·범주별 순손익) 표가 아니다."""
-    if _PL_TITLE.search(_WS_RE.sub("", _table_head(t))):
+    head = _WS_RE.sub("", _table_head(t))
+    if _PL_TITLE.search(head) and not re.search(r"장부|잔액", head):  # 「장부금액과 순손익」 표(s050 t032)는 잔액 표다
         return False
     return any(isinstance(c.get("value"), (int, float)) for r in t.get("rows") or [] for c in r.get("cells") or [])
 
@@ -920,10 +921,15 @@ def scope_meta(tables: list[dict], fs_scope: str, *, rules_path: Path | None = N
                 {_header_token(h) for c in t.get("columns") or [] for h in c.get("header_path") or []}
             if all(any(rx.match(tok) for tok in tokens) for rx in mv_tokens):
                 out["movement_table"] = True
-        if cat_note.search(head) and (cat_head.search(t.get("title") or "") or any(cat_row.search(lb) for lb in labels)):
-            out["category_table"] = True
-            if not out["category_table_id"] and _category_amount_table(t):  # 수정 1차: 금액 있는 범주 잔액 표만 근거로 댄다
-                out["category_table_id"] = t.get("table_id")
+        is_cat = cat_note.search(head) and (cat_head.search(t.get("title") or "") or any(cat_row.search(lb) for lb in labels))
+        if is_cat:
+            out["category_table"] = True  # 판정 조건(내재파생 해당 없음) — 수정 1차에서도 그대로
+        # 근거 인용·「FVOCI 없음」 표시용(값에 안 씀): 판정 조건 범주표, 또는 주석·표 제목에 「범주」가 있거나 띄어 쓴
+        # 「상각후원가 금융자산」 행이 있는 금융상품 주석 표. 금액 있는 범주 잔액 표만 인용한다(수정 1차)
+        cite = is_cat or (cat_note.search(head) and ("범주" in _WS_RE.sub("", head)
+                                                     or any(cat_row.search(_WS_RE.sub("", lb)) for lb in labels)))
+        if cite and _category_amount_table(t):
+            out["category_table_id"] = out["category_table_id"] or t.get("table_id")
             if _category_has_fvoci(t):  # c13: 범주표에 0 아닌 FVOCI 열·행이 있는가(열만 있고 모두 0이면 없음)
                 out["category_fvoci"] = True
     return out
