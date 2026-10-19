@@ -1351,6 +1351,7 @@ class C13DisplayTest(unittest.TestCase):
         from dart_search_mcp.ledger.judge_rules import scope_meta
         t = T("R:00760:t061", "금융상품", ["상각후원가측정금융자산", "당기손익-공정가치측정금융자산"], title="범주별 금융상품",
               headers=["상각후원가측정금융자산", "당기손익-공정가치측정금융자산"])
+        t["rows"][0]["cells"] = [{"col": 1, "value": 100}, {"col": 2, "value": 0}]
         m = scope_meta([t], "separate")
         self.assertEqual((m["category_table"], m["category_fvoci"], m["category_table_id"]), (True, False, "R:00760:t061"))
         t2 = T("R:00760:t062", "금융상품", ["상각후원가측정금융자산"], title="범주별 금융상품",
@@ -1391,6 +1392,38 @@ class C13PpaCompletionTest(unittest.TestCase):
         m = M("PPA_MEASUREMENT_PERIOD", text="연결회사의 사업결합 회계처리는 당기말 현재 잠정금액을 보고한 것으로, 조정될 수 있습니다.")
         r = judge(self.bc() + [PC()], marks=[m], v1_ppa=self.V1)["PPA_MEASUREMENT_PERIOD"]
         self.assertEqual((r["value"], r["held_reason"]), ("UNDETERMINED", "needs_review"))
+
+
+
+class C13Fix1Test(unittest.TestCase):
+    def test_ppa_v1_row_never_gets_prior_prefix(self):
+        # 20251117000187 모양: v1 FINAL 「당기 중 … 인수가격배분이 완료되었으며」, 사업결합 표는 전기 칸 — 기간은 v1 문장 것이 아니다
+        v1 = {"value": "FINAL", "evidence": "당기 중 식별가능한 자산(부채) 인식 등 인수가격배분이 완료되었으며", "held_reason": ""}
+        r = judge([F("BC_CONSIDERATION", 100, "prior_period", label="이전대가")], v1_ppa=v1)["PPA_MEASUREMENT_PERIOD"]
+        self.assertEqual((r["value"], r["basis_period"]), ("FINAL", "prior"))
+        self.assertEqual(r["evidence"], v1["evidence"])
+
+    def test_fact_based_prior_rows_keep_prefix(self):
+        r = judge([F("DEV_COST_ADDITION", 300, "prior_period", label="개발비 증가")])["DEV_COST_CAPITALIZATION"]
+        self.assertTrue(r["evidence"].startswith("당기에 없음, 전기 기준: "))
+
+    def test_fvoci_none_without_amount_category_table_has_no_citation(self):
+        fvpl = F("FVPL_EQUITY", 50, label="당기손익-공정가치측정 지분상품")
+        r = judge([fvpl], category_table=True, category_fvoci=False, category_table_id=None)["FVOCI_DESIGNATION"]
+        self.assertTrue(r["evidence"].startswith("FVOCI 없음(FVTPL만) / "))
+
+    def test_scope_meta_cites_amount_category_table_only(self):
+        # 20260317000787 sep: t028(회계정책 목록, 금액 없음)이 먼저 걸렸다 — 금액 있는 범주표 t080 을 쓴다
+        # 20260323000097: 「금융손익」 표(범주별 손익)는 범주 잔액 표가 아니다
+        from dart_search_mcp.ledger.judge_rules import scope_meta
+        pol = T("R:00760:t028", "중요한 회계정책", ["상각후원가측정금융자산", "당기손익-공정가치측정금융자산"], title="범주별 금융상품")
+        pl = T("R:00760:t109", "금융손익", ["상각후원가측정금융자산"], title="19-1 범주별 금융손익", headers=["이자수익"])
+        pl["rows"][0]["cells"] = [{"col": 1, "value": 30}]
+        cat = T("R:00760:t080", "금융상품", ["상각후원가측정금융자산"], title="범주별 금융상품", headers=["상각후원가측정금융자산"])
+        cat["rows"][0]["cells"] = [{"col": 1, "value": 100}]
+        self.assertEqual(scope_meta([pol, pl, cat], "separate")["category_table_id"], "R:00760:t080")
+        m = scope_meta([pol, pl], "separate")
+        self.assertEqual((m["category_table"], m["category_table_id"]), (True, None))
 
 
 if __name__ == "__main__":

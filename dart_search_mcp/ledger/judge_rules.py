@@ -544,7 +544,10 @@ def _fvoci(ctx: Ctx) -> dict | None:
 def _fvoci_none_note(ctx: Ctx, res: dict) -> None:
     """c13(합의 규칙 12·13, s042·s044·s048·s050): 범주별 금융상품 표에 FVOCI 가 없으면 근거 앞에 그 표를 먼저 보인다 — 표시만."""
     tid = ctx.meta.get("category_table_id")
-    if not (ctx.meta.get("category_table") and ctx.meta.get("category_fvoci") is False and tid):
+    if not (ctx.meta.get("category_table") and ctx.meta.get("category_fvoci") is False):
+        return
+    if not tid:  # 수정 1차: 금액 있는 범주표가 없으면 표를 대지 않고 문구만
+        res["evidence"] = f"FVOCI 없음(FVTPL만) / {res['evidence']}"
         return
     head = _heading(tid, ctx.tables)
     res["evidence"] = f"FVOCI 없음(FVTPL만): 범주별 금융상품 표({head or tid}) / {res['evidence']}"
@@ -773,6 +776,7 @@ def _ppa(ctx: Ctx) -> dict | None:
         return _review(f"옛 판정 {value}이나 {ctx.reasons['ppa_no_bc_table']}")
     res = _res(value, held=v1.get("held_reason") or "", evidence=v1.get("evidence") or "",
                kind=v1.get("sentence_kind"), heading=v1.get("evidence_heading_path") or "")
+    res["evidence_period"] = None  # c13 수정 1차: 근거는 v1 문장 — 사업결합 표 기간(basis)으로 「전기 기준」을 붙이지 않는다
     if bc and value in ("PROVISIONAL", "FINAL"):
         res["source_refs"] = [_fact_ref(f) for f in bc]
         res["basis_period"] = _basis(bc)
@@ -859,6 +863,16 @@ def _rf_blocks(t: dict, rules: dict) -> bool:
 _FVOCI_WORD = re.compile(r"기타포괄손익(.?공정가치|인식|으로인식)|FVOCI")
 
 
+_PL_TITLE = re.compile(r"(?<!당기)(?<!포괄)손익|수익|비용")
+
+
+def _category_amount_table(t: dict) -> bool:
+    """범주표로 근거에 댈 수 있는가: 숫자 칸이 있고, 주석·표 제목이 손익(금융손익·범주별 순손익) 표가 아니다."""
+    if _PL_TITLE.search(_WS_RE.sub("", _table_head(t))):
+        return False
+    return any(isinstance(c.get("value"), (int, float)) for r in t.get("rows") or [] for c in r.get("cells") or [])
+
+
 def _category_has_fvoci(t: dict) -> bool:
     fv_cols = {c.get("col") for c in t.get("columns") or [] if c.get("role", "value") == "value"
                and any(_FVOCI_WORD.search(_WS_RE.sub("", h or "")) for h in c.get("header_path") or [])}
@@ -908,7 +922,8 @@ def scope_meta(tables: list[dict], fs_scope: str, *, rules_path: Path | None = N
                 out["movement_table"] = True
         if cat_note.search(head) and (cat_head.search(t.get("title") or "") or any(cat_row.search(lb) for lb in labels)):
             out["category_table"] = True
-            out["category_table_id"] = out["category_table_id"] or t.get("table_id")
+            if not out["category_table_id"] and _category_amount_table(t):  # 수정 1차: 금액 있는 범주 잔액 표만 근거로 댄다
+                out["category_table_id"] = t.get("table_id")
             if _category_has_fvoci(t):  # c13: 범주표에 0 아닌 FVOCI 열·행이 있는가(열만 있고 모두 0이면 없음)
                 out["category_fvoci"] = True
     return out
@@ -994,7 +1009,8 @@ def judge_filing(rcept_no: str, fs_scope: str, facts: list[dict], instruments, m
                 or (topic in failed_any and res["value"] in absence.get(topic, ())):
             # 없음에 기댄 값(해당 없음 등)도 관련 주석 표를 읽지 못했으면 정할 수 없다(I1)
             res = _res(UND, held="read_failed", evidence=ctx.reasons["read_failed"])
-        if res["value"] != UND and res.get("basis_period") == "prior" and not res["evidence"].startswith("당기에 없음"):
+        ep = res["evidence_period"] if "evidence_period" in res else res.get("basis_period")
+        if res["value"] != UND and ep == "prior" and not res["evidence"].startswith("당기에 없음"):
             # c13(합의 규칙 3, v2q Q2): 당기 근거가 없고 전기 근거로 정한 값은 그렇게 밝힌다
             res = {**res, "evidence": f"당기에 없음, 전기 기준: {res['evidence']}"}
         out.append(_row(rcept_no, fs_scope, topic, res, meta))
