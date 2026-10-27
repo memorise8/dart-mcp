@@ -48,6 +48,11 @@ class AcqDateExtractTest(unittest.TestCase):
                   "회사는 2024년 12월 26일을 합병기일로 하여 100% 지배기업인 G를 흡수합병하였습니다."):
             self.assertEqual(_acq_dates(s), [], s)
 
+    def test_sentence_facts_unit_kind_none(self):
+        # BE 적재기는 unit_kind 를 str() 로 싣는다 — null 이면 글자 'None' 이 된다(dart3 10-27). 금액 없는 문장 사실은 "none"
+        filing = {"rcept_no": R, "tables": [], "paragraphs": [{"id": "s1", "file": "R_00761.xml", "text": "당기 중 연결범위의 변동은 없습니다."}]}
+        self.assertEqual([f["unit_kind"] for f in _bc_facts(filing, {}, "c15")], ["none"])
+
     def test_only_in_bc_note(self):
         filing = {"rcept_no": R, "tables": [], "paragraphs": [
             {"id": "s1", "file": "R_00761.xml", "text": "38. 사업결합"},

@@ -952,7 +952,7 @@ _IP_FV_LEADIN = re.compile(r"투자부동산[^.]{0,30}공정가치[^.]{0,30}다�
 def _model_fact(filing: dict, p: dict, scope: str, version: str, concept: str = "IP_FV_MODEL") -> dict:
     """금액 없는 표시 사실(공정가치 모형 / 차이 없음 문장)."""
     return {"rcept_no": filing.get("rcept_no"), "amends_rcept_no": filing.get("amends_rcept_no"), "fs_scope": scope,
-            "concept": concept, "period": "current_end", "amount": None, "unit_kind": None, "amount_krw": None,
+            "concept": concept, "period": "current_end", "amount": None, "unit_kind": "none", "amount_krw": None,
             "label": _MARKER_LABEL[concept], "label_path": [], "column": "", "target": None, "target_basis": None,
             "source": {"sentence_id": p.get("id"), "page": p.get("page"), "file": p.get("file")},
             "source_status": "sentence", "concepts_version": version, "match_basis": "sentence",
@@ -1012,7 +1012,7 @@ def _fv_designation_facts(filing: dict, by_file: dict, version: str) -> list[dic
             continue
         seen.add(scope)
         out.append({"rcept_no": filing.get("rcept_no"), "amends_rcept_no": filing.get("amends_rcept_no"), "fs_scope": scope,
-                    "concept": "FVOCI_DESIGNATION_STMT", "period": "current_end", "amount": None, "unit_kind": None,
+                    "concept": "FVOCI_DESIGNATION_STMT", "period": "current_end", "amount": None, "unit_kind": "none",
                     "amount_krw": None, "label": _MARKER_LABEL["FVOCI_DESIGNATION_STMT"], "label_path": [], "column": "",
                     "target": None, "target_basis": None, "source": src, "source_status": "sentence",
                     "concepts_version": version, "match_basis": "sentence", "note_title": note, "text": sent[:300]})
@@ -1082,7 +1082,7 @@ def _ppa_completion_facts(filing: dict, by_file: dict, version: str) -> list[dic
             seen.add(scope)
             out.append({"rcept_no": filing.get("rcept_no"), "amends_rcept_no": filing.get("amends_rcept_no"),
                         "fs_scope": scope, "concept": "PPA_COMPLETED_STMT", "period": "current_end", "amount": None,
-                        "unit_kind": None, "amount_krw": None, "label": "사업결합 회계처리 완료 문장", "label_path": [],
+                        "unit_kind": "none", "amount_krw": None, "label": "사업결합 회계처리 완료 문장", "label_path": [],
                         "column": "", "target": None, "target_basis": None,
                         "source": {"sentence_id": p.get("id"), "page": p.get("page"), "file": p.get("file")},
                         "source_status": "sentence", "concepts_version": version, "match_basis": "sentence",
@@ -1187,7 +1187,7 @@ def _prior_deal(sent: str) -> bool:
 def _bc_marker(filing: dict, scope: str, concept: str, src: dict, note: str | None, text: str, version: str,
                **extra) -> dict:
     return {"rcept_no": filing.get("rcept_no"), "amends_rcept_no": filing.get("amends_rcept_no"), "fs_scope": scope,
-            "concept": concept, "period": "current_period", "amount": None, "unit_kind": None, "amount_krw": None,
+            "concept": concept, "period": "current_period", "amount": None, "unit_kind": "none", "amount_krw": None,
             "label": _MARKER_LABEL.get(concept, concept), "label_path": [], "column": "", "target": None,
             "target_basis": None, "source": src, "source_status": "sentence", "concepts_version": version,
             "match_basis": "sentence", "note_title": note, "text": text.strip()[:300], **extra}
