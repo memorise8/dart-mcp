@@ -737,19 +737,34 @@ def _top(facts: list[dict], n: int = 2) -> list[dict]:
     return sorted(facts, key=lambda f: -abs(_num(f.get("amount"))))[:n]
 
 
-_DEV_PAST_BALANCE_NOTE = "올해 자산화 없음(과거 개발비 잔액 있음)"
+_DEV_PAST_BALANCE_NOTE = "당기 신규 자산화 없음·과거 개발비 잔액 있음"
+_DEV_RESEARCH_NOTE = "당기 신규 자산화 없음·조사연구비 비용 계상(연구개발 연결 근거 미확인)"
+_RESEARCH_COST = re.compile(r"조사\s*연구")
+_RND_COST = re.compile(r"연구\s*개발|경상\s*연구|경상\s*개발|시험\s*연구|위탁\s*연구|^연구비")
+_RND_LINK = re.compile(r"경상\s*연구\s*개발비|연구\s*개발\s*비|연구\s*개발\s*활동")
+
+
+def _research_unlinked(ctx: Ctx, rnd_cur: list[dict]) -> bool:
+    """c15(김현명 d2): 비용 이름이 조사연구비뿐이면 연구개발과 이어지는 근거(주석 문장)가 있어야 비용 처리 사례로 센다.
+    근거가 없으면 값은 그대로 두되 표지 rnd_research_cost_unlinked — 「개발지출 전액 비용 처리」로 쓰지 않는다."""
+    names = [_WS_RE.sub("", " ".join(f.get("label_path") or [f.get("label") or ""])) for f in rnd_cur]
+    if not names or not all(_RESEARCH_COST.search(n) and not _RND_COST.search(_RESEARCH_COST.sub("", n)) for n in names):
+        return False
+    return not any(_RND_LINK.search(m.get("text") or "") for m in ctx.marks)
 
 
 def _dev_expensed_by_amount(ctx: Ctx, add: list[dict], asset: list[dict], rnd_cur: list[dict]) -> dict | None:
     """c14(김현명 D3·b6): 당기 연구개발 관련 비용 금액 + 무형자산 변동표에서 당기 개발비 증가 없음 → EXPENSED.
     개발비 잔액이 있으면(과거 자산화) 당기 증가 칸이 0·「-」로 **읽혀야** 한다 — 못 찾은 것과 0 을 나눈다. 그때는
-    「올해 자산화 없음(과거 개발비 잔액 있음)」과 표지 expensed_current_year_only 로 전액 비용 처리와 구분한다.
+    「당기 신규 자산화 없음·과거 개발비 잔액 있음」과 표지 expensed_current_year_only 로 구분한다(김현명 d1·d3·d4: 값은
+    비용 처리 그대로, 「개발비 자산이 없는 회사」 질문에서만 뺀다).
     개발비 잔액도 증가 사실도 없으면 변동표에 개발비가 없는 것 — 표지 dev_expensed_by_amount. 비용 줄은 원문 명칭 그대로."""
     if not rnd_cur or not ctx.meta.get("movement_table"):
         return None
     if [f for f in add if _side(f) == "current"] or (not asset and _dev_expensed(ctx)):
         return None  # 당기 증가가 있거나, 회사의 비용 처리 문장이 있으면 그 길(문장 근거)이 먼저
     zero_cur = [f for f in _usable(ctx.facts, "DEV_COST_ADDITION") if _side(f) == "current" and _num(f.get("amount")) == 0]
+    research = _research_unlinked(ctx, rnd_cur)
     rnd_line = " / ".join(evidence_line(f, ctx.tables) for f in _top(rnd_cur))
     refs = [_fact_ref(f) for f in _top(rnd_cur)]
     if asset or add:
@@ -760,6 +775,9 @@ def _dev_expensed_by_amount(ctx: Ctx, add: list[dict], asset: list[dict], rnd_cu
         ev = (f"{_DEV_PAST_BALANCE_NOTE}: {evidence_line(z, ctx.tables)} / 비용 금액: {rnd_line}")
         res = _res("EXPENSED", evidence=ev, basis="current", refs=[_fact_ref(z)] + refs, kind="ledger_fact", heading=head)
         res["flags"] = ["expensed_current_year_only"]
+        if research:
+            res["evidence"] = f"{_DEV_RESEARCH_NOTE} / {res['evidence']}"
+            res["flags"].append("rnd_research_cost_unlinked")
         return res
     if ctx.meta.get("dev_asset_label"):
         return None  # 무형자산 주석 표에 개발비 행·열이 있는데 금액을 못 읽음(열 방향 변동표 등) — 「못 찾음」은 「없음」이 아니다
@@ -767,6 +785,9 @@ def _dev_expensed_by_amount(ctx: Ctx, add: list[dict], asset: list[dict], rnd_cu
     res = _res("EXPENSED", evidence=ev, basis="current", refs=refs, kind="ledger_fact",
                heading=_heading((rnd_cur[0].get("source") or {}).get("table_id"), ctx.tables))
     res["flags"] = ["dev_expensed_by_amount"]
+    if research:
+        res["evidence"] = f"{_DEV_RESEARCH_NOTE} / {ev}"
+        res["flags"].append("rnd_research_cost_unlinked")
     return res
 
 

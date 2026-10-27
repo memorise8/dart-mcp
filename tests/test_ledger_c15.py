@@ -1,10 +1,10 @@
-"""c15(김현명 2단계: D1·D2·D6·D7·C1·C3) — 사실 추출(facts.py)·판정(judge_rules.py)·상품 행(rights.py)."""
+"""c15(김현명 2단계: D1·D2·D6·D7·C1·C3, 2차 확인 d1–d4) — 사실 추출(facts.py)·판정(judge_rules.py)·상품 행(rights.py)."""
 import unittest
 
 from dart_search_mcp.ledger.facts import _acq_dates, _bc_facts, _fvoci_disposal_facts
 from dart_search_mcp.ledger.judge_rules import judge_filing, scope_meta
 from dart_search_mcp.ledger.rights import instrument_rights, product_key
-from tests.test_ledger_judge import F, I, META, R, T, judge
+from tests.test_ledger_judge import F, I, M, META, R, T, judge
 
 
 def S(concept, text="문장.", date=None, scope="consolidated", sid="s9"):
@@ -391,3 +391,36 @@ class C1RightsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DevResearchCostTest(unittest.TestCase):
+    """김현명 2차 d2: 비용 이름이 조사연구비뿐이면 연구개발 연결 근거가 있어야 표지 없이 비용 처리."""
+
+    def research(self, label="조사연구비"):
+        f = F("RND_EXPENSE", 76485, "current_period", label=label, mult=1000)
+        f["label_path"] = [label]
+        return f
+
+    def test_research_only_flagged(self):
+        r = judge([self.research()], movement_table=True)["DEV_COST_CAPITALIZATION"]
+        self.assertEqual((r["value"], r["value_flags"]), ("EXPENSED", ["dev_expensed_by_amount", "rnd_research_cost_unlinked"]))
+        self.assertTrue(r["evidence"].startswith("당기 신규 자산화 없음·조사연구비 비용 계상(연구개발 연결 근거 미확인) / 비용 금액: 조사연구비"))
+        r = judge([self.research("교육및조사연구비")], movement_table=True)["DEV_COST_CAPITALIZATION"]
+        self.assertIn("rnd_research_cost_unlinked", r["value_flags"])
+
+    def test_research_with_past_balance(self):
+        # d2 케이씨에이서비스 모양: 과거 잔액 + 당기 취득 0 + 조사연구비
+        facts = [F("DEV_COST_ASSET", 136300), F("DEV_COST_ADDITION", 0, "current_period", label="개발비 / 취득액"),
+                 self.research()]
+        r = judge(facts, movement_table=True)["DEV_COST_CAPITALIZATION"]
+        self.assertEqual(r["value_flags"], ["expensed_current_year_only", "rnd_research_cost_unlinked"])
+        self.assertIn("당기 신규 자산화 없음·과거 개발비 잔액 있음: ", r["evidence"])
+
+    def test_linked_or_rnd_name_not_flagged(self):
+        link = M("DEV_COST_CAPITALIZATION", text="이외의 경우에는 경상연구개발비의 과목으로 판매비와관리비로 처리하고 있습니다.")
+        r = judge([self.research()], marks=[link], movement_table=True)["DEV_COST_CAPITALIZATION"]
+        self.assertEqual(r["value_flags"], ["dev_expensed_by_amount"])
+        r = judge([self.research(), self.research("경상연구개발비")], movement_table=True)["DEV_COST_CAPITALIZATION"]
+        self.assertEqual(r["value_flags"], ["dev_expensed_by_amount"])
+        r = judge([self.research("경상시험연구비")], movement_table=True)["DEV_COST_CAPITALIZATION"]
+        self.assertEqual(r["value_flags"], ["dev_expensed_by_amount"])

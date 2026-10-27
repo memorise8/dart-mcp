@@ -1041,7 +1041,7 @@ class C12FvociTest(unittest.TestCase):
 
     def test_rules_version_r5(self):
         from dart_search_mcp.ledger.judge_rules import load_rules
-        self.assertIn(load_rules()["rules_version"], ("r5", "r6", "r7", "r8"))
+        self.assertIn(load_rules()["rules_version"], ("r5", "r6", "r7", "r8", "r9"))
 
     def test_statement_with_total_only_is_designated(self):
         # s058 효성티앤씨: 주석 11 FVOCI 금융자산 총액 7,303백만원 + 주석 30 「…기타포괄손익으로 인식하도록 지정하였습니다」
@@ -1519,13 +1519,13 @@ class C14DevTest(unittest.TestCase):
         self.assertEqual(r["value"], "EXPENSED")
 
     def test_past_balance_with_zero_current_addition_expensed_current_year_only(self):
-        # cc(10-27 사용자 결정): 과거 개발비 잔액 + 올해 증가 0 → 비용 처리, 「올해 자산화 없음(과거 개발비 잔액 있음)」
+        # cc(10-27 사용자 결정)·김현명 d1·d3·d4: 과거 개발비 잔액 + 올해 증가 0 → 비용 처리, 「당기 신규 자산화 없음·과거 개발비 잔액 있음」
         facts = [F("DEV_COST_ASSET", 500), F("DEV_COST_ADDITION", 0, "current_period", label="개발비 / 취득"),
                  F("DEV_COST_ADDITION", 40, "prior_period", label="개발비 / 취득"), self.rnd()]
         r = judge(facts, movement_table=True)["DEV_COST_CAPITALIZATION"]
         self.assertEqual((r["value"], r["basis_period"], r["value_flags"]),
                          ("EXPENSED", "current", ["expensed_current_year_only"]))
-        self.assertTrue(r["evidence"].startswith("올해 자산화 없음(과거 개발비 잔액 있음): 개발비 / 취득 0 (당기)"))
+        self.assertTrue(r["evidence"].startswith("당기 신규 자산화 없음·과거 개발비 잔액 있음: 개발비 / 취득 0 (당기)"))
         self.assertIn("비용 금액: 판매비와관리비 / 경상연구개발비 9,754천원 (당기)", r["evidence"])
 
     def test_past_balance_without_read_current_addition_stays_undetermined(self):

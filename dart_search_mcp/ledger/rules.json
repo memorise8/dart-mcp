@@ -1,5 +1,5 @@
 {
-  "rules_version": "r8",
+  "rules_version": "r9",
   "exception_patterns": {
     "dev_amortization": {
       "topic": "DEV_COST_CAPITALIZATION",
