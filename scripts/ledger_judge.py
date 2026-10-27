@@ -136,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--rcept-list", type=Path, help="접수번호 한 줄에 하나(이 공시만 판정)")
     ap.add_argument("--model", default=ACCEPTED_MODEL)
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) // 2))
+    ap.add_argument("--keep-superseded", action="store_true", help="정정 전 옛 접수본 행도 남긴다(c14 이전 동작)")
     args = ap.parse_args(argv)
 
     out = args.out
@@ -190,29 +191,44 @@ def main(argv: list[str] | None = None) -> int:
     held_by_topic: dict[str, Counter] = defaultdict(Counter)
     errors: dict[str, str] = {}
     n_rows = 0
+    all_rows, all_recs = [], []
+    if args.workers > 1:
+        pool = Pool(args.workers)
+        it = pool.imap(process, jobs(), chunksize=16)
+    else:
+        pool, it = None, map(process, jobs())
+    try:
+        for res in it:
+            if res["error"]:
+                errors[res["rcept_no"]] = res["error"]
+            all_rows.extend(res["rows"])
+            all_recs.extend(res["records"])
+    finally:
+        if pool:
+            pool.close()
+            pool.join()
+    # K2-1: 정정 계보 — 최신 정정본에 같은 범위·주제 행이 있으면 옛 접수본 행을 뺀다(supersede.py)
+    superseded: list[dict] = []
+    if not args.keep_superseded:
+        from dart_search_mcp.ledger.supersede import supersede
+        all_rows, superseded = supersede(all_rows, audit)
+        gone = {(r["rcept_no"], r["fs_scope"], r["topic"]) for r in superseded}
+        all_recs = [r for r in all_recs if (r["rcept_no"], r["fs_scope"], r["topic"]) not in gone]
     with out.open("w", encoding="utf-8") as fo, rec_path.open("w", encoding="utf-8") as fr:
-        if args.workers > 1:
-            pool = Pool(args.workers)
-            it = pool.imap(process, jobs(), chunksize=16)
-        else:
-            pool, it = None, map(process, jobs())
-        try:
-            for res in it:
-                if res["error"]:
-                    errors[res["rcept_no"]] = res["error"]
-                for row in res["rows"]:
-                    fo.write(json.dumps(row, ensure_ascii=False) + "\n")
-                    values[row["topic"]][row["value"]] += 1
-                    if row["held_reason"]:
-                        held[row["held_reason"]] += 1
-                        held_by_topic[row["topic"]][row["held_reason"]] += 1
-                    n_rows += 1
-                for rec in res["records"]:
-                    fr.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        finally:
-            if pool:
-                pool.close()
-                pool.join()
+        for row in all_rows:
+            fo.write(json.dumps(row, ensure_ascii=False) + "\n")
+            values[row["topic"]][row["value"]] += 1
+            if row["held_reason"]:
+                held[row["held_reason"]] += 1
+                held_by_topic[row["topic"]][row["held_reason"]] += 1
+            n_rows += 1
+        for rec in all_recs:
+            fr.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    if superseded:
+        with (out.parent / "superseded.v2.jsonl").open("w", encoding="utf-8") as fs:
+            for row in superseded:
+                fs.write(json.dumps({k: row[k] for k in ("rcept_no", "fs_scope", "topic", "value", "superseded_by")},
+                                    ensure_ascii=False) + "\n")
 
     from dart_search_mcp.ledger.judge_rules import PARSER_VERSION, load_rules
     concepts_versions = Counter(f.get("concepts_version") for fs in facts.values() for f in fs)
@@ -220,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
         "parser_version": PARSER_VERSION, "rules_version": load_rules()["rules_version"],
         "concepts_versions": dict(concepts_versions),
         "generated_at": datetime.now(timezone.utc).isoformat(), "elapsed_sec": round(time.time() - t0, 1),
-        "filings": len(rcepts), "rows": n_rows,
+        "filings": len(rcepts), "rows": n_rows, "superseded_rows": len(superseded),
         "values_by_topic": {t: dict(c) for t, c in sorted(values.items())},
         "held_reason": dict(held), "held_reason_by_topic": {t: dict(c) for t, c in sorted(held_by_topic.items())},
         "instruments": {"model": args.model, "run1": dict(s1), "run2": dict(s2)},
