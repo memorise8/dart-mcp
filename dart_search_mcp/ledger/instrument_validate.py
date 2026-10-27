@@ -656,8 +656,33 @@ def _verb_kinds(text: str, spans) -> set[str]:
         if topics:
             t = topics[-1]
             ta = max([m.end() for m in _kind_breaks(text, t.start())] or [0])
-            out |= _text_kinds(text[ta:t.end()])
+            got = _text_kinds(text[ta:t.end()])
+            out |= got
+            if got:
+                continue
+        out |= _inner_prev_kinds(text, s)
     return out
+
+
+_INNER_SENT_END_RE = re.compile(r"다\s*[.。]")
+
+
+def _inner_prev_kinds(text: str, pos: int) -> set[str]:
+    """i10(s039 육일씨엔에쓰 t143 각주 (*1)): 한 문단·각주 안에서 동사가 든 문장이 종류를 말하지 않으면, 같은 글의 바로 앞
+    문장이 한 종류만 말하고 이 문장이 그것을 이어 쓸 때 그 종류다 — 입력 문단 사이(s<n-1>, _continues)와 같은 조건을 한 글
+    안의 문장 사이에 쓴다. 「…측정합니다. 조기상환권 가치는 … 주계약에서 분리하여 별도의 파생상품으로 회계처리」의 앞 문장
+    「제3회 전환사채 발행으로 …」 → CB. 뒷 문장(1층이 붙여 온 「(5) 당기 …」)은 보지 않는다."""
+    ends = [m.end() for m in _INNER_SENT_END_RE.finditer(text, 0, pos)]
+    if not ends:
+        return set()
+    cur_start = ends[-1]
+    prev_start = ends[-2] if len(ends) > 1 else 0
+    prev, cur = text[prev_start:cur_start].strip(), text[cur_start:].lstrip()
+    prev = _ITEM_HEAD_RE.sub("", prev)  # 글 첫머리의 각주 표시(「(*1)」)는 앞 문장 자체의 것이다
+    kinds = _text_kinds(prev)
+    if len(kinds) != 1 or not _continues(cur, prev, next(iter(kinds))):
+        return set()
+    return kinds
 # 보유자 쪽(취득한 상품의 옵션, 금융자산)은 회사 자신의 상품 분리가 아니다. 제3자 지정 콜을 파생상품자산으로 잡은 문장은
 # 분리 동사가 없고(「구분 계상」) 옵션 경로가 자산 끝을 받지 않으므로 따로 막지 않는다(「…풋과 (제3자) 콜을 분리하여」는 분리).
 # T9c: 증권 보유자 낱말(매도가능증권·단기매매증권·만기보유증권·유가증권(「유가증권시장」 아님)·당기손익인식금융자산·
@@ -793,6 +818,7 @@ def _sentence_fits(text: str, kind: str, series: str | None) -> bool:
 # 신주인수권·교환권만 있는 문장은 어느 종류에도 묶이지 않는다. 단, 바로 앞 문장(s<n-1>)이 한 종류만 말하고 이 문장이 그것을
 # 이어 쓸 때(새 항목 표시로 시작하지 않고, 앞 문장이 「…다.」로 끝난 글이며 보유자·남의 상품·조건 문장이 아님)는 그 종류다.
 _SENT_NUM_RE = re.compile(r"^s(\d+)$")
+_ITEM_HEAD_RE = re.compile(r"^\s*(?:\(\s*\*\s*\d*\s*\)|\(\s*주\s*\d*\s*\)|\*+\d*)\s*")
 _ITEM_START_RE = re.compile(r"^\s*(?:\(\s*\*|\(\s*주|\*|\(\s*\d+\s*\)|\d+\s*[.)]|[가-하]\s*[.)]|[①-⑳]|주\s*\d|\[|[-•·ㆍ※])")
 
 

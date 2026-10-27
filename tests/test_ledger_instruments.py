@@ -1532,7 +1532,7 @@ class NonBalanceCellsTest(unittest.TestCase):
 
 class PromptI3Test(unittest.TestCase):
     def test_i3_version_and_rules(self):
-        self.assertEqual(PROMPT_VERSION, "i9")  # i3 규칙 문구는 i9 에도 남는다
+        self.assertIn(PROMPT_VERSION, ("i9", "i10"))  # i3 규칙 문구는 i9 에도 남는다
         user = build_messages(_inp())[1]["content"]
         for phrase in ("1499943000 이 아니다", '"s:494"', "<표 id>:r<행>:v<번호>", "[current_end]",
                        "null 이 아닌 필드는 모두 evidence", "「전환권가치」", "「전환사채 및 조기상환권」",
@@ -1773,7 +1773,7 @@ class HolderSideSentenceTest(unittest.TestCase):
 
 class PromptI4Test(unittest.TestCase):
     def test_i4_version_and_rules(self):
-        self.assertEqual(PROMPT_VERSION, "i9")  # i9 이 i4 문구를 그대로 담는다
+        self.assertIn(PROMPT_VERSION, ("i9", "i10"))  # i9 이 i4 문구를 그대로 담는다
         user = build_messages(_inp())[1]["content"]
         for phrase in ("equity_conflict", "자본요소", "회차가 다르", "만기", "이연법인세", "현금유입", "거래상대방",
                        "파생금융자산(부채)", "발행시", "비파생"):
@@ -2534,7 +2534,7 @@ class T9bFixRound4Test(unittest.TestCase):
         self.assertNotIn("not_balance:balance.current_end.face", reasons)
 
     def test_prompt_i6(self):
-        self.assertEqual(PROMPT_VERSION, "i9")  # i9 이 i6 문구를 그대로 담는다
+        self.assertIn(PROMPT_VERSION, ("i9", "i10"))  # i9 이 i6 문구를 그대로 담는다
         user = build_messages(_inp())[1]["content"]
         for phrase in ("발행회사에 대하여", "행사할 수 있는 권리", "매매목적으로 보유", "당사가 발행한", "부채 칸도",
                        "종속회사", "전환가치", "발행자의 매도청구권", "전환상환우선주-투자자 상환전환권",
@@ -2730,7 +2730,7 @@ class T9bFixRound5Test(unittest.TestCase):
                                           "해당 파생상품을 별도로 분리하여 공시하지 않았습니다."), "sep")
 
     def test_prompt_i7(self):
-        self.assertEqual(PROMPT_VERSION, "i9")
+        self.assertIn(PROMPT_VERSION, ("i9", "i10"))
         user = build_messages(_inp())[1]["content"]
         for phrase in ("바로 앞 문장", "부채요소와 자본요소로 분리", "분리하여 공시하지 않", "오스틴제약(주)가 발행한",
                        "종속기업", "지배력을 취득", "option_class 근거도", "취득(취득시점·취득한·취득하여·지배력을 취득 등 「취득」이 든 모든 말)"):
@@ -2739,7 +2739,7 @@ class T9bFixRound5Test(unittest.TestCase):
 
 class PromptI5Test(unittest.TestCase):
     def test_i5_version_and_rules(self):
-        self.assertEqual(PROMPT_VERSION, "i9")  # i9 이 i5 문구를 그대로 담는다
+        self.assertIn(PROMPT_VERSION, ("i9", "i10"))  # i9 이 i5 문구를 그대로 담는다
         user = build_messages(_inp())[1]["content"]
         for phrase in ("계약상현금흐름", "합계 열", "취득일 현재", "발행조건", "자본금", "상각후원가측정금융부채",
                        "신주인수권부사채", "no_separation_ref", "분리하여", "자본부분", "당기손익-공정가치 측정 금융부채로 지정",
@@ -3011,7 +3011,7 @@ class T9cPrecisionTest(unittest.TestCase):
         self.assertEqual((out["embedded_separation"], reasons), ("separated", []))
 
     def test_prompt_i8(self):
-        self.assertEqual(PROMPT_VERSION, "i9")
+        self.assertIn(PROMPT_VERSION, ("i9", "i10"))
         user = build_messages(_inp())[1]["content"]
         for phrase in ("상환권·조기상환·콜·풋 같은 일반 옵션 낱말은 option_class 를 어느 종류에도 묶지 않는다",
                        "입력 전체(문장, 칸의 행 이름·열 머리글·표 제목·주석 제목)에 그 옵션 낱말이 가리키는 종류가 하나뿐일",
@@ -3073,7 +3073,7 @@ class T9cFixRound1Test(unittest.TestCase):
         chk("not_separated", t, "RCPS", True)
 
     def test_prompt_i9(self):
-        self.assertEqual(PROMPT_VERSION, "i9")
+        self.assertIn(PROMPT_VERSION, ("i9", "i10"))
         user = build_messages(_inp())[1]["content"]
         self.assertNotIn("이 규칙은 separated·\n   not_separated·whole_fvpl 근거 문장 모두에 적용된다", user)
         for phrase in ("지정한 자", "제3자를 지정", "내재파생상품이 아닌",
@@ -3084,3 +3084,35 @@ class T9cFixRound1Test(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class I10InnerSentenceTest(unittest.TestCase):
+    """i10: 바로 앞 문장 이어 쓰기 예외를 한 문단·각주 안의 문장 사이에도(s039 육일씨엔에쓰 t143 각주 (*1))."""
+
+    S039 = ("(*1) 제3회 전환사채 발행으로 수령한 순수취액은 주계약인 부채요소와 내재파생상품인 조기상환청구권 가치로 "
+            "계상되었으며, 주계약인 부채요소는 상각후원가로 측정합니다. 조기상환권 가치는 내재파생상품의 분리조건을 충족하므로 "
+            "주계약에서 분리하여 별도의 파생상품으로 회계처리하였습니다(주석 37 참조). 전환사채에 내재된 전환권가치는 자본요소에 "
+            "해당하여 자본으로 분류하였습니다.")
+
+    def _fits(self, text, kind="CB", series=None):
+        from dart_search_mcp.ledger import instrument_validate as iv
+        _, spans = iv._separation_scan(text, None)
+        return iv._strict_fits(text, kind, series, None, spans)
+
+    def test_s039_footnote_previous_sentence_gives_kind(self):
+        self.assertTrue(self._fits(self.S039, "CB", "3"))
+        self.assertFalse(self._fits(self.S039, "RCPS"))
+        self.assertFalse(self._fits(self.S039, "CB", "4"))  # 회차가 다르면 아니다
+
+    def test_inner_exception_limits(self):
+        for t in ("회사가 발행한 복합금융상품은 신주인수권부사채와 교환사채입니다. 매도청구권 가치는 주계약에서 분리하여 "
+                  "별도의 파생상품으로 회계처리하였습니다.",
+                  "제3회 전환사채를 발행하였습니다. (2) 조기상환권 가치는 주계약에서 분리하여 별도의 파생상품으로 회계처리하였습니다.",
+                  "전환사채를 발행하는 경우 다음과 같이 처리합니다. 조기상환권 가치는 주계약에서 분리하여 별도의 파생상품으로 회계처리합니다.",
+                  "당사는 전환사채를 취득하였습니다. 조기상환권 가치는 주계약에서 분리하여 별도의 파생상품으로 회계처리하였습니다."):
+            self.assertFalse(self._fits(t), t)
+
+    def test_prompt_i10_mentions_inner_exception(self):
+        from dart_search_mcp.ledger.instruments import PROMPT_I9
+        self.assertEqual(PROMPT_VERSION, "i10")
+        self.assertIn("한 문단·각주 안의 문장 사이에도 쓴다(i10)", PROMPT_I9["rules"])
