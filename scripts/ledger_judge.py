@@ -80,17 +80,20 @@ def _group(path: Path, keep: set[str] | None) -> dict[str, list[dict]]:
 
 def process(job: dict) -> dict:
     from dart_search_mcp.ledger.judge_rules import judge_filing, load_rules, scope_meta
+    from dart_search_mcp.ledger.rights import instrument_rights
 
     groups = load_rules()["concept_groups"]
     rcept = job["rcept_no"]
-    tables, err = [], None
+    tables, err, period_end = [], None, None
     tdir = job.get("tables_dir")
     if tdir:
         p = Path(tdir) / f"{rcept}.json.gz"
         if p.exists():
             try:
                 from dart_search_mcp.ledger.tables import load_filing
-                tables = load_filing(p).get("tables") or []
+                filing = load_filing(p)
+                tables = filing.get("tables") or []
+                period_end = filing.get("period_end")  # c15 D6: 측정기간 경과는 보고기간말 기준
             except Exception as exc:  # 표 파일 하나가 실행 전체를 멈추지 않게
                 err = f"{type(exc).__name__}: {exc}"[:200]
     scopes = set(job["scopes"]) | {t.get("fs_scope") for t in tables if t.get("fs_scope")}
@@ -102,8 +105,13 @@ def process(job: dict) -> dict:
                                     f.get("period") in ("current_end", "current_period", "prior_end", "prior_period")
                                     for f in job["facts"]),
                    # r5: 잠정 문장 규칙의 사업결합 표 확인(기간 열 없는 표도 표는 있다 — 코웨이 t295)
-                   "bc_table_filing": any(f.get("concept") in bc_concepts[:2] and f.get("amount") for f in job["facts"])}
-    rows, records = [], []
+                   "bc_table_filing": any(f.get("concept") in bc_concepts[:2] and f.get("amount") for f in job["facts"]),
+                   # c15 D7: 어느 범위든 사업결합 금액·취득일·거래·완료·잠정 사실이 있으면 「사업결합 없음」을 정하지 않는다
+                   "bc_any_fact": any(f.get("concept") in bc_concepts + ("PPA_COMPLETED_STMT", "BC_ACQUISITION_DATE",
+                                                                         "BC_CURRENT_DEAL_STMT", "BC_PRIOR_PROVISIONAL_STMT")
+                                      for f in job["facts"]),
+                   "period_end": period_end}
+    rows, records, rights = [], [], []
     for scope in scopes:
         facts = [f for f in job["facts"] if (f.get("fs_scope") or "separate") == scope]
         meta = dict(job["meta"])
@@ -112,6 +120,7 @@ def process(job: dict) -> dict:
         if tables:
             meta.update(scope_meta(tables, scope))
         runs = {"run1": job["run1"].get(scope), "run2": job["run2"].get(scope)}
+        rights.extend(instrument_rights(rcept, scope, runs["run1"], runs["run2"], meta))  # c15 C1
         for row in judge_filing(rcept, scope, facts, runs, job["marks"], meta):
             rows.append(row)
             group = set(groups[row["topic"]])
@@ -121,7 +130,7 @@ def process(job: dict) -> dict:
             if row["topic"] in _RUN_TOPICS:
                 rec["instruments"] = runs
             records.append(rec)
-    return {"rcept_no": rcept, "rows": rows, "records": records, "error": err}
+    return {"rcept_no": rcept, "rows": rows, "records": records, "rights": rights, "error": err}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -137,6 +146,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--model", default=ACCEPTED_MODEL)
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) // 2))
     ap.add_argument("--keep-superseded", action="store_true", help="정정 전 옛 접수본 행도 남긴다(c14 이전 동작)")
+    ap.add_argument("--stage1-values", action="store_true",
+                    help="c15 새 값(대상 지분상품 없음·분리 안 함(추정)) 규칙을 끈다 — 그 자리는 c14 판정(판단불가·행 없음)이 된다"
+                         "(BE 반영 전 적재용)")
     args = ap.parse_args(argv)
 
     out = args.out
@@ -183,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
             yield {"rcept_no": rc, "facts": facts.get(rc, []), "marks": marks.get(rc, []), "run1": r1, "run2": r2,
                    "scopes": sorted(scopes), "tables_dir": tables_dir, "targeted": sorted(targeted.get(rc, ())),
                    "meta": {"corp_code": a.get("corp_code"), "fiscal_year": a.get("fiscal_year"),
-                            "v1_ppa": v1.get(rc)}}
+                            "v1_ppa": v1.get(rc), "stage1_values": args.stage1_values}}
 
     out.parent.mkdir(parents=True, exist_ok=True)
     values: dict[str, Counter] = defaultdict(Counter)
@@ -191,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
     held_by_topic: dict[str, Counter] = defaultdict(Counter)
     errors: dict[str, str] = {}
     n_rows = 0
-    all_rows, all_recs = [], []
+    all_rows, all_recs, all_rights = [], [], []
     if args.workers > 1:
         pool = Pool(args.workers)
         it = pool.imap(process, jobs(), chunksize=16)
@@ -203,6 +215,7 @@ def main(argv: list[str] | None = None) -> int:
                 errors[res["rcept_no"]] = res["error"]
             all_rows.extend(res["rows"])
             all_recs.extend(res["records"])
+            all_rights.extend(res["rights"])
     finally:
         if pool:
             pool.close()
@@ -214,6 +227,10 @@ def main(argv: list[str] | None = None) -> int:
         all_rows, superseded = supersede(all_rows, audit)
         gone = {(r["rcept_no"], r["fs_scope"], r["topic"]) for r in superseded}
         all_recs = [r for r in all_recs if (r["rcept_no"], r["fs_scope"], r["topic"]) not in gone]
+        # 상품 행도 같은 계보 규칙(리뷰 c15 #6): 최신 정정본에 같은 범위·상품·권리 행이 있으면 옛 접수본 행을 뺀다
+        keyed = [{**r, "topic": f"rights:{r['product_key']}:{r['right']}"} for r in all_rights]
+        kept_rights, _ = supersede(keyed, audit)
+        all_rights = [{k: v for k, v in r.items() if k != "topic"} for r in kept_rights]
     with out.open("w", encoding="utf-8") as fo, rec_path.open("w", encoding="utf-8") as fr:
         for row in all_rows:
             fo.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -224,6 +241,9 @@ def main(argv: list[str] | None = None) -> int:
             n_rows += 1
         for rec in all_recs:
             fr.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    with (out.parent / "instrument_rights.v1.jsonl").open("w", encoding="utf-8") as fi:
+        for r in all_rights:
+            fi.write(json.dumps(r, ensure_ascii=False) + "\n")
     if superseded:
         with (out.parent / "superseded.v2.jsonl").open("w", encoding="utf-8") as fs:
             for row in superseded:
@@ -237,6 +257,7 @@ def main(argv: list[str] | None = None) -> int:
         "concepts_versions": dict(concepts_versions),
         "generated_at": datetime.now(timezone.utc).isoformat(), "elapsed_sec": round(time.time() - t0, 1),
         "filings": len(rcepts), "rows": n_rows, "superseded_rows": len(superseded),
+        "instrument_rights": len(all_rights), "stage1_values": args.stage1_values,
         "values_by_topic": {t: dict(c) for t, c in sorted(values.items())},
         "held_reason": dict(held), "held_reason_by_topic": {t: dict(c) for t, c in sorted(held_by_topic.items())},
         "instruments": {"model": args.model, "run1": dict(s1), "run2": dict(s2)},

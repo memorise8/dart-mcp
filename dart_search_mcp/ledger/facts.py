@@ -942,7 +942,9 @@ def _sentence_fact(filing: dict, p: dict, scope: str, period: str, amt: str, uni
 _MARKER_LABEL = {"IP_FV_MODEL": "투자부동산 공정가치 모형", "IP_FV_NO_MATERIAL_DIFF": "투자부동산 공정가치·장부금액 차이 없음(문장)",
                  "IP_FV_LEADIN": "투자부동산 공정가치 공시 머리 문장",
                  "IP_FV_MODEL_BLOCKED": "투자부동산 공정가치 모형 문장(원가모형 근거와 충돌)",
-                 "FVOCI_DESIGNATION_STMT": "기타포괄손익-공정가치 지정 문장"}
+                 "FVOCI_DESIGNATION_STMT": "기타포괄손익-공정가치 지정 문장",
+                 "BC_ACQUISITION_DATE": "사업결합 취득일", "BC_CURRENT_DEAL_STMT": "당기 사업결합·합병·양수 문장",
+                 "BC_PRIOR_PROVISIONAL_STMT": "전기말 잠정 문장", "BC_NO_NEW_SUBSIDIARY": "신규 연결 종속기업 없음 문장"}
 # 「투자부동산의 공정가치는 다음과 같습니다」 — 공정가치 표가 뒤따른다(금액을 못 읽어도 공시는 했다)
 _IP_FV_LEADIN = re.compile(r"투자부동산[^.]{0,30}공정가치[^.]{0,30}다음과\s*같")
 
@@ -1088,6 +1090,273 @@ def _ppa_completion_facts(filing: dict, by_file: dict, version: str) -> list[dic
     return out
 
 
+# ---------- 사업결합 취득일·당기 취득·신규 연결 없음 문장(c15) ----------
+# 김현명 D6: 완료 공시가 없어도 취득일부터 보고기간말까지 1년이 지났으면 「확정—측정기간 종료에 따른 판단」. 취득일은
+# 사업결합·합병·양수 주석 안의 날짜만 쓴다(관계기업 간주취득일·리츠 수수료 「취득일」은 다른 주석). 동일지배 거래(측정기간
+# 없음)·보고기간 후 사건·「취득일이 … 라고 가정할 경우」(가상 정보)는 쓰지 않는다. 날짜는 일까지 있는 것만.
+# D7: 사업결합 없음은 「당기 중 신규 연결 종속기업 없음/연결범위 변동 없음」 문장 + 사업결합·합병·양수 흔적이 모두 없을 때
+# 판정이 정한다 — 여기서는 그 문장(BC_NO_NEW_SUBSIDIARY)과 당기 거래 문장(BC_CURRENT_DEAL_STMT)을 사실로 남긴다.
+_DATE = r"(?P<y>(?:19|20)\d\d)\s*[년.\-/]\s*(?P<m>\d{1,2})\s*[월.\-/]\s*(?P<d>\d{1,2})\s*일?"
+_ACQ_KW = r"(?:간주\s*)?취득\s*일(?:자)?|지배력\s*(?:획득|취득)\s*일|합병\s*기일|분할합병\s*기일|(?:사업|영업)?\s*양수\s*일(?:자)?"
+_NO_DATE = r"(?:(?!(?:19|20)\d\d\s*[년.\-/])(?:[^.]|(?<=\d)\.(?=\d)))"  # 다른 날짜를 건너뛰지 않는다(「5월 2일 승인 … 7월 1일자로 취득」)
+_ACQ_DATE_RES = (
+    re.compile(rf"(?:{_ACQ_KW})\s*(?:은|는|이|:|：)?\s*[(\[]?\s*" + _DATE),               # 간주취득일: 2023년 3월 31일
+    re.compile(_DATE + rf"\s*[)\]]?\s*(?:을|를)?\s*(?:{_ACQ_KW})\s*(?:로|으로)"),         # 2024년 1월 25일을 합병기일로
+    re.compile(_DATE + r"\s*(?:자로|자에|에|,)?" + _NO_DATE + r"{0,80}?(?:취득|인수|양수)(?:하여|하고|하였|했|함에|함으로)"
+               + _NO_DATE + r"{0,60}?지배력\s*(?:을|를)?\s*(?:획득|취득)"),                        # 2025년 7월 1일자로 … 취득하여 지배력을 획득
+    re.compile(_DATE + r"\s*(?:기준|자로|에)" + _NO_DATE + r"{0,40}?지배력\s*(?:을|를)?\s*(?:획득|취득)"),  # 2024년 8월 2일 기준 … 지배력을 획득
+)
+_BC_NOTE = re.compile(r"사업\s*결합|합병|(?:영업|사업)\s*양수")
+_BC_NOTE_SKIP = re.compile(r"보고\s*기간\s*후|후속\s*사건|동일\s*지배|관계기업|공동기업|회계\s*정책|작성\s*기준")
+_ACQ_SKIP = re.compile(r"동일\s*지배|가정할\s*경우|가정하는\s*경우|가정하면|보고\s*기간\s*후|기준서|개정|이후\s*최초|시작되는")
+_ACQ_INTERNAL = re.compile(r"(자회사|종속(기업|회사)|지배(기업|회사))[^.]{0,30}(흡수)?합병|100\s*%\s*(자회사|종속|지배)")
+_ACQ_ASSOC = re.compile(r"관계기업|공동기업")
+_CUR_DEAL = re.compile(r"당기\s*(중|에|말)?[^.]{0,60}?(취득|인수|양수|합병)(하여|하고|하였|했|함에|함으로|하는|됨)"
+                       r"|당기\s*(중|에)\s*발생한\s*(주요한\s*)?사업\s*결합")
+_CUR_DEAL_ANY = re.compile(r"당기\s*(중|에)[^.]{0,80}?(흡수\s*합병|합병하였|합병했|(영업|사업)\s*(을|를)?\s*양수|지배력\s*(을|를)?\s*(획득|취득))")
+# 「연결회사는 전기 중 (주)A 및 (주)B 의 지배력을 획득하였으며」 — 날짜는 없어도 취득일이 전기(전기말 이전)다(s121 팬엔터테인먼트)
+_PRIOR_DEAL = re.compile(r"전기\s*(중|에)[^.]{0,80}?((취득|인수|양수|합병)(하여|하고|하였|했|함에|함으로)|지배력\s*(을|를)?\s*(획득|취득))")
+_DEAL_POLICY_NOTE = re.compile(r"회계정책|작성\s*기준|재무제표의?\s*작성|회계처리\s*방침|회계기준")  # 일반사항은 거래 서술이 있어 뺀다
+_CUR_DEAL_NEG = re.compile(r"없(습|었|으며|음|는)|않(았|습|으며)|아니")
+_CL = r"(?:(?!이며|으며|,)[^.])"  # 한 절 안(리뷰 c15 #2: 「신규로 포함된 회사는 A이며, 제외된 기업은 없습니다」)
+_NO_NEW_SUB = re.compile(r"당기\s*(중|에|말\s*현재)?" + _CL + r"{0,30}(신규로?|새로)\s*(연결|편입|포함|취득)" + _CL + r"{0,50}"
+                         r"(종속기업|회사|기업)" + _CL + r"{0,10}(은|는)\s*없"
+                         r"|당기\s*(및\s*전기\s*|와\s*전기\s*)?(중|에)?" + _CL + r"{0,20}연결\s*(범위|대상)" + _CL + r"{0,20}변동"
+                         + _CL + r"{0,10}(은|는|이)\s*없")
+_PRIOR_PROV = re.compile(r"전기\s*말\s*현재[^.]{0,80}(잠정|준비\s*중|진행\s*중|완료되지)")
+
+
+def _acq_dates(sent: str) -> list[str]:
+    if _ACQ_SKIP.search(sent) or (_ACQ_ASSOC.search(sent) and "지배력" not in sent):
+        return []
+    out = []
+    for rx in _ACQ_DATE_RES:
+        for m in rx.finditer(sent):
+            if "합병" in m.group(0) and _ACQ_INTERNAL.search(sent):
+                continue  # 자회사 흡수합병(지배력이 이미 있는 회사) — 사업결합 취득일이 아니다
+            y, mo, d = int(m["y"]), int(m["m"]), int(m["d"])
+            if 1 <= mo <= 12 and 1 <= d <= 31:
+                out.append(f"{y:04d}-{mo:02d}-{d:02d}")
+    return sorted(set(out))
+
+
+_DEAL_VERB = re.compile(r"(취득|인수|양수|합병)(하여|하고|하였|했|함에|함으로|하는)|지배력\s*(을|를)?\s*(획득|취득)")
+
+
+_YM = re.compile(r"(?P<y>(?:19|20)\d\d)\s*년\s*(?P<m>\d{1,2})\s*월(?!\s*\d{1,2}\s*일)")
+_Y_ONLY = re.compile(r"(?P<y>(?:19|20)\d\d)\s*년\s*(도\s*)?(중|에)(?!\s*\d)")
+
+
+def _dated_current_deal(sent: str, pe: str | None) -> bool:
+    """문장에 이번 보고기간 날짜(일·월까지, 12월 결산이면 「2025년 중」 도)와 취득·합병 낱말이 있다 — 「당기」 낱말 없이 쓴 당기
+    거래(「전기중 연결범위에 포함된 (주)인콤은 2025년 8월 20일 … 지분 100%를 취득」, 리뷰 c15 #1 「2025년 5월 … 인수」)."""
+    if not pe or not _DEAL_VERB.search(sent) or _ACQ_SKIP.search(sent):
+        return False
+    start = f"{int(pe[:4]) - 1:04d}{pe[4:]}"
+    for m in re.finditer(_DATE, sent):
+        d = f"{int(m['y']):04d}-{int(m['m']):02d}-{int(m['d']):02d}"
+        if start < d <= pe:
+            return True
+    end_m = int(pe[:4]) * 12 + int(pe[5:7])
+    for m in _YM.finditer(sent):
+        if end_m - 12 < int(m["y"]) * 12 + int(m["m"]) <= end_m:
+            return True
+    return pe[5:7] == "12" and any(int(m["y"]) == int(pe[:4]) for m in _Y_ONLY.finditer(sent))
+
+
+def _clause_deal(sent: str, rx: re.Pattern) -> bool:
+    """rx 거래 문구가 있고, 그 절(쉼표·「…며」 사이)에 부정이 없다 — 「흡수합병하였으며, 이로 인한 영업권은 없습니다」의 「없」은
+    거래를 지우지 않는다(리뷰 c15 #3)."""
+    for m in rx.finditer(sent):
+        a = max(sent.rfind(",", 0, m.start()), sent.rfind("며", 0, m.start()))
+        ends = [i for i in (sent.find(",", m.end()), sent.find("며", m.end())) if i >= 0]
+        if not _CUR_DEAL_NEG.search(sent[a + 1:min(ends) if ends else len(sent)]):
+            return True
+    return False
+
+
+def _cur_deal(sent: str, rx: re.Pattern, pe: str | None) -> bool:
+    return not _ACQ_SKIP.search(sent) and (_clause_deal(sent, rx) or _dated_current_deal(sent, pe))
+
+
+def _prior_deal(sent: str) -> bool:
+    return bool(_PRIOR_DEAL.search(sent)) and not re.search(r"당기\s*(중|에)", sent) and not re.search(_DATE, sent) \
+        and not _CUR_DEAL_NEG.search(sent) and not _ACQ_SKIP.search(sent) and not _ACQ_INTERNAL.search(sent)
+
+
+def _bc_marker(filing: dict, scope: str, concept: str, src: dict, note: str | None, text: str, version: str,
+               **extra) -> dict:
+    return {"rcept_no": filing.get("rcept_no"), "amends_rcept_no": filing.get("amends_rcept_no"), "fs_scope": scope,
+            "concept": concept, "period": "current_period", "amount": None, "unit_kind": None, "amount_krw": None,
+            "label": _MARKER_LABEL.get(concept, concept), "label_path": [], "column": "", "target": None,
+            "target_basis": None, "source": src, "source_status": "sentence", "concepts_version": version,
+            "match_basis": "sentence", "note_title": note, "text": text.strip()[:300], **extra}
+
+
+def _bc_facts(filing: dict, by_file: dict, version: str) -> list[dict]:
+    out, seen = [], set()
+    head: dict = {}
+
+    def bc_note(note: str | None) -> bool:
+        return bool(note) and bool(_BC_NOTE.search(note[:25])) and not _BC_NOTE_SKIP.search(note[:25])
+
+    def add(scope, concept, src, note, text, **extra):
+        key = (scope, concept, extra.get("date"), None if extra.get("date") else concept)
+        if scope and key not in seen:
+            seen.add(key)
+            out.append(_bc_marker(filing, scope, concept, src, note, text, version, **extra))
+
+    for p in filing.get("paragraphs") or []:
+        text = p.get("text") or ""
+        m = _NOTE_HEAD.match(text)
+        if m and len(text) < 150:
+            head[p.get("file")] = m.group(2)
+        scope = _file_scope(p.get("file") or "", by_file)
+        note = head.get(p.get("file"))
+        src = {"sentence_id": p.get("id"), "page": p.get("page"), "file": p.get("file")}
+        for sent in _SENT_END.split(text):
+            if _NO_NEW_SUB.search(sent):
+                add(scope, "BC_NO_NEW_SUBSIDIARY", src, note, sent)
+            if not bc_note(note):
+                # 사업결합 주석 밖의 당기 합병·양수·지배력 획득 문장도 「사업결합 없음」을 막는다(D7). 단순 신설은 사업결합이
+                # 아니다. 회계정책 주석 문장은 쓰지 않는다
+                if _cur_deal(sent, _CUR_DEAL_ANY, filing.get("period_end")) \
+                        and "설립" not in sent and not (note and _DEAL_POLICY_NOTE.search(note)):
+                    add(scope, "BC_CURRENT_DEAL_STMT", src, note, sent)
+                continue
+            dates = _acq_dates(sent)
+            for d in dates:
+                add(scope, "BC_ACQUISITION_DATE", src, note, sent, date=d)
+            if not dates and re.search(_ACQ_KW, sent) and _YM.search(sent) and not _ACQ_SKIP.search(sent):
+                add(scope, "BC_ACQUISITION_DATE", src, note, sent, date="unknown")  # 일 없는 취득일 — 측정기간 판단을 막는다
+            if _prior_deal(sent):
+                add(scope, "BC_ACQUISITION_DATE", src, note, sent, date="prior_period")
+            if _cur_deal(sent, _CUR_DEAL, filing.get("period_end")):
+                add(scope, "BC_CURRENT_DEAL_STMT", src, note, sent)
+            if _PRIOR_PROV.search(sent):
+                add(scope, "BC_PRIOR_PROVISIONAL_STMT", src, note, sent)
+    internal = {_file_scope(p.get("file") or "", by_file) for p in filing.get("paragraphs") or []
+                if _ACQ_INTERNAL.search(p.get("text") or "")}
+    for t in filing.get("tables") or []:
+        region = t.get("region") or {}
+        note = region.get("note_title") if region.get("kind") == "note" else None
+        scope = t.get("fs_scope") or _file_scope(t.get("file") or "", by_file)
+        title = t.get("title") or ""
+        tsrc = {"sentence_id": f"t:{t.get('table_id')}:title", "page": t.get("page"), "file": t.get("file")}
+        if _NO_NEW_SUB.search(title):
+            add(scope, "BC_NO_NEW_SUBSIDIARY", tsrc, note, title)
+        if not bc_note(note):
+            if _cur_deal(title, _CUR_DEAL_ANY, filing.get("period_end")) and "설립" not in title \
+                    and not (note and _DEAL_POLICY_NOTE.search(note)):
+                add(scope, "BC_CURRENT_DEAL_STMT", tsrc, note, title)
+            continue
+        for sent in _SENT_END.split(title):
+            if _prior_deal(sent):
+                add(scope, "BC_ACQUISITION_DATE", tsrc, note, sent, date="prior_period")
+            if _cur_deal(sent, _CUR_DEAL, filing.get("period_end")):
+                add(scope, "BC_CURRENT_DEAL_STMT", tsrc, note, sent)
+            if _PRIOR_PROV.search(sent):
+                add(scope, "BC_PRIOR_PROVISIONAL_STMT", tsrc, note, sent)
+        for r in t.get("rows") or []:
+            label = " ".join(r.get("label_path") or [r.get("label") or ""])
+            if not re.search(_ACQ_KW, label):
+                continue
+            # 표 행 「취득일 | 2024-07-11」 「합병기일 2025년 1월 20일」 — 날짜가 행 이름이나 칸 글자에 있다
+            raw = " ".join([label] + [str(c.get("raw") or "") for c in r.get("cells") or []])
+            dates = [f"{int(m['y']):04d}-{int(m['m']):02d}-{int(m['d']):02d}" for m in re.finditer(_DATE, raw)
+                     if 1 <= int(m["m"]) <= 12 and 1 <= int(m["d"]) <= 31]
+            if _ACQ_SKIP.search(raw) or (_ACQ_ASSOC.search(raw) and "지배력" not in raw) \
+                    or ("합병" in label and scope in internal):
+                continue  # 표의 「합병기일」 행은 글에 자회사 흡수합병이 있으면 쓰지 않는다(표 행엔 거래 상대가 없다)
+            src = {"table_id": t.get("table_id"), "page": t.get("page"), "row": r.get("row"), "col": 0}
+            for d in sorted(set(dates)):
+                add(scope, "BC_ACQUISITION_DATE", src, note, raw, date=d)
+            if not dates and _YM.search(raw):
+                add(scope, "BC_ACQUISITION_DATE", src, note, raw, date="unknown")  # 「취득일 2025년 5월」 — 일 없음
+    return out
+
+
+# ---------- FVOCI 지분상품 처분 대체(c15) ----------
+# 김현명 C3: FVOCI 로 지정한 지분상품을 기중에 전량 처분해도 지정 사례다. 지분상품만 처분할 때 누계액을 손익으로 재분류하지
+# 않고 이익잉여금으로 대체한다 — 그래서 자본변동표의 이익잉여금 열에 금액이 있는 처분 행, 이익잉여금(결손금) 주석·처분계산서의
+# 처분 행만 지분상품 처분 근거로 쓴다. 현금흐름표·금융수익 주석의 「FVOCI 금융자산 처분」은 채무상품일 수 있어 쓰지 않는다.
+# 기타포괄손익누계액 주석의 「처분손익누계액」은 잔액이라 쓰지 않는다.
+_FV_DISP_LABEL = re.compile(r"(기타포괄|FVOCI)[^처]{0,30}처분|처분[^.]{0,20}(기타포괄|FVOCI)")
+_FV_DISP_SKIP = re.compile(r"누계|채무|부채|재평가")
+_RE_NOTE = re.compile(r"이익잉여금|결손금")
+_RE_COL = re.compile(r"이익잉여금|결손금")  # 재평가잉여금·평가잉여금 열은 아니다(리뷰 c15 #4)
+_SCE_CUR = re.compile(r"당기\s*초|당기\s*기초")
+_SCE_PRI = re.compile(r"전기\s*초|전기\s*기초")
+_SCE_DATE = re.compile(r"((?:19|20)\d\d)\s*[년.\-/]\s*0?1\s*[월.\-/]\s*0?1(?!\d)")
+
+
+def _sce_periods(t: dict, pe_year: int | None) -> dict:
+    """자본변동표 행 번호 → current_period/prior_period. 「당기초」「전기초」 「2025.1.1」 같은 기초 행이 기간 묶음을 연다."""
+    out, cur = {}, None
+    for r in t.get("rows") or []:
+        lb = _WS_SUB(r.get("label") or "")
+        if _SCE_CUR.search(lb):
+            cur = "current_period"
+        elif _SCE_PRI.search(lb):
+            cur = "prior_period"
+        else:
+            m = _SCE_DATE.search(r.get("label") or "")
+            if m and pe_year:
+                cur = {pe_year: "current_period", pe_year - 1: "prior_period"}.get(int(m.group(1)), cur)
+        out[r.get("row")] = cur
+    return out
+
+
+def _WS_SUB(x: str) -> str:
+    return re.sub(r"\s+", "", x or "")
+
+
+def _fvoci_disposal_facts(filing: dict, version: str) -> list[dict]:
+    out, seen = [], set()
+    by_file = {t.get("file"): t.get("fs_scope") for t in filing.get("tables") or [] if t.get("file") and t.get("fs_scope")}
+    pe = filing.get("period_end") or ""
+    pe_year = int(pe[:4]) if pe[:4].isdigit() else None
+    for t in filing.get("tables") or []:
+        region = t.get("region") or {}
+        kind, note = region.get("kind"), region.get("note_title") or ""
+        sce = kind == "statement_ce"
+        if not (sce or (kind == "note" and _RE_NOTE.search(_WS_SUB(note)))):
+            continue
+        cols = {c.get("col"): c for c in t.get("columns") or []}
+        periods = _sce_periods(t, pe_year) if sce else {}
+        scope = t.get("fs_scope") or _file_scope(t.get("file") or "", by_file)
+        if not scope:
+            continue
+        for r in t.get("rows") or []:
+            label = _WS_SUB(" ".join(r.get("label_path") or [r.get("label") or ""]))
+            if not _FV_DISP_LABEL.search(label) or _FV_DISP_SKIP.search(label):
+                continue
+            for c in r.get("cells") or []:
+                if not c.get("value"):
+                    continue
+                col = cols.get(c.get("col")) or {}
+                if sce:
+                    if not _RE_COL.search(_WS_SUB("/".join(col.get("header_path") or []))):
+                        continue  # 이익잉여금 열의 금액만(채무상품 재분류는 이익잉여금으로 가지 않는다)
+                    period = periods.get(r.get("row"))
+                else:
+                    period = col.get("period") if col.get("period") in ("current_period", "prior_period") else None
+                if not period or (scope, period) in seen:
+                    continue
+                seen.add((scope, period))
+                out.append({"rcept_no": filing.get("rcept_no"), "amends_rcept_no": filing.get("amends_rcept_no"),
+                            "fs_scope": scope, "concept": "FVOCI_EQUITY_DISPOSAL", "period": period,
+                            "amount": c.get("value"), "unit_kind": "krw",
+                            "amount_krw": c.get("value_krw"), "label": r.get("label"),
+                            "label_path": r.get("label_path") or [], "column": "/".join(col.get("header_path") or []),
+                            "target": None, "target_basis": None,
+                            "source": {"table_id": t.get("table_id"), "page": t.get("page"), "row": r.get("row"),
+                                       "col": c.get("col")},
+                            "source_status": t.get("status"), "concepts_version": version, "match_basis": "label"})
+                break
+    return out
+
+
 def sentence_facts(filing: dict, *, concepts_path: Path | None = None) -> list[dict]:
     """1층 공시 기록(paragraphs·tables) → 문장에서 읽은 투자부동산 공정가치 사실(범위·기간마다 첫 문장 하나)과
     금액 없는 표시 사실 IP_FV_MODEL(공정가치 모형)·IP_FV_NO_MATERIAL_DIFF(차이 없음 문장)·IP_FV_LEADIN(공정가치
@@ -1144,4 +1413,6 @@ def sentence_facts(filing: dict, *, concepts_path: Path | None = None) -> list[d
     out += _fv_designation_facts(filing, by_file, version)  # c12
     out += _lease_sentence_facts(filing, by_file, version)  # c13
     out += _ppa_completion_facts(filing, by_file, version)  # c13
+    out += _bc_facts(filing, by_file, version)  # c15
+    out += _fvoci_disposal_facts(filing, version)  # c15
     return out

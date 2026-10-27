@@ -1041,7 +1041,7 @@ class C12FvociTest(unittest.TestCase):
 
     def test_rules_version_r5(self):
         from dart_search_mcp.ledger.judge_rules import load_rules
-        self.assertIn(load_rules()["rules_version"], ("r5", "r6", "r7"))
+        self.assertIn(load_rules()["rules_version"], ("r5", "r6", "r7", "r8"))
 
     def test_statement_with_total_only_is_designated(self):
         # s058 효성티앤씨: 주석 11 FVOCI 금융자산 총액 7,303백만원 + 주석 30 「…기타포괄손익으로 인식하도록 지정하였습니다」
@@ -1056,12 +1056,16 @@ class C12FvociTest(unittest.TestCase):
         self.assertIn("t:R:00760:t614:title", r["source_refs"])
 
     def test_statement_without_fvoci_balance_changes_nothing(self):
-        # s052 우리벤처파트너스(두 명 모두 NOT_DESIGNATED 맞음): 우리금융지주 주식을 FVOCI 로 지정했으나 같은 해 전량 처분 —
-        # 지정 문장만으로는 기말 보유를 알 수 없다
+        # s052 우리벤처파트너스: 우리금융지주 주식을 FVOCI 로 지정했으나 전량 처분. c15(김현명 C3): 기말 잔액이 없다는
+        # 이유로 지정 사례에서 빼지 않는다 — DESIGNATED + 「기말 보유 없음(처분 시기 미확인)」(c12 까지는 NOT_DESIGNATED)
         st = STMT(text="연결실체는 주식의 포괄적 교환으로 취득한 우리금융지주 주식을 기타포괄손익-공정가치 측정 항목으로 지정하였습니다.")
         fvpl = F("FVPL_EQUITY", 50, label="당기손익-공정가치측정 지분상품")
-        self.assertEqual(judge([fvpl, st])["FVOCI_DESIGNATION"]["value"], "NOT_DESIGNATED")
-        self.assertNotIn("FVOCI_DESIGNATION", judge([st]))
+        cat = {"category_table": True, "category_table_id": "R:00761:t030", "category_fvoci": False}
+        self.assertEqual(judge([fvpl, st])["FVOCI_DESIGNATION"]["value"], "NOT_DESIGNATED")  # 범주표 확인 없으면 c12 그대로
+        for facts in ([fvpl, st], [st]):
+            r = judge(facts, **cat)["FVOCI_DESIGNATION"]
+            self.assertEqual((r["value"], r["value_flags"]), ("DESIGNATED", ["fvoci_no_current_balance"]))
+            self.assertIn("기말 보유 없음(처분 시기 미확인)", r["evidence"])
         m = M("FVOCI_DESIGNATION")
         self.assertEqual(judge([st], marks=[m])["FVOCI_DESIGNATION"]["held_reason"], "policy_only")
         zero = F("FVOCI_FA_TOTAL", 0, label="기타포괄손익-공정가치측정금융자산")

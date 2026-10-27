@@ -1,5 +1,5 @@
 {
- "concepts_version": "c13",
+ "concepts_version": "c15",
  "note": "2층 ① 개념 사전. 패턴은 공백을 지운 행 이름(앞 번호·「차감:」, 뒤 각주 표지 뗌)에 대한 정규식. regions: statement_bs·statement_is | note:<정규식>(주석 제목 또는 표 제목). column_patterns가 있으면 「행 × 열」 개념(열 header_path 마지막 요소). 같은 id가 여럿이면 같은 개념의 다른 표 모양(예: 열이 자산 종류인 변동표)이다. context_exclude_patterns는 상위 행(값 빈 머리 행 포함)에 있으면 안 되는 낱말. column_exclude_patterns는 열 머리글 어느 단계에도 있으면 안 되는 낱말(그 칸만 뺀다). title_region이 참인 개념(사채·전환권·내재파생)만 주석 제목이 안 맞을 때 표 제목으로 구간을 맞춘다. topics는 측정에만 쓴다: 정의 B = keywords 행 중 exclusions(이름·이유 붙은 규칙)에 안 걸린 행. table_context가 참이면 context_patterns를 같은 표의 다른 행 이름에도 맞춘다(전환사채 행이 있는 표의 사채할인발행차금). mode가 table_total인 항목(c6)은 행 이름이 아니라 표 제목(+ 첫 소제목 행)이 table_patterns를 모두 갖출 때 그 표의 합계 행(합계 없으면 한 행짜리 표의 그 행)을 쓴다: table_exclude_patterns(제목·소제목), row_exclude_patterns(표의 모든 행), column_patterns·column_exclude_patterns(잔액 열만), replaces(같은 칸에 이 개념만 있으면 대신함). section_patterns(table_total): 표의 값 빈 구획 머리 행은 모두 이 패턴(지분 낱말 또는 중립 머리)에 맞아야 한다. c12 수정 1차: pl_column_patterns(손익 열 칸 → DERIV_PL_COLUMN 대리 사실, orig_concept), no_movement_table(변동표에서 잔액 안 읽음), subtitle_period(제목이 기간 소제목뿐이면 그 기간), since(새 항목 표시), c11_label_patterns(c11 패턴으로 안 걸리면 since c12). c13: 리스 현금유출액 문장 사실(LEASE_SHORT_TERM_EXP·LEASE_LOW_VALUE_EXP, match_basis sentence).",
  "topics": {
   "conversion": {

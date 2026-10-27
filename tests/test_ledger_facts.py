@@ -1118,7 +1118,7 @@ class T11bFix1Test(unittest.TestCase):
         return extract_facts(list(tables), self.concepts)
 
     def test_version_c10_or_later(self):  # c11 = 리스·투자부동산 수정(LeaseIpFixC11Test)
-        self.assertIn(self.concepts[0].version, ("c10", "c11", "c12", "c13"))
+        self.assertIn(self.concepts[0].version, ("c10", "c11", "c12", "c13", "c15"))
 
     def test_instrument_embedded_derivative_in_asset_column_not_liability(self):
         # 20260323001209 t106 모양: 열이 [당기말, 파생상품자산] / [당기말, 파생상품부채]
@@ -1172,7 +1172,7 @@ class LeaseIpFixC11Test(unittest.TestCase):
 
     def test_version_c11_or_later(self):
         meta = json.loads(CONCEPTS_PATH.read_text(encoding="utf-8"))
-        self.assertIn(meta["concepts_version"], ("c11", "c12", "c13"))
+        self.assertIn(meta["concepts_version"], ("c11", "c12", "c13", "c15"))
 
     def test_starflex_low_value_recognition_exemption_row(self):
         # s088 스타플렉스 20260323001102 주석 13 사용권자산(연결, 천원): 소액기초자산 인식면제 행을 못 읽어 SHORT_TERM 이었다
@@ -1284,7 +1284,7 @@ class IpFairValueSentenceTest(unittest.TestCase):
                           ("consolidated", "current_end", 15857, 15857000000, "s1186")})
         for f in got:
             self.assertEqual((f["concept"], f["unit_kind"], f["match_basis"]), ("IP_FAIR_VALUE", "krw", "sentence"))
-            self.assertIn(f["concepts_version"], ("c11", "c12", "c13"))
+            self.assertIn(f["concepts_version"], ("c11", "c12", "c13", "c15"))
 
     def test_prior_in_parentheses_and_units(self):
         from dart_search_mcp.ledger.facts import sentence_facts
@@ -1513,7 +1513,7 @@ class C12AgreedFixTest(unittest.TestCase):
 
     def test_version_c12(self):
         meta = json.loads(CONCEPTS_PATH.read_text(encoding="utf-8"))
-        self.assertIn(meta["concepts_version"], ("c12", "c13"))
+        self.assertIn(meta["concepts_version"], ("c12", "c13", "c15"))
 
     # ---- 1. FVOCI: FVOCI 주석 안의 지분 행 ----
     def test_seongwoo_equity_rows_in_fvoci_note(self):

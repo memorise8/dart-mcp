@@ -16,6 +16,10 @@ meta 키(모두 선택):
   read_failed_any_topics      관련 주석 표를 하나라도 읽지 못한 주제 집합 — 「없음」 값만 막는다(r5)
   instruments_targeted        이 공시·범위가 2층 ② 사채·우선주 대상이었는가(어느 실행이든 skipped 아닌 줄, R35)
   v1_ppa                      옛 topic_judge 의 PPA_MEASUREMENT_PERIOD 행(Q7 유지)
+  period_end                  1층 보고기간말(YYYY-MM-DD) — c15 D6 측정기간 경과
+  bc_any_fact / bc_note_table 사업결합 흔적(공시 단위 사실 / 이 범위의 사업결합·합병·양수 주석 표) — c15 D7
+  category_fv_asset / category_fvpl_liability  범주표의 공정가치 측정 금융자산 / FVPL 금융부채 금액 — c15 D2·D1
+  stage1_values               c15 새 값(NO_EQUITY_INSTRUMENT·NOT_SEPARATED_PRESUMED)을 내지 않음(BE 반영 전 판)
 """
 from __future__ import annotations
 
@@ -224,6 +228,7 @@ class Ctx:
     def __init__(self, facts, marks, meta, rules, fs_scope=None):
         self.facts, self.marks, self.meta, self.rules = facts, marks, meta, rules
         self.fs_scope = fs_scope
+        self.single_run = False  # c15: _consensus 가 정한다 — 한 실행에만 이 범위 줄이 있음
         self.targeted_no_records = False  # R35: 사채·우선주 대상인데 두 실행 모두 기록 0 (judge_filing 이 정함)
         self.tables = meta.get("tables") or {}
         self.reasons = rules["reasons"]
@@ -485,6 +490,9 @@ def _emb_run(ctx: Ctx, ins: list[dict]) -> dict | None:
         tid = next((t for t in map(_cell_tid, refs) if t), None)
         return _res("NOT_SEPARATED", evidence=f"{name} {what} (근거 {', '.join(refs) or '기록'})", basis=basis,
                     refs=refs, kind="instrument_record", heading=_heading(tid, ctx.tables))
+    presumed = _emb_presumed(ctx, ins)
+    if presumed:
+        return presumed
     compound = _nonzero(ctx.facts, *ctx.rules["concept_groups"][topic])
     unknown_period = [f for f in ctx.facts if f.get("concept") in ctx.rules["concept_groups"][topic]
                       and not _side(f) and _num(f.get("amount")) != 0]
@@ -494,13 +502,64 @@ def _emb_run(ctx: Ctx, ins: list[dict]) -> dict | None:
             # R35: 사채·우선주 대상 공시인데 회차 기록이 0 — 개념 재현율이 낮아 없음은 약한 근거다
             return undetermined(False, ctx.reasons["emb_targeted_no_records"])
         # 당기·전기 둘 다 보고 없음을 확인한 값 — basis_period 는 이 보고서의 당기(I2)
-        return _res("NOT_APPLICABLE", evidence="당기·전기 모두 복합상품(사채·전환권·내재파생상품) 잔액 없음, 금융상품 범주표 있음",
+        return _res("NOT_APPLICABLE", evidence="대상 상품 없음: 당기·전기 모두 복합상품(사채·전환권·내재파생상품) 잔액 없음, "
+                                               "금융상품 범주표 있음",
                     basis="current", kind="ledger_fact")
     if weak:
         return ctx.und(topic, "emb_weak_only")
     if ins or host(ctx.facts) or _pos(ctx.facts, "CONV_OPTION_EQUITY", "CONV_OPTION_LIABILITY"):
         return ctx.und(topic, "emb_no_evidence")
     return ctx.und(topic, None)
+
+
+def _host_sides(rec: dict) -> set[str]:
+    bal = rec.get("balance") or {}
+    return {side for side in ("current", "prior") if _num((bal.get(f"{side}_end") or {}).get("host_carrying")) != 0}
+
+
+def _emb_presumed(ctx: Ctx, ins: list[dict]) -> dict | None:
+    """c15(김현명 D1): 직접 미분리 문장이 없어도 상품의 구성요소·측정방법·범주·변동을 연결해 미분리를 뒷받침하면 「분리 안 함
+    (추정)」. 모두 충족할 때만: 두 실행 모두 기록이 있고(한 실행만이면 안 됨), 모든 상품이 분리 미확인이고 파생상품 칸이 없으며
+    주계약 장부금액(상각후원가 측정)이 있음, 같은 범위에 내재파생·전환권 파생부채 금액이 없음, 금액 있는 K-IFRS 범주표가
+    있고 당기손익-공정가치 금융부채가 없음, 「상품 전체를 당기손익 지정」·「분리하지 않음」 문장이 없음. 정책 문장·파생 잔액
+    없음만으로는 정하지 않는다."""
+    if ctx.meta.get("stage1_values") or not ins or ctx.single_run or not ctx.meta.get("category_table_id") \
+            or ctx.meta.get("category_fvpl_liability"):
+        return None
+    if any(i.get("embedded_separation") not in (None, "unconfirmed") or i.get("separated_targets") for i in ins):
+        return None
+    for i in ins:
+        for side in ("current_end", "prior_end"):
+            b = (i.get("balance") or {}).get(side) or {}
+            if _num(b.get("derivative_liability")) != 0 or _num(b.get("derivative_asset")) != 0:
+                return None
+        if not _host_sides(i):
+            return None
+    if _nonzero(ctx.facts, "EMB_DERIV_LIABILITY", "EMB_DERIV_ASSET", "CONV_OPTION_LIABILITY", "DERIV_PL_COLUMN") \
+            or _whole_fvpl_mark(ctx):
+        return None
+    sides = set().union(*(_host_sides(i) for i in ins))
+    basis = "current" if "current" in sides else "prior"
+    shown = [i for i in ins if basis in _host_sides(i)][:_COMPONENTS_SHOWN]
+    parts, refs = [], []
+    for i in shown:
+        amount = ((i.get("balance") or {}).get(f"{basis}_end") or {}).get("host_carrying")
+        name = (i.get("instrument") or i.get("series_key") or "사채").strip()
+        cell = list((i.get("evidence") or {}).get(f"balance.{basis}_end.host_carrying") or [])
+        mult = (ctx.tables.get(_cell_tid(cell[0]) if cell else None) or {}).get("multiplier")
+        unit = _UNIT_LABEL.get(mult, "") if mult else ""
+        parts.append(f"{name} 주계약 상각후원가 {_fmt_amount(amount)}{unit}({_PERIOD_LABEL[basis + '_end']})")
+        refs += cell
+    rest = [i for i in ins if basis not in _host_sides(i)]
+    if rest:  # 당기에 상환·전환되어 전기말에만 있는 상품 — 귀속기간을 따로 밝힌다(D1)
+        parts.append(f"전기말에만 있는 상품 {len(rest)}개는 전기 기준")
+    tid = ctx.meta["category_table_id"]
+    res = _res("NOT_SEPARATED_PRESUMED",
+               evidence=f"추정(직접 미분리 문장 없음): {' · '.join(parts)} · 파생상품 칸 없음 · 범주별 금융상품 표"
+                        f"({_heading(tid, ctx.tables) or tid})에 당기손익-공정가치 금융부채 없음",
+               basis=basis, refs=refs + [tid], kind="instrument_record")
+    res["flags"] = ["emb_presumed"]
+    return res
 
 
 _CONFIRMED = {"CONVERSION_OPTION_CLASS": ("option_class", {"equity", "derivative_liability"}),
@@ -511,6 +570,7 @@ def _consensus(ctx: Ctx, topic: str, runs: tuple, fn) -> dict | None:
     a, b = runs
     field, ok = _CONFIRMED[topic]
     confirmed = lambda rs: [r for r in rs or [] if r.get(field) in ok]  # noqa: E731
+    ctx.single_run = (a is None) != (b is None)  # c15 D1: 추정은 두 실행 모두 기록이 있을 때만
     if (a is None) != (b is None):
         present = a if a is not None else b
         if confirmed(present):
@@ -518,12 +578,15 @@ def _consensus(ctx: Ctx, topic: str, runs: tuple, fn) -> dict | None:
             return _review(f"{which} 실행에 기록 없음, 다른 실행은 확인된 기록 있음")
         a = b = present
     ra, rb = fn(ctx, a or []), fn(ctx, b or [])
+    ctx.single_run = False
     va, vb = (ra or {}).get("value"), (rb or {}).get("value")
     if va == vb:
         # 값이 같아도 한 실행이 확인 필요면 확인 필요가 이긴다
         return rb if (rb or {}).get("held_reason") == "needs_review" else ra
     if {va, vb} == {None, UND}:  # 한 실행은 행 없음, 다른 실행은 판단불가 — 둘 다 확정 값이 없다
         return ra or rb
+    if {va, vb} == {"NOT_SEPARATED_PRESUMED", UND}:  # c15 D1: 추정은 두 실행이 같을 때만 — 아니면 판단불가 그대로
+        return ra if va == UND else rb
     desc = lambda r: "행 없음" if r is None else (r["value"] + (f"/{r['held_reason']}" if r["held_reason"] else ""))  # noqa: E731
     return _review(f"두 실행 값이 다름: 1차 {desc(ra)} / 2차 {desc(rb)}")
 
@@ -543,13 +606,39 @@ def _fvoci(ctx: Ctx) -> dict | None:
     cur = [f for f in eq + reserve if _side(f) == "current"]
     # c14(김현명 C3·합의 Q2, K2): 기말 잔액이 없다는 이유만으로 지정 사례에서 빼지 않는다. 전기에만 FVOCI 지분 잔액이
     # 있으면 c11 옛 사실이든 c12 새 사실이든 한 규칙 — DESIGNATED(전기 기준) + 「당기말 잔액 없음(기중 처분 여부 미확인)」
+    disp = _nonzero(ctx.facts, "FVOCI_EQUITY_DISPOSAL")
+    disp_cur = [f for f in disp if _side(f) == "current"]
     if eq or reserve:
         res = _from_facts("DESIGNATED", cur or eq + reserve, ctx.tables)
         if stmt:  # r5: 지정 문장도 근거로 붙인다
             res["evidence"] = f"{res['evidence']} / 지정 문장: {(stmt[0].get('text') or '').strip()[:200]}"
             res["source_refs"].append(_fact_ref(stmt[0]))
         if not cur:
-            _fvoci_no_current(res)
+            _fvoci_no_current(res, disp_cur, ctx.tables)
+        elif disp_cur:
+            _fvoci_disposed(res, disp_cur, ctx.tables, all_sold=False)
+        return res
+    held_cur = [f for f in _pos(ctx.facts, "FVOCI_FA_TOTAL") if _side(f) == "current"]
+    if stmt and not disp and not _pos(ctx.facts, "FVOCI_FA_TOTAL") and ctx.meta.get("category_table_id") \
+            and ctx.meta.get("category_fvoci") is False:
+        # c15(김현명 C3, s052 우리벤처파트너스): 회사가 지분상품을 FVOCI 로 지정했다고 직접 쓴 문장이 있는데 FVOCI 잔액이
+        # 당기·전기 모두 없다 — 지정 후 처분한 것. 기말 잔액이 없다는 이유로 지정 사례에서 빼지 않는다(r5 의 「문장만으로는
+        # 정하지 않음」을 C3 답으로 바꿈). 처분 시기는 모른다. 지정 문장은 보유 내역 표의 각주인 때가 많아(사실이 표를 못 읽었을
+        # 수 있다) 금액 있는 범주표에 FVOCI 가 없다고 확인될 때만 「기말 보유 없음」(s052: 「FVOCI 없음(FVTPL만)」)
+        res = _res("DESIGNATED", evidence=f"지정 문장: {(stmt[0].get('text') or '').strip()[:250]} / 기말 보유 없음(처분 시기 미확인)",
+                   basis="current", refs=[_fact_ref(stmt[0])], kind="company_statement")
+        res["flags"] = ["fvoci_no_current_balance"]
+        return res
+    if disp:
+        # c15(김현명 C3): 지분상품만 처분 때 누계액을 이익잉여금으로 대체한다 — 처분 대체 행이 있으면 지정한 지분상품이 있었다.
+        # 잔액 사실이 없어도 지정 사례다. 당기말 FVOCI 금융자산이 없으면 「기중 전량 처분·기말 보유 없음」
+        res = _from_facts("DESIGNATED", disp_cur or disp, ctx.tables)
+        if disp_cur and not held_cur:
+            _fvoci_disposed(res, [], ctx.tables, all_sold=True)
+        else:
+            res["evidence"] = f"FVOCI 지분상품 처분 대체: {res['evidence']}" + \
+                (f" / 당기말 FVOCI 금융자산 {evidence_line(_pick(held_cur), ctx.tables)}(지분 여부 미확인)" if held_cur else "")
+            res["flags"] = list(res.get("flags") or []) + ["fvoci_disposed"]
         return res
     total = _pos(ctx.facts, "FVOCI_FA_TOTAL") + _nonzero(ctx.facts, "FVOCI_FA_RESERVE")
     held = _pos(ctx.facts, "FVOCI_FA_TOTAL")
@@ -578,12 +667,48 @@ def _fvoci(ctx: Ctx) -> dict | None:
         return ctx.und(topic, "fvoci_debt_only")
     if [f for f in _topic_facts(ctx, topic) if f.get("concept") != "FVOCI_DESIGNATION_STMT"]:
         return ctx.und(topic, "fvoci_no_equity")  # 지정 문장(금액 없음)만으로는 사유를 바꾸지 않는다(r5)
+    if not stmt:
+        none = _fvoci_no_equity(ctx)
+        if none:
+            return none
     return ctx.und(topic, None)
 
 
-def _fvoci_no_current(res: dict) -> None:
+def _fvoci_no_equity(ctx: Ctx) -> dict | None:
+    """c15(김현명 D2): 지분상품 자체가 없는 회사는 「대상 지분상품 없음」 — 지분상품을 갖고 FVOCI 로 지정하지 않은 회사와
+    구분한다. 금액 있는 범주별 금융상품 표가 있고, 그 표들에 공정가치 측정 금융자산(FVPL·FVOCI) 금액이 없을 때만
+    (K-IFRS 1109 에서 지분상품은 상각후원가로 잴 수 없다). 재무상태표·주석 어디에도 공정가치 측정 금융자산·지분증권의
+    잔액·평가·처분 금액이 없어야 한다(기간 중 보유·거래도 본다, meta fv_trace_any). FVOCI·FVPL 지분·처분 사실, 지정 문장이
+    없을 때만 부른다.
+    표를 하나라도 못 읽었으면 judge_filing 의 「없음」 값 막기가 판단불가로 돌린다."""
+    tid = ctx.meta.get("category_table_id")
+    if ctx.meta.get("stage1_values") or not tid or ctx.meta.get("category_fv_asset") or ctx.meta.get("category_fvoci") \
+            or ctx.meta.get("fv_trace_any"):
+        return None
+    head = _heading(tid, ctx.tables)
+    return _res("NO_EQUITY_INSTRUMENT", evidence=f"대상 지분상품 없음: 범주별 금융상품 표({head or tid})에 공정가치 측정 "
+                                                 f"금융자산 없음(상각후원가 측정만)", basis="current", refs=[tid],
+                kind="ledger_fact", heading=head)
+
+
+def _fvoci_no_current(res: dict, disp_cur: list[dict] | None = None, tables: dict | None = None) -> None:
+    if disp_cur:  # c15(C3): 당기 처분 대체가 있으면 「미확인」이 아니라 처분으로 기말 보유가 없다
+        _fvoci_disposed(res, disp_cur, tables or {}, all_sold=True)
+        return
     res["evidence"] = f"{res['evidence']} / 당기말 잔액 없음(기중 처분 여부 미확인)"
     res["flags"] = list(res.get("flags") or []) + ["fvoci_no_current_balance"]
+
+
+def _fvoci_disposed(res: dict, disp: list[dict], tables: dict, *, all_sold: bool) -> None:
+    """c15(김현명 C3): 기중 지정·처분 이력 표시. 전량 처분이면 기말 상태는 「기말 보유 없음」(지정 안 함과 구분)."""
+    line = f"처분 대체 {evidence_line(_pick(disp), tables)}" if disp else ""
+    if all_sold:
+        res["evidence"] = f"{res['evidence']} / 기중 전량 처분·기말 보유 없음" + (f"({line})" if line else "")
+        res["flags"] = list(res.get("flags") or []) + ["fvoci_disposed", "fvoci_no_current_balance"]
+    else:
+        res["evidence"] = f"{res['evidence']} / 기중 처분 이력 있음({line})"
+        res["flags"] = list(res.get("flags") or []) + ["fvoci_disposed"]
+    res["source_refs"] = list(res["source_refs"]) + [_fact_ref(f) for f in disp]
 
 
 def _fvoci_none_note(ctx: Ctx, res: dict) -> None:
@@ -893,17 +1018,26 @@ def _ppa(ctx: Ctx) -> dict | None:
     if ctx.meta.get("ppa_scope") and ctx.meta["ppa_scope"] != ctx.fs_scope:
         return None
     v1 = ctx.meta.get("v1_ppa")
+    ended = _ppa_period_ended(ctx)
     if not v1 or (v1.get("value") or UND) == UND:
         prov = _ppa_provisional(ctx)
         done = _ppa_completed(ctx)
         if prov and done:
             return _review("잠정 문장과 완료 문장이 함께 있음",
                            f"확인 필요: 잠정 문장({prov['source_refs'][0]})과 완료 문장({done['source_refs'][0]})이 함께 있음")
-        if prov or done:
-            return prov or done
+        if prov and ended:
+            return _ppa_conflict(prov["evidence"], ended)
+        if prov or done or ended:
+            return prov or done or ended
+        if not ended:
+            none = _no_bc(ctx)
+            if none:
+                return none
     if not v1:
         return ctx.und(topic, None)
     value = v1.get("value") or UND
+    if value == "PROVISIONAL" and ended:
+        return _ppa_conflict(v1.get("evidence") or "", ended)
     bc = _usable(ctx.facts, "BC_CONSIDERATION") + _usable(ctx.facts, "BC_NET_ASSETS_FV") + \
         _usable(ctx.facts, "BC_RELATED_COST")
     # 사업결합 표 확인은 공시 단위다(연결에만 있는 공시가 많다)
@@ -913,6 +1047,9 @@ def _ppa(ctx: Ctx) -> dict | None:
     if value == "FINAL":
         # c14(김현명 D6): 잠정금액 소급조정 사실만으로는 확정이 아니다 — 완료·확정 공시가 있어야 「확정—직접 확인」
         if not _PPA_DONE_WORD.search(v1_ev):
+            if ended:  # c15(김현명 D6): 완료 공시는 없지만 취득일부터 보고기간말까지 1년이 지났다
+                ended["evidence"] = f"{ended['evidence']} / 옛 판정 근거: {v1_ev[:200]}"
+                return ended
             return _review("소급조정 사실만 있고 완료·확정 공시 없음", f"확인 필요: 소급조정 사실만 있고 완료·확정 공시 없음: {v1_ev[:200]}")
         v1_ev = f"확정—직접 확인: {v1_ev}"
     res = _res(value, held=v1.get("held_reason") or "", evidence=v1_ev,
@@ -925,6 +1062,74 @@ def _ppa(ctx: Ctx) -> dict | None:
         res["basis_period"] = _basis(bc)
     if value != UND and not res["basis_period"]:
         res["basis_period"] = "current"  # v1 문장은 이 보고서의 문장 — 당기(I2)
+    return res
+
+
+def _one_year_after(d: str, end: str) -> bool:
+    """취득일 d 부터 보고기간말 end 까지 1년이 지났는가(같은 달·날이면 지난 것으로 본다, 2월 29일은 2월 28일)."""
+    y, m, dd = (int(x) for x in d.split("-"))
+    if (m, dd) == (2, 29):
+        dd = 28
+    return f"{y + 1:04d}-{m:02d}-{dd:02d}" <= end
+
+
+def _ppa_period_ended(ctx: Ctx) -> dict | None:
+    """c15(김현명 D6): 완료 공시가 없어도 취득일과 보고기간말이 확인되고 보고기간말까지 취득일부터 1년이 지났으면
+    「확정—측정기간 종료에 따른 판단」. 공시(범위)의 사업결합 주석 취득일이 모두 1년 넘게 지났고, 당기 취득·합병·양수
+    문장이 없을 때만 — 날짜를 못 읽은 당기 거래가 있을 수 있다. 기준은 판정 대상 재무제표의 보고기간말(제출일 아님)."""
+    end = ctx.meta.get("period_end")
+    acq = [f for f in ctx.facts if f.get("concept") == "BC_ACQUISITION_DATE" and f.get("date")]
+    if not end or not acq or any(f.get("concept") == "BC_CURRENT_DEAL_STMT" for f in ctx.facts):
+        return None
+    # 취득법(1103) 사업결합만 측정기간이 있다 — 이전대가·순자산 공정가치 표가 있어야 한다(동일지배·지배기업 합병 거름)
+    if not (_nonzero(ctx.facts, "BC_CONSIDERATION", "BC_NET_ASSETS_FV") or ctx.meta.get("bc_table_filing")):
+        return None
+    if any(f["date"] == "unknown" for f in acq):
+        return None  # 일까지 못 읽은 취득일(「2025년 5월」)이 있다 — 1년 경과를 셀 수 없다
+    prior_end = f"{int(end[:4]) - 1:04d}{end[4:]}"
+    # 날짜 대신 「전기 중 취득」 문장이면 취득일은 전기말 이전이다 — 전기말로 보고 센다(보수적)
+    when = {id(f): (prior_end if f["date"] == "prior_period" else f["date"]) for f in acq}
+    if not all(_one_year_after(when[id(f)], end) for f in acq):
+        return None
+    last = max(acq, key=lambda f: when[id(f)])
+    acq_text = f"전기 중(전기말 {prior_end} 이전)" if last["date"] == "prior_period" else last["date"]
+    ev = (f"확정—측정기간 종료에 따른 판단: 취득일 {acq_text}, 보고기간말 {end}(1년 경과)"
+          f" / {(last.get('text') or '').strip()[:200]}")
+    prior = next((f for f in ctx.facts if f.get("concept") == "BC_PRIOR_PROVISIONAL_STMT"), None)
+    if prior:  # 전기 당시 잠정 상태와 당기말 확정 상태를 각각 보인다
+        ev += f" / 전기말 당시 잠정: {(prior.get('text') or '').strip()[:150]}"
+    res = _res("FINAL", evidence=ev, basis="current", refs=[_fact_ref(f) for f in acq] + ([_fact_ref(prior)] if prior else []),
+               kind="ledger_fact")
+    res["flags"] = ["ppa_final_measurement_period"]
+    res["evidence_period"] = None
+    return res
+
+
+def _ppa_conflict(prov_ev: str, ended: dict) -> dict:
+    """D6: 기간 경과와 잠정 공시가 상충하면 자동 판정하지 않는다."""
+    when = ended["evidence"].split(" / ")[0].replace("확정—측정기간 종료에 따른 판단: ", "")
+    return _review("잠정 공시와 측정기간 경과가 상충",
+                   f"확인 필요: 잠정 공시({prov_ev[:150]})인데 측정기간이 지남({when})")
+
+
+_BC_TOPIC_FACTS = ("BC_CONSIDERATION", "BC_NET_ASSETS_FV", "BC_RELATED_COST", "PPA_COMPLETED_STMT",
+                   "BC_ACQUISITION_DATE", "BC_CURRENT_DEAL_STMT", "BC_PRIOR_PROVISIONAL_STMT")
+
+
+def _no_bc(ctx: Ctx) -> dict | None:
+    """c15(김현명 D7): 사업결합이 없다고 확인되면 「사업결합 없음」. 연결 범위만, 모두 충족할 때: 「당기 중 신규 연결 종속기업
+    없음·연결범위 변동 없음」 회사 문장 + 사업결합·합병·양수 주석 표 없음 + 사업결합 금액·취득일·당기 거래·완료·잠정 사실
+    없음(공시 단위) + v1 PPA 값 없음. 연결대상이 같다는 문장 하나만으로 정하지 않는다(영업양수·합병 흔적을 함께 본다)."""
+    if ctx.fs_scope != "consolidated" or ctx.meta.get("bc_note_table") or ctx.meta.get("bc_table_filing") \
+            or ctx.meta.get("bc_filing") or ctx.meta.get("bc_any_fact"):
+        return None
+    stmt = next((f for f in ctx.facts if f.get("concept") == "BC_NO_NEW_SUBSIDIARY"), None)
+    if not stmt or any(f.get("concept") in _BC_TOPIC_FACTS for f in ctx.facts):
+        return None
+    res = _res("NO_BUSINESS_COMBINATION",
+               evidence=f"{(stmt.get('text') or '').strip()[:200]} / 사업결합·합병·양수 주석·금액·당기 거래 문장 없음",
+               basis="current", refs=[_fact_ref(stmt)], kind="company_statement")
+    res["flags"] = ["no_bc_composite"]
     return res
 
 
@@ -1033,6 +1238,56 @@ def _category_has_fvoci(t: dict) -> bool:
     return False
 
 
+_BC_NOTE_TITLE = re.compile(r"사업결합|합병|(영업|사업)양수")
+_BC_NOTE_SKIP = re.compile(r"보고기간후|후속사건|회계정책|작성기준")
+_FV_WORD = re.compile(r"공정가치|FVPL|FVOCI|FVTPL|FV-?PL|FV-?OCI")
+_FVPL_WORD = re.compile(r"당기손익|FVPL|FVTPL|FV-?PL")
+_LIAB_WORD = re.compile(r"부채")
+_HEDGE_WORD = re.compile(r"위험회피")
+
+
+_FV_TRACE = re.compile(r"공정가치(측정)?금융(자산|상품)|(당기|기타포괄)손익인식금융자산|FVPL|FVOCI|FVTPL|매도가능|단기매매|지분증권|지분상품"
+                       r"|투자주식|투자증권"
+                       r"|시장성있는|비상장주식|상장주식|출자금")
+_FV_TRACE_SKIP = re.compile(r"부채|관계기업|공동기업|종속기업|지분법")
+
+
+def _fv_trace(t: dict) -> bool:
+    """표(재무상태표·주석)의 0 아닌 칸이 공정가치 측정 금융자산·지분증권 행·열에 있는가 — 잔액·평가손익·처분 모두."""
+    cols = {c.get("col"): _WS_RE.sub("", "/".join(c.get("header_path") or [])) for c in t.get("columns") or []}
+    for r in t.get("rows") or []:
+        lab = _WS_RE.sub("", "/".join([*(r.get("label_path") or []), r.get("label") or ""]))
+        for c in r.get("cells") or []:
+            if _num(c.get("value")) == 0:
+                continue
+            text = f"{lab}/{cols.get(c.get('col'), '')}"
+            if _FV_TRACE.search(text) and not _FV_TRACE_SKIP.search(text):
+                return True
+    return False
+
+
+def _category_fv(t: dict) -> tuple[bool, bool]:
+    """범주표의 0 아닌 칸이 (공정가치 측정 금융자산, 당기손익-공정가치 금융부채)에 있는가 — 행 이름·상위 행·열 머리글로 본다.
+    위험회피 파생상품은 복합상품이 아니어서 금융부채 쪽에 넣지 않는다."""
+    cols = {c.get("col"): _WS_RE.sub("", "/".join(c.get("header_path") or [])) for c in t.get("columns") or []}
+    title = _WS_RE.sub("", t.get("title") or "")
+    asset = li = False
+    for r in t.get("rows") or []:
+        lab = _WS_RE.sub("", "/".join([*(r.get("label_path") or []), r.get("label") or ""]))
+        for c in r.get("cells") or []:
+            if _num(c.get("value")) == 0:
+                continue
+            text = f"{lab}/{cols.get(c.get('col'), '')}"
+            if not _FV_WORD.search(text) or "상각후원가" in lab:
+                continue
+            if _LIAB_WORD.search(text) or _LIAB_WORD.search(title) and "자산" not in text:
+                if _FVPL_WORD.search(text) and not _HEDGE_WORD.search(text):
+                    li = True
+            else:
+                asset = True
+    return asset, li
+
+
 def scope_meta(tables: list[dict], fs_scope: str, *, rules_path: Path | None = None) -> dict:
     """1층 표 기록(한 공시) → judge_filing meta 의 표 정보(그 fs_scope 표만).
 
@@ -1047,7 +1302,8 @@ def scope_meta(tables: list[dict], fs_scope: str, *, rules_path: Path | None = N
     cat_note, cat_head, cat_row = re.compile(cat["note"]), re.compile(cat["head"]), re.compile(cat["row"])
     topic_notes = {t: re.compile(p) for t, p in rules["topic_notes"].items()}
     out = {"tables": {}, "movement_table": False, "category_table": False, "read_failed_topics": set(),
-           "read_failed_any_topics": set(), "category_fvoci": False, "category_table_id": None, "dev_asset_label": False}
+           "read_failed_any_topics": set(), "category_fvoci": False, "category_table_id": None, "dev_asset_label": False,
+           "bc_note_table": False, "category_fv_asset": False, "category_fvpl_liability": False, "fv_trace_any": False}
     for t in tables:
         if (t.get("fs_scope") or "") != fs_scope:
             continue
@@ -1065,6 +1321,11 @@ def scope_meta(tables: list[dict], fs_scope: str, *, rules_path: Path | None = N
             continue
         labels = [r.get("label") or "" for r in t.get("rows") or []]
         headers = [h for c in t.get("columns") or [] for h in c.get("header_path") or []]
+        if not out["fv_trace_any"] and _fv_trace(t):
+            out["fv_trace_any"] = True  # c15 D2: 공정가치 측정 금융자산·지분증권 금액(잔액·평가·처분)이 어디든 있다
+        if region.get("kind") == "note" and _BC_NOTE_TITLE.search(_WS_RE.sub("", note)[:20]) \
+                and not _BC_NOTE_SKIP.search(_WS_RE.sub("", note)[:20]):
+            out["bc_note_table"] = True  # c15 D7: 사업결합·합병·양수 주석 표가 있다
         if region.get("kind") == "note" and not _EXPENSE_NOTE.search(_WS_RE.sub("", note)) and \
                 any(_DEV_ASSET_WORD.search(_WS_RE.sub("", x or "")) for x in labels + headers):
             out["dev_asset_label"] = True  # c14: 주석 표(비용 주석 밖)에 개발비(자산) 행·열이 있다 — 개발비 별도 주석도(리뷰 #5)
@@ -1086,6 +1347,9 @@ def scope_meta(tables: list[dict], fs_scope: str, *, rules_path: Path | None = N
             out["category_table_id"] = out["category_table_id"] or t.get("table_id")
             if _category_has_fvoci(t):  # c13: 범주표에 0 아닌 FVOCI 열·행이 있는가(열만 있고 모두 0이면 없음)
                 out["category_fvoci"] = True
+            fv_asset, fvpl_li = _category_fv(t)
+            out["category_fv_asset"] |= fv_asset  # c15 D2: 공정가치 측정 금융자산(FVPL·FVOCI) 금액이 있는가
+            out["category_fvpl_liability"] |= fvpl_li  # c15 D1: 당기손익-공정가치 금융부채 금액이 있는가
     return out
 
 

@@ -1,5 +1,5 @@
 {
-  "rules_version": "r7",
+  "rules_version": "r8",
   "exception_patterns": {
     "dev_amortization": {
       "topic": "DEV_COST_CAPITALIZATION",
@@ -34,7 +34,8 @@
         "FVOCI_DEBT_RESERVE",
         "FVOCI_FA_TOTAL",
         "FVOCI_FA_RESERVE",
-        "FVOCI_DESIGNATION_STMT"
+        "FVOCI_DESIGNATION_STMT",
+        "FVOCI_EQUITY_DISPOSAL"
       ],
       "DEV_COST_CAPITALIZATION": [
         "DEV_COST_ADDITION",
@@ -59,7 +60,11 @@
         "BC_CONSIDERATION",
         "BC_NET_ASSETS_FV",
         "BC_RELATED_COST",
-        "PPA_COMPLETED_STMT"
+        "PPA_COMPLETED_STMT",
+        "BC_ACQUISITION_DATE",
+        "BC_CURRENT_DEAL_STMT",
+        "BC_PRIOR_PROVISIONAL_STMT",
+        "BC_NO_NEW_SUBSIDIARY"
       ],
       "BUSINESS_COMBINATION_COST_CLASS": [
         "BC_RELATED_COST"
@@ -67,9 +72,9 @@
     },
     "read_failed_absence_values": {
       "why": "I1(r3): 사실이 없음에 기대어 정한 값. 그 주제의 관련 주석 표를 읽지 못했으면 판단불가/read_failed 다. 리스 NONE(0·「-」 칸 사실)·PPA NO_BUSINESS_COMBINATION(회사 문장)은 있는 근거로 정한 값이라 넣지 않는다",
-      "EMBEDDED_DERIVATIVE_SEPARATION": ["NOT_APPLICABLE"],
+      "EMBEDDED_DERIVATIVE_SEPARATION": ["NOT_APPLICABLE", "NOT_SEPARATED_PRESUMED"],
       "IP_FAIR_VALUE": ["FV_NOT_DISCLOSED"],
-      "FVOCI_DESIGNATION": ["NOT_DESIGNATED"],
+      "FVOCI_DESIGNATION": ["NOT_DESIGNATED", "NO_EQUITY_INSTRUMENT"],
       "DEV_COST_CAPITALIZATION": ["EXPENSED"]
     },
     "emb_strong_targets": [
