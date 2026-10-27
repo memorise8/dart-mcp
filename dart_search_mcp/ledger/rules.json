@@ -1,5 +1,5 @@
 {
-  "rules_version": "r6",
+  "rules_version": "r7",
   "exception_patterns": {
     "dev_amortization": {
       "topic": "DEV_COST_CAPITALIZATION",
@@ -92,7 +92,7 @@
       "fvoci_debt_only": "기타포괄손익-공정가치 채무상품만 있음",
       "fvoci_total_only": "기타포괄손익-공정가치 금융자산 총액만 있어 지분상품 여부 확인 불가",
       "fvoci_no_equity": "지분상품 여부를 확인할 금액 없음",
-      "dev_rnd_only": "경상연구개발비만 있음",
+      "dev_rnd_only": "연구개발 관련 비용 금액은 있으나 당기 개발비 자산화 여부를 확인하지 못함",
       "dev_balance_only": "증가액 없이 잔액만 있음",
       "dev_amort_no_addition": "상각 정책은 있으나 증가액 없음",
       "lease_partial_zero": "단기·소액리스료 칸 중 일부만 0으로 있음",

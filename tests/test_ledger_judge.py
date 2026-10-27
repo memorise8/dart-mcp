@@ -264,8 +264,9 @@ class DevTest(unittest.TestCase):
                          ("UNDETERMINED", "no_facts", "증가액 없이 잔액만 있음"))
 
     def test_rnd_only_undetermined(self):
+        # 무형자산 변동표가 없으면 비용 금액만으로는 정하지 않는다(c14 D3)
         r = judge([F("RND_EXPENSE", 500, "current_period")])["DEV_COST_CAPITALIZATION"]
-        self.assertEqual(r["evidence"], "경상연구개발비만 있음")
+        self.assertEqual(r["evidence"], "연구개발 관련 비용 금액은 있으나 당기 개발비 자산화 여부를 확인하지 못함")
 
     def test_capitalized(self):
         r = judge([F("DEV_COST_ADDITION", 0, "current_period"), F("DEV_COST_ADDITION", 30, "prior_period")])
@@ -984,13 +985,30 @@ class IpSentenceAndModelTest(unittest.TestCase):
         r = judge([F("IP_CARRYING", 100), F("IP_FAIR_VALUE", 150), FVM()])["IP_FAIR_VALUE"]
         self.assertEqual(r["held_reason"], "needs_review")
 
-    def test_no_material_difference_sentence_needs_review(self):
-        # 금액 없이 「장부금액은 공정가치와 중요한 차이가 없습니다」만 있으면 FV_NOT_DISCLOSED 로 정하지 않는다(Q4 대기)
+    def test_no_material_difference_sentence_is_approx_equal(self):
+        # c14(김현명 D5 b): 금액 없이 「장부금액은 공정가치와 중요한 차이가 없습니다」 → 같음(근사), 공정가치 금액은 쓰지 않는다
         m = FVM(sid="s657", text="한편, 당기말 현재 투자부동산의 장부금액은 공정가치와 중요한 차이가 없습니다.")
         m["concept"] = "IP_FV_NO_MATERIAL_DIFF"
         r = judge([F("IP_CARRYING", 750124, mult=1000), m])["IP_FAIR_VALUE"]
+        self.assertEqual((r["value"], r["basis_period"], r["value_flags"]), ("FV_EQUALS", "current", ["fv_approx"]))
+        self.assertTrue(r["evidence"].startswith("장부금액과 유사(근사) — 회사가 중요한 차이가 없다고 판단함 · "
+                                                 "공정가치 금액은 별도로 제시하지 않음: IP_CARRYING 750,124"))
+        self.assertIn("중요한 차이가 없습니다", r["evidence"])
+        self.assertIn("s657", r["source_refs"])
+
+    def test_no_material_difference_without_current_carrying_needs_review(self):
+        m = FVM(sid="s657", text="한편, 전기말 현재 투자부동산의 장부금액은 공정가치와 중요한 차이가 없습니다.")
+        m["concept"] = "IP_FV_NO_MATERIAL_DIFF"
+        r = judge([F("IP_CARRYING", 750124, "prior_end", mult=1000), m])["IP_FAIR_VALUE"]
         self.assertEqual(r["held_reason"], "needs_review")
         self.assertIn("s657", r["evidence"])
+
+    def test_real_fair_value_pair_wins_over_no_material_difference(self):
+        m = FVM(sid="s657", text="투자부동산의 장부금액은 공정가치와 중요한 차이가 없습니다.")
+        m["concept"] = "IP_FV_NO_MATERIAL_DIFF"
+        r = judge([F("IP_CARRYING", 100), F("IP_FAIR_VALUE", 130), m])["IP_FAIR_VALUE"]
+        self.assertEqual(r["value"], "FV_DIFFERS")
+        self.assertNotIn("value_flags", r)
 
     def test_fair_value_leadin_without_amount_needs_review(self):
         m = FVM(sid="s489", text="(3) 당기말 현재 투자부동산의 공정가치는 다음과 같습니다.")
@@ -1023,7 +1041,7 @@ class C12FvociTest(unittest.TestCase):
 
     def test_rules_version_r5(self):
         from dart_search_mcp.ledger.judge_rules import load_rules
-        self.assertIn(load_rules()["rules_version"], ("r5", "r6"))
+        self.assertIn(load_rules()["rules_version"], ("r5", "r6", "r7"))
 
     def test_statement_with_total_only_is_designated(self):
         # s058 효성티앤씨: 주석 11 FVOCI 금융자산 총액 7,303백만원 + 주석 30 「…기타포괄손익으로 인식하도록 지정하였습니다」
@@ -1197,11 +1215,16 @@ class C12Fix1JudgeTest(unittest.TestCase):
             f["since"] = since
         return f
 
-    def test_new_prior_only_balance_needs_review(self):
-        # 20260402001564 모양: c12 새 사실이 전기에만 0 초과, 당기 0
+    def test_new_prior_only_balance_designated_prior(self):
+        # 20260402001564 모양: c12 새 사실이 전기에만 0 초과, 당기 0 — c14(K2): c11 옛 사실과 같은 규칙
         r = judge([self.eq(0, "current_end"), self.eq(500, "prior_end")])["FVOCI_DESIGNATION"]
-        self.assertEqual((r["value"], r["held_reason"]), ("UNDETERMINED", "needs_review"))
-        self.assertIn("전기만 FVOCI 잔액", r["evidence"])
+        self.assertEqual((r["value"], r["basis_period"]), ("DESIGNATED", "prior"))
+        self.assertTrue(r["evidence"].startswith("당기에 없음, 전기 기준: "))
+        self.assertTrue(r["evidence"].endswith("당기말 잔액 없음(기중 처분 여부 미확인)"))
+        self.assertEqual(r["value_flags"], ["fvoci_no_current_balance"])
+        old = judge([self.eq(500, "prior_end", since=None)])["FVOCI_DESIGNATION"]
+        self.assertEqual(old["value_flags"], ["fvoci_no_current_balance"])
+        self.assertNotIn("value_flags", judge([self.eq(300, "current_end")])["FVOCI_DESIGNATION"])
 
     def test_current_balance_designated(self):
         r = judge([self.eq(300, "current_end"), self.eq(500, "prior_end")])["FVOCI_DESIGNATION"]
@@ -1234,8 +1257,9 @@ class C12ConvFreezeTest(unittest.TestCase):
 
     def test_pl_column_change_puts_conv_in_review(self):
         # 20260318000934 모양: 사채 기록 EQUITY + (c11) 손익 열 파생상품부채 → c11 needs_review, c12 EQUITY
+        # (c14: 같은 기간 금액만 막으므로 손익 열 사실도 당기)
         ins = [I("equity", cur={"equity_component": 100})]
-        facts = [F("CONV_OPTION_EQUITY", 100, label="전환권대가"), PLF("EMB_DERIV_LIABILITY", 66833)]
+        facts = [F("CONV_OPTION_EQUITY", 100, label="전환권대가"), PLF("EMB_DERIV_LIABILITY", 66833, "current_end")]
         r = judge(facts, ins)["CONVERSION_OPTION_CLASS"]
         self.assertEqual((r["value"], r["held_reason"]), ("UNDETERMINED", "needs_review"))
         self.assertIn("c12 근거 변경 — 전환권 규칙 결정 대기", r["evidence"])
@@ -1283,9 +1307,17 @@ class C13LeaseTest(unittest.TestCase):
         self.assertEqual(r["evidence"].count(t), 1)
 
     def test_outflow_sentence_without_policy_not_used(self):
-        # 정책 설명 없이 현금유출액 문장만 있을 때는 두 분 의견이 갈린다(C2) — 쓰지 않는다
+        # c14(김현명 C2): 정책 설명이 없어도 보조 근거로 쓴다 — 「현금유출액 근거·비용 인식액 미확인」으로 직접 근거와 나눈다
         facts = [LS("LEASE_LOW_VALUE_EXP", 124303438), LS("LEASE_SHORT_TERM_EXP", 7008183)]
-        self.assertNotIn("LEASE_EXEMPTION", judge(facts))
+        r = judge(facts)["LEASE_EXEMPTION"]
+        self.assertEqual((r["value"], r["value_flags"]), ("BOTH", ["lease_cash_outflow"]))
+        self.assertTrue(r["evidence"].endswith(" / 현금유출액 근거·비용 인식액 미확인"))
+        r = judge(facts, marks=[M("LEASE_EXEMPTION", text=_LEASE_POLICY)])["LEASE_EXEMPTION"]
+        self.assertIn("정책+지급액(현금유출) 근거 · 비용 인식액 미확인", r["evidence"])
+        self.assertEqual(r["value_flags"], ["lease_cash_outflow"])
+        # 표 금액으로 정한 값에는 붙이지 않는다
+        r = judge([F("LEASE_SHORT_TERM_EXP", 50, "current_period", label="단기리스료"), LS("LEASE_LOW_VALUE_EXP", 9)])
+        self.assertNotIn("value_flags", r["LEASE_EXEMPTION"])
 
     def test_table_facts_win_over_sentences(self):
         facts = [F("LEASE_SHORT_TERM_EXP", 50, "current_period", label="단기리스료"), LS("LEASE_LOW_VALUE_EXP", 124303438)]
@@ -1312,12 +1344,18 @@ class C13DisplayTest(unittest.TestCase):
         self.assertFalse(r["evidence"].startswith("당기에 없음"))
 
     def test_mixed_periods_split_current_first(self):
-        # s003 팬스타엔터프라이즈 모양: 자본요소는 전기말, 파생상품부채는 당기말 — 기간을 섞지 않고 나눠 보인다
+        # s003 팬스타엔터프라이즈 모양: 자본요소는 전기말, 파생상품부채는 당기말 — c14(김현명 C1): 기준시점이 다르면
+        # 「둘 다」가 아니다. 상품이 다를 수 있어 한쪽을 고르지 않고 확인 필요(근거는 기간별로 나눠 보인다)
         ins = [I("equity", prior={"equity_component": 1230541}, name="신주인수권부사채"),
                I("derivative_liability", cur={"derivative_liability": 3601074}, name="전환사채")]
         r = judge([], ins)["CONVERSION_OPTION_CLASS"]
-        self.assertEqual(r["value"], "BOTH")
-        self.assertRegex(r["evidence"], r"^당기: 전환사채 파생상품부채 3,601,074.* / 전기 기준: 신주인수권부사채 자본요소 1,230,541")
+        self.assertEqual((r["value"], r["held_reason"]), ("UNDETERMINED", "needs_review"))
+        self.assertRegex(r["evidence"], r"기준시점이 다른 자본·부채 기록.*당기: 전환사채 파생상품부채 3,601,074.* / 전기 기준: "
+                                        r"신주인수권부사채 자본요소 1,230,541")
+        # 같은 시점이면 그대로 「둘 다」
+        ins = [I("equity", cur={"equity_component": 5}, name="신주인수권부사채"),
+               I("derivative_liability", cur={"derivative_liability": 7}, name="전환사채")]
+        self.assertEqual(judge([], ins)["CONVERSION_OPTION_CLASS"]["value"], "BOTH")
 
     def test_lease_both_mixed_periods_split(self):
         r = judge([F("LEASE_SHORT_TERM_EXP", 5, "current_period", label="단기리스료"),
@@ -1401,7 +1439,7 @@ class C13Fix1Test(unittest.TestCase):
         v1 = {"value": "FINAL", "evidence": "당기 중 식별가능한 자산(부채) 인식 등 인수가격배분이 완료되었으며", "held_reason": ""}
         r = judge([F("BC_CONSIDERATION", 100, "prior_period", label="이전대가")], v1_ppa=v1)["PPA_MEASUREMENT_PERIOD"]
         self.assertEqual((r["value"], r["basis_period"]), ("FINAL", "prior"))
-        self.assertEqual(r["evidence"], v1["evidence"])
+        self.assertEqual(r["evidence"], "확정—직접 확인: " + v1["evidence"])  # c14 D6 근거 유형
 
     def test_fact_based_prior_rows_keep_prefix(self):
         r = judge([F("DEV_COST_ADDITION", 300, "prior_period", label="개발비 증가")])["DEV_COST_CAPITALIZATION"]
@@ -1439,3 +1477,147 @@ class C13Fix1Test(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class C14LeaseTest(unittest.TestCase):
+    def test_single_value_with_both_policy_says_other_unconfirmed(self):
+        # s082 에이자기관리부동산투자회사 모양(김현명 D4): 소액 금액만 + 정책은 단기·소액 둘 다 → 값은 소액, 단기는 「미확인」
+        f = F("LEASE_LOW_VALUE_EXP", 1560, "current_period", label="단기리스가 아닌 소액자산 리스료", mult=1000)
+        pol = "단기리스(리스개시일에 리스기간이 12개월 이하인 리스)와 소액자산리스의 경우 예외 규정을 선택하여 리스료를 비용을 인식합니다."
+        r = judge([f], marks=[M("LEASE_EXEMPTION", text=pol)])["LEASE_EXEMPTION"]
+        self.assertEqual((r["value"], r["value_flags"]), ("LOW_VALUE", ["lease_policy_both"]))
+        self.assertTrue(r["evidence"].endswith(" / 정책은 단기·소액 모두 면제 / 단기: 실제 적용 내역 미확인"))
+        r = judge([F("LEASE_SHORT_TERM_EXP", 5, "current_period")], marks=[M("LEASE_EXEMPTION", text=pol)])["LEASE_EXEMPTION"]
+        self.assertIn("소액: 실제 적용 내역 미확인", r["evidence"])
+
+    def test_single_policy_or_both_value_no_note(self):
+        f = F("LEASE_LOW_VALUE_EXP", 7, "current_period")
+        r = judge([f], marks=[M("LEASE_EXEMPTION", text="소액자산 리스는 인식면제를 적용하여 비용을 인식합니다.")])
+        self.assertNotIn("value_flags", r["LEASE_EXEMPTION"])
+        r = judge([f, F("LEASE_SHORT_TERM_EXP", 5, "current_period")], marks=[M("LEASE_EXEMPTION", text=_LEASE_POLICY)])
+        self.assertNotIn("실제 적용 내역 미확인", r["LEASE_EXEMPTION"]["evidence"])
+
+
+class C14DevTest(unittest.TestCase):
+    def rnd(self, amount=9754, period="current_period"):
+        f = F("RND_EXPENSE", amount, period, label="판매비와관리비", mult=1000)
+        f["label_path"] = ["판매비와관리비", "경상연구개발비"]
+        return f
+
+    def test_rnd_amount_and_movement_table_without_dev_expensed(self):
+        # s078 아이티센피엔에스 모양(김현명 D3·b6): 판관비 경상연구개발비 + 무형자산 변동표에 개발비 없음 → 비용 처리
+        r = judge([self.rnd()], movement_table=True)["DEV_COST_CAPITALIZATION"]
+        self.assertEqual((r["value"], r["basis_period"], r["value_flags"]), ("EXPENSED", "current", ["dev_expensed_by_amount"]))
+        self.assertEqual(r["evidence"], "비용 금액: 판매비와관리비 / 경상연구개발비 9,754천원 (당기) / 무형자산 변동표에 당기 개발비 증가 없음")
+
+    def test_negative_rnd_amount_counts(self):
+        r = judge([self.rnd(-9754)], movement_table=True)["DEV_COST_CAPITALIZATION"]
+        self.assertEqual(r["value"], "EXPENSED")
+
+    def test_past_balance_with_zero_current_addition_expensed_current_year_only(self):
+        # cc(10-27 사용자 결정): 과거 개발비 잔액 + 올해 증가 0 → 비용 처리, 「올해 자산화 없음(과거 개발비 잔액 있음)」
+        facts = [F("DEV_COST_ASSET", 500), F("DEV_COST_ADDITION", 0, "current_period", label="개발비 / 취득"),
+                 F("DEV_COST_ADDITION", 40, "prior_period", label="개발비 / 취득"), self.rnd()]
+        r = judge(facts, movement_table=True)["DEV_COST_CAPITALIZATION"]
+        self.assertEqual((r["value"], r["basis_period"], r["value_flags"]),
+                         ("EXPENSED", "current", ["expensed_current_year_only"]))
+        self.assertTrue(r["evidence"].startswith("올해 자산화 없음(과거 개발비 잔액 있음): 개발비 / 취득 0 (당기)"))
+        self.assertIn("비용 금액: 판매비와관리비 / 경상연구개발비 9,754천원 (당기)", r["evidence"])
+
+    def test_past_balance_without_read_current_addition_stays_undetermined(self):
+        # 당기 증가 칸을 못 읽었으면(0 사실 없음) 못 찾은 것 — 정하지 않는다
+        r = judge([F("DEV_COST_ASSET", 500), self.rnd()], movement_table=True)["DEV_COST_CAPITALIZATION"]
+        self.assertEqual(r["value"], "UNDETERMINED")
+        r = judge([F("DEV_COST_ADDITION", 40, "prior_period"), self.rnd()], movement_table=True)["DEV_COST_CAPITALIZATION"]
+        self.assertEqual(r["value"], "CAPITALIZED")
+
+    def test_current_addition_capitalized_and_shows_expense(self):
+        facts = [F("DEV_COST_ADDITION", 30, "current_period", label="개발비 증가"), self.rnd()]
+        r = judge(facts, movement_table=True)["DEV_COST_CAPITALIZATION"]
+        self.assertEqual(r["value"], "CAPITALIZED")
+        self.assertIn(" / 비용 처리도 확인: 판매비와관리비 / 경상연구개발비 9,754천원 (당기)", r["evidence"])
+
+    def test_prior_rnd_or_no_movement_table_not_expensed(self):
+        self.assertEqual(judge([self.rnd(period="prior_period")], movement_table=True)["DEV_COST_CAPITALIZATION"]["value"],
+                         "UNDETERMINED")
+        self.assertEqual(judge([self.rnd()], movement_table=False)["DEV_COST_CAPITALIZATION"]["value"], "UNDETERMINED")
+
+    def test_statement_path_first_and_read_failure_blocks(self):
+        st = M("DEV_COST_CAPITALIZATION", text="당기 및 전기 중 회사가 개발비 요건을 충족하지 못하여 경상개발비로 비용처리한 금액은 "
+                                                "다음과 같습니다.", sid="s169")
+        r = judge([self.rnd()], marks=[st], movement_table=True)["DEV_COST_CAPITALIZATION"]
+        self.assertEqual(r["value"], "EXPENSED")
+        self.assertNotIn("value_flags", r)
+        r = judge([self.rnd()], movement_table=True, read_failed_any_topics={"DEV_COST_CAPITALIZATION"})
+        self.assertEqual(r["DEV_COST_CAPITALIZATION"]["held_reason"], "read_failed")
+
+
+class C14ConvTest(unittest.TestCase):
+    def test_s016_other_right_liability_beside_equity_component(self):
+        # s016 마이크로디지탈(김현명 C1): 회차별 표에 전환권대가와 파생상품부채(조기상환권)·파생상품자산(매도청구권) →
+        # 전환권은 자본, 파생상품부채는 별도 정보
+        tid = f"{R}:00760:t200"
+        facts = [F("CONV_OPTION_EQUITY", 4599428, label="전환권대가", tid=tid),
+                 F("EMB_DERIV_LIABILITY", 5251822, label="파생상품부채", tid=tid),
+                 F("EMB_DERIV_ASSET", 1463113, label="파생상품자산", tid=tid)]
+        r = judge(facts)["CONVERSION_OPTION_CLASS"]
+        self.assertEqual((r["value"], r["value_flags"]), ("EQUITY", ["conv_other_right_shown"]))
+        self.assertIn("별도: 다른 권리 파생상품부채 파생상품부채 5,251,822원 (당기말)(전환권 판정에 합산 안 함)", r["evidence"])
+
+    def test_liability_in_other_table_still_blocks(self):
+        facts = [F("CONV_OPTION_EQUITY", 100, label="전환권대가"), F("EMB_DERIV_LIABILITY", 50, label="파생상품부채")]
+        self.assertEqual(judge(facts)["CONVERSION_OPTION_CLASS"]["held_reason"], "needs_review")
+
+    def test_prior_liability_does_not_block_current_equity(self):
+        facts = [F("CONV_OPTION_EQUITY", 100, label="전환권대가"), F("EMB_DERIV_LIABILITY", 50, "prior_end", label="파생상품부채")]
+        self.assertEqual(judge(facts)["CONVERSION_OPTION_CLASS"]["value"], "EQUITY")
+
+    def test_facts_both_needs_same_period(self):
+        facts = [F("CONV_OPTION_EQUITY", 100, label="전환권대가"), F("CONV_OPTION_LIABILITY", 50, "prior_end", label="전환권")]
+        r = judge(facts)["CONVERSION_OPTION_CLASS"]
+        self.assertEqual((r["value"], r["held_reason"]), ("UNDETERMINED", "needs_review"))
+        self.assertIn("전기 기준: 전환권 50원 (전기말)", r["evidence"])
+        facts[1] = F("CONV_OPTION_LIABILITY", 50, label="전환권")
+        self.assertEqual(judge(facts)["CONVERSION_OPTION_CLASS"]["value"], "BOTH")
+
+
+class C14PpaTest(unittest.TestCase):
+    def bc(self):
+        return [F("BC_CONSIDERATION", 100, "prior_period", label="이전대가")]
+
+    def test_completion_sentence_final_direct(self):
+        r = judge(self.bc() + [PC()], v1_ppa=C13PpaCompletionTest.V1)["PPA_MEASUREMENT_PERIOD"]
+        self.assertEqual((r["value"], r["value_flags"]), ("FINAL", ["ppa_final_direct"]))
+        self.assertTrue(r["evidence"].startswith("확정—직접 확인: "))
+
+    def test_v1_final_on_retro_adjustment_only_needs_review(self):
+        # 20260318001133·20260409000247 모양(김현명 D6): 잠정금액 소급조정 사실만 — 확정이 아니다
+        for ev in ("전기 중 (주)미디어캐슬의 사업결합 관련 매수가격배분 금액을 잠정금액으로 표시하였으며, 당기 중 … 취득일 기준으로 "
+                   "잠정금액을 소급 조정하였습니다.",
+                   "연결실체는 취득일에 유ㆍ무형자산 등의 공정가치에 대해 독립적인 가치평가가 완료되지 않아 잠정적으로 결정하였으며, 당기 중 "
+                   "… 식별가능순자산의 잠정금액을 소급하여 조정하였습니다."):
+            v1 = {"value": "FINAL", "evidence": ev, "held_reason": ""}
+            r = judge(self.bc(), v1_ppa=v1)["PPA_MEASUREMENT_PERIOD"]
+            self.assertEqual((r["value"], r["held_reason"]), ("UNDETERMINED", "needs_review"), ev)
+
+    def test_v1_final_with_completion_keeps_final(self):
+        v1 = {"value": "FINAL", "evidence": "연결회사는 사업결합 회계처리를 전기에 완료하지 못하여 … 당기 중 이전대가 배분을 포함한 "
+                                            "사업결합 회계처리를 완료하였습니다.", "held_reason": ""}
+        r = judge(self.bc(), v1_ppa=v1)["PPA_MEASUREMENT_PERIOD"]
+        self.assertEqual((r["value"], r["value_flags"]), ("FINAL", ["ppa_final_direct"]))
+
+
+class C14DevLabelGuardTest(unittest.TestCase):
+    def test_scope_meta_dev_asset_label(self):
+        # 20260311003212 t056 모양: 열 방향 변동표, 머리글에 「개발비」 — 2층이 금액을 못 읽어도 개발비가 있다는 것은 안다
+        from dart_search_mcp.ledger.judge_rules import scope_meta
+        t = T("R:00760:t056", "기타무형자산", ["취득원가", "기초", "대체(*1)", "기말"], title="1) 당기",
+              headers=["특허권", "소프트웨어", "개발비"])
+        self.assertTrue(scope_meta([t], "separate")["dev_asset_label"])
+        t2 = T("R:00760:t057", "무형자산", ["판매비와관리비", "경상연구개발비"], title="상각비 배분", headers=["당기"])
+        self.assertFalse(scope_meta([t2], "separate")["dev_asset_label"])
+
+    def test_dev_label_without_facts_not_expensed(self):
+        f = F("RND_EXPENSE", 9754, "current_period", label="경상연구개발비")
+        r = judge([f], movement_table=True, dev_asset_label=True)["DEV_COST_CAPITALIZATION"]
+        self.assertEqual(r["value"], "UNDETERMINED")
