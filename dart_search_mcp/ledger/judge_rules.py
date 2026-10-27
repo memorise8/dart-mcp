@@ -325,10 +325,12 @@ def _non_conversion(f: dict) -> bool:
 
 
 def _beside_equity_component(ctx: Ctx, f: dict) -> bool:
-    """같은 표·같은 기간에 0 보다 큰 전환권대가(CONV_OPTION_EQUITY) 사실이 있는가 — 회차별 사채 표(S016 모양)."""
-    tid = (f.get("source") or {}).get("table_id")
-    return bool(tid) and any((e.get("source") or {}).get("table_id") == tid and _side(e) == _side(f)
-                             for e in _pos(ctx.facts, "CONV_OPTION_EQUITY"))
+    """같은 표·같은 열·같은 기간에 0 보다 큰 전환권대가(CONV_OPTION_EQUITY) 사실이 있는가 — 회차별 사채 표(S016 모양).
+    열까지 같아야 한다: 회차를 열로 나눈 표에서 다른 회차의 전환권대가는 이 파생상품부채가 다른 권리라는 근거가 아니다."""
+    src = f.get("source") or {}
+    tid = src.get("table_id")
+    return bool(tid) and any((e.get("source") or {}).get("table_id") == tid and (e.get("source") or {}).get("col") == src.get("col")
+                             and _side(e) == _side(f) for e in _pos(ctx.facts, "CONV_OPTION_EQUITY"))
 
 
 def _equity_guard(ctx: Ctx, res: dict) -> dict:
@@ -341,9 +343,15 @@ def _equity_guard(ctx: Ctx, res: dict) -> dict:
     other = [f for f in emb if _beside_equity_component(ctx, f)]
     li = [f for f in _usable(ctx.facts, "CONV_OPTION_LIABILITY") if _num(f.get("amount")) != 0] + \
         [f for f in emb if f not in other]
-    if res.get("basis_period"):  # c14: 「같은 기간 안」 — 다른 기준시점의 부채 금액은 이 판정을 막지 않는다(C1)
+    aside = []
+    if res.get("basis_period"):  # c14: 「같은 기간 안」 — 다른 기준시점의 부채 금액은 이 판정을 막지 않고 따로 보인다(C1)
+        aside = [f for f in li if _side(f) != res["basis_period"]]
         li = [f for f in li if _side(f) == res["basis_period"]]
         other = [f for f in other if _side(f) == res["basis_period"]]
+    if aside and not li:
+        res = {**res, "evidence": f"{res['evidence']} / 다른 기준시점: 파생상품부채 {evidence_line(_pick(aside), ctx.tables)}"
+                                  f"(기준시점이 달라 이 판정에 넣지 않음)"}
+        res["flags"] = list(res.get("flags") or []) + ["conv_other_period_shown"]
     if other and not li:
         # c14(김현명 C1, S016 마이크로디지탈): 전환권대가(자본)와 같은 표·같은 기간의 대상 없는 파생상품부채는 그 사채의
         # 다른 권리(조기상환권 등)다 — 한 상품의 전환권은 자본이면서 부채일 수 없다. 별도 정보로 보이고 합산하지 않는다
@@ -371,6 +379,10 @@ def _conv_run(ctx: Ctx, ins: list[dict]) -> dict | None:
         if cls:
             res = _from_facts(cls, feq + fli, ctx.tables)
             if cls == "BOTH":
+                both = {_side(f) for f in feq} & {_side(f) for f in fli}
+                pick = "current" if "current" in both else "prior"  # c14: 두 분류가 함께 있는 기간이 기준시점
+                feq, fli = [f for f in feq if _side(f) == pick], [f for f in fli if _side(f) == pick]
+                res = _from_facts(cls, feq + fli, ctx.tables)
                 res["evidence"] = _join_sides([(evidence_line(_pick(x), ctx.tables), _side(_pick(x))) for x in (feq, fli)])
             return _equity_guard(ctx, res)
         return ctx.und(topic, "conv_no_class" if host(ctx.facts) else None)
@@ -395,7 +407,10 @@ def _conv_run(ctx: Ctx, ins: list[dict]) -> dict | None:
         # CB 파생부채 등, s002·s013)이라 한쪽을 골라 정하지 않는다 — 상품별 기록(2단계) 전까지 확인 필요
         return _review("기준시점이 다른 자본·부채 기록", "확인 필요: 기준시점이 다른 자본·부채 기록(상품별 확인 필요): " +
                        _from_records(value, picks, ctx.tables)["evidence"])
-    return _equity_guard(ctx, _from_records(value, picks, ctx.tables, facts=period_facts, recs=eq + li))
+    res = _from_records(value, picks, ctx.tables, facts=period_facts, recs=eq + li)
+    if value == "BOTH" and se and sl:  # c14: 두 분류가 함께 있는 기간이 기준시점
+        res["basis_period"] = "current" if "current" in se & sl else "prior"
+    return _equity_guard(ctx, res)
 
 
 def _held(ctx: Ctx, recs: list[dict]) -> bool:
@@ -707,8 +722,9 @@ def _lease(ctx: Ctx) -> dict | None:
     return res
 
 
-_LEASE_SHORT_RE = re.compile(r"단기")
-_LEASE_LOW_RE = re.compile(r"소액")
+# 정책 문장에서 그 유형에 면제를 적용한다는 말(「단기리스에는 적용하지 않고」 같은 부정은 아님, 리뷰 c14 #7)
+_LEASE_SHORT_RE = re.compile(r"단기(?![^.,]{0,30}(적용하지|제외하지)\s*않)[^.]{0,80}(면제|제외|정액|비용)|(면제|제외)[^.]{0,60}단기")
+_LEASE_LOW_RE = re.compile(r"소액(?![^.,]{0,30}(적용하지|제외하지)\s*않)[^.]{0,80}(면제|제외|정액|비용)|(면제|제외)[^.]{0,60}소액")
 
 
 def _lease_policy_both(text: str) -> bool:
@@ -756,7 +772,8 @@ def _lease_value_res(ctx: Ctx, facts: list[dict]) -> dict | None:
         res["evidence"] = f"{res['evidence']} — {_COMBINED_NOTE}"
         res["flags"] = ["lease_combined_row"]
         return res
-    if (s_all and l_all) or c_all:
+    if ((s_all and l_all) or c_all) and not all(f.get("match_basis") == "sentence" for f in s_all + l_all + c_all):
+        # 「적용 안 함」은 표의 0·「-」 칸으로만 — 현금유출액 문장은 면제 적용의 보조 근거일 뿐이다(C2, 리뷰 c14 #6)
         res = _from_facts("NONE", s_all + l_all + c_all, ctx.tables)
         res["evidence"] = "단기·소액리스료 칸이 0 또는 「-」: " + " / ".join(
             evidence_line(f, ctx.tables) for f in ([_pick(s_all), _pick(l_all)] if s_all and l_all else [_pick(c_all)]))
@@ -864,7 +881,10 @@ def _ip(ctx: Ctx) -> dict | None:
     return _from_facts("FV_NOT_DISCLOSED", car, ctx.tables)
 
 
-_PPA_DONE_WORD = re.compile(r"(완료|확정)(?!\s*(되|하)지\s*(않|못))(?!에\s*따라)")  # 「완료되지 않아」 「확정에 따라 변동될 수」는 아님
+# 완료·확정 공시 낱말. 아닌 것: 「미확정」 「완료되지 않아/아니하여」 「확정될 예정」 「확정되기 전」 「완료 여부」 「확정에 따라 변동될 수」
+# 「확정급여」(리뷰 c14 #4)
+_PPA_DONE_WORD = re.compile(r"(?<!미)(완료|확정)(?!\s*(되|하)지(는)?\s*(않|못|아니))(?!\s*될)(?!되기\s*전)(?!\s*전)(?!\s*여부)"
+                            r"(?!\s*급여)(?!에\s*따라)")
 
 
 def _ppa(ctx: Ctx) -> dict | None:
@@ -986,6 +1006,8 @@ def _rf_blocks(t: dict, rules: dict) -> bool:
 
 
 # 개발비 자산 행·열 이름(「경상연구개발비」 「개발비(판관비)」 같은 비용 이름은 빼고)
+_INTANGIBLE_CIP = re.compile(r"건설중인")
+_EXPENSE_NOTE = re.compile(r"판매비|관리비|영업비용|비용의성격|제조원가|매출원가|손익|수익|세무조정")
 _DEV_ASSET_WORD = re.compile(r"^(?!.*(경상|연구|비용|판매|판관|제조|상각비))(.*개발비|.*개발중인)")
 _FVOCI_WORD = re.compile(r"기타포괄손익(.?공정가치|인식|으로인식)|FVOCI")
 
@@ -1042,10 +1064,13 @@ def scope_meta(tables: list[dict], fs_scope: str, *, rules_path: Path | None = N
                 out["read_failed_topics"].update(hit)
             continue
         labels = [r.get("label") or "" for r in t.get("rows") or []]
+        headers = [h for c in t.get("columns") or [] for h in c.get("header_path") or []]
+        if region.get("kind") == "note" and not _EXPENSE_NOTE.search(_WS_RE.sub("", note)) and \
+                any(_DEV_ASSET_WORD.search(_WS_RE.sub("", x or "")) for x in labels + headers):
+            out["dev_asset_label"] = True  # c14: 주석 표(비용 주석 밖)에 개발비(자산) 행·열이 있다 — 개발비 별도 주석도(리뷰 #5)
+        if mv_note.search(note) and any(_INTANGIBLE_CIP.search(_WS_RE.sub("", x or "")) for x in labels + headers):
+            out["dev_asset_label"] = True  # c14: 무형자산 주석의 건설중인(무형)자산 — 개발 진행 중 자산화일 수 있다(손 점검 30건 중 3건)
         if mv_note.search(note):
-            headers = [h for c in t.get("columns") or [] for h in c.get("header_path") or []]
-            if any(_DEV_ASSET_WORD.search(_WS_RE.sub("", x or "")) for x in labels + headers):
-                out["dev_asset_label"] = True  # c14: 무형자산 주석 표에 개발비(자산) 행·열이 있다
             # 머리글 낱말 통째로 맞춘다(「당기말」의 「기말」, 「상각누계액」의 「상각」 같은 부분 일치는 안 됨)
             tokens = {_header_token(x) for x in labels} | {_header_token(h) for h in headers}
             if all(any(rx.match(tok) for tok in tokens) for rx in mv_tokens):

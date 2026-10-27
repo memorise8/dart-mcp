@@ -1621,3 +1621,79 @@ class C14DevLabelGuardTest(unittest.TestCase):
         f = F("RND_EXPENSE", 9754, "current_period", label="경상연구개발비")
         r = judge([f], movement_table=True, dev_asset_label=True)["DEV_COST_CAPITALIZATION"]
         self.assertEqual(r["value"], "UNDETERMINED")
+
+
+class C14ReviewFixTest(unittest.TestCase):
+    """c14 리뷰(APPROVE WITH COMMENTS) 지적 #1–#7."""
+
+    def test_other_right_needs_same_column(self):
+        # #1: 회차를 열로 나눈 표 — 1회차 전환권대가(열 1), 2회차 대상 없는 파생상품부채(열 2) → 다른 권리로 보지 않는다
+        tid = f"{R}:00760:t300"
+        facts = [F("CONV_OPTION_EQUITY", 100, label="전환권대가", tid=tid, row=1, col=1),
+                 F("EMB_DERIV_LIABILITY", 50, label="파생상품부채", tid=tid, row=2, col=2)]
+        self.assertEqual(judge(facts)["CONVERSION_OPTION_CLASS"]["held_reason"], "needs_review")
+        facts[1] = F("EMB_DERIV_LIABILITY", 50, label="파생상품부채", tid=tid, row=2, col=1)
+        self.assertEqual(judge(facts)["CONVERSION_OPTION_CLASS"]["value"], "EQUITY")
+
+    def test_other_period_liability_shown(self):
+        # #2: 다른 기준시점의 부채 금액은 막지 않되 근거에 보인다
+        facts = [F("CONV_OPTION_EQUITY", 100, label="전환권대가"), F("EMB_DERIV_LIABILITY", 50, "prior_end", label="파생상품부채")]
+        r = judge(facts)["CONVERSION_OPTION_CLASS"]
+        self.assertEqual((r["value"], r["value_flags"]), ("EQUITY", ["conv_other_period_shown"]))
+        self.assertIn("다른 기준시점: 파생상품부채 파생상품부채 50원 (전기말)(기준시점이 달라 이 판정에 넣지 않음)", r["evidence"])
+
+    def test_both_basis_is_overlap_period(self):
+        # #3: 자본은 당기·전기, 부채는 전기만 → 둘 다는 전기 기준
+        facts = [F("CONV_OPTION_EQUITY", 100, label="전환권대가"), F("CONV_OPTION_EQUITY", 100, "prior_end", label="전환권대가"),
+                 F("CONV_OPTION_LIABILITY", 30, "prior_end", label="전환권")]
+        r = judge(facts)["CONVERSION_OPTION_CLASS"]
+        self.assertEqual((r["value"], r["basis_period"]), ("BOTH", "prior"))
+        self.assertTrue(r["evidence"].startswith("당기에 없음, 전기 기준: "))
+        ins = [I("equity", cur={"equity_component": 5}, prior={"equity_component": 5}),
+               I("derivative_liability", prior={"derivative_liability": 7}, name="제4회 전환사채")]
+        r = judge([], ins)["CONVERSION_OPTION_CLASS"]
+        self.assertEqual((r["value"], r["basis_period"]), ("BOTH", "prior"))
+
+    def test_ppa_done_word_rejects_negations(self):
+        # #4
+        bc = [F("BC_CONSIDERATION", 100, "prior_period", label="이전대가")]
+        for ev in ("평가가 완료되지 아니하여 잠정금액으로 인식하였습니다.", "매수가격배분은 미확정 상태입니다.",
+                   "공정가치는 확정될 예정입니다.", "확정되기 전 잠정금액입니다.", "완료 여부를 검토 중입니다.",
+                   "확정급여채무 소급 조정"):
+            r = judge(bc, v1_ppa={"value": "FINAL", "evidence": ev, "held_reason": ""})["PPA_MEASUREMENT_PERIOD"]
+            self.assertEqual(r["held_reason"], "needs_review", ev)
+
+    def test_lease_none_not_from_sentences(self):
+        # #6: 현금유출액 문장 속 0 금액으로 「적용 안 함」을 정하지 않는다
+        facts = [LS("LEASE_LOW_VALUE_EXP", 0), LS("LEASE_SHORT_TERM_EXP", 0)]
+        self.assertNotEqual(judge(facts)["LEASE_EXEMPTION"]["value"], "NONE")
+        self.assertEqual(judge([F("LEASE_LOW_VALUE_EXP", 0, "current_period"), F("LEASE_SHORT_TERM_EXP", 0, "current_period")])
+                         ["LEASE_EXEMPTION"]["value"], "NONE")
+
+    def test_lease_policy_both_needs_exemption_for_each(self):
+        # #7: 「단기리스에는 적용하지 않고 소액자산리스에만 면제」는 둘 다가 아니다
+        f = F("LEASE_LOW_VALUE_EXP", 7, "current_period")
+        pol = "단기리스에는 인식면제를 적용하지 않고 소액자산리스에만 면제를 적용합니다."
+        r = judge([f], marks=[M("LEASE_EXEMPTION", text=pol)])["LEASE_EXEMPTION"]
+        self.assertNotIn("value_flags", r)
+
+    def test_dev_asset_word_exclusions_and_own_note(self):
+        # #5: 비용 이름(경상개발비·개발비상각비)은 개발비 자산 표기가 아니다. 개발비 별도 주석(무형자산 밖)도 본다. 비용 주석은 안 본다
+        from dart_search_mcp.ledger.judge_rules import scope_meta
+        for hdr, want in (("경상개발비", False), ("개발비상각비", False), ("개발중인무형자산", True), ("개발비", True)):
+            t = T("R:00760:t400", "무형자산", ["기초", "기말"], headers=[hdr])
+            self.assertEqual(scope_meta([t], "separate")["dev_asset_label"], want, hdr)
+        own = T("R:00760:t401", "개발비", ["개발비", "합계"], title="개발비 내역")
+        self.assertTrue(scope_meta([own], "separate")["dev_asset_label"])
+        sga = T("R:00760:t402", "판매비와관리비", ["개발비", "급여"])
+        self.assertFalse(scope_meta([sga], "separate")["dev_asset_label"])
+
+
+class C14IntangibleCipTest(unittest.TestCase):
+    def test_intangible_construction_in_progress_blocks_amount_expensed(self):
+        # 20260318001166 모양: 무형자산 주석에 건설중인무형자산 — 개발 진행 중 자산화일 수 있어 금액만으로 비용 처리하지 않는다
+        from dart_search_mcp.ledger.judge_rules import scope_meta
+        t = T("R:00760:t500", "무형자산", ["기초", "취득", "기말"], headers=["소프트웨어", "건설중인무형자산"])
+        self.assertTrue(scope_meta([t], "separate")["dev_asset_label"])
+        ppe = T("R:00760:t501", "유형자산", ["기초", "취득", "기말"], headers=["건물", "건설중인자산"])
+        self.assertFalse(scope_meta([ppe], "separate")["dev_asset_label"])
