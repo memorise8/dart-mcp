@@ -222,15 +222,14 @@ def main(argv: list[str] | None = None) -> int:
             pool.join()
     # K2-1: 정정 계보 — 최신 정정본에 같은 범위·주제 행이 있으면 옛 접수본 행을 뺀다(supersede.py)
     superseded: list[dict] = []
+    rights_drop: dict = {}
     if not args.keep_superseded:
-        from dart_search_mcp.ledger.supersede import supersede
+        from dart_search_mcp.ledger.supersede import drop_superseded_rights, supersede
         all_rows, superseded = supersede(all_rows, audit)
         gone = {(r["rcept_no"], r["fs_scope"], r["topic"]) for r in superseded}
         all_recs = [r for r in all_recs if (r["rcept_no"], r["fs_scope"], r["topic"]) not in gone]
-        # 상품 행도 같은 계보 규칙(리뷰 c15 #6): 최신 정정본에 같은 범위·상품·권리 행이 있으면 옛 접수본 행을 뺀다
-        keyed = [{**r, "topic": f"rights:{r['product_key']}:{r['right']}"} for r in all_rights]
-        kept_rights, _ = supersede(keyed, audit)
-        all_rights = [{k: v for k, v in r.items() if k != "topic"} for r in kept_rights]
+        # 상품 행(리뷰 c15 #6, dart3 10-28): 옛 접수본의 판정 행이 빠진 범위는 상품 행도 모두 뺀다(supersede.py)
+        all_rights, rights_drop = drop_superseded_rights(all_rights, superseded)
     with out.open("w", encoding="utf-8") as fo, rec_path.open("w", encoding="utf-8") as fr:
         for row in all_rows:
             fo.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -257,7 +256,7 @@ def main(argv: list[str] | None = None) -> int:
         "concepts_versions": dict(concepts_versions),
         "generated_at": datetime.now(timezone.utc).isoformat(), "elapsed_sec": round(time.time() - t0, 1),
         "filings": len(rcepts), "rows": n_rows, "superseded_rows": len(superseded),
-        "instrument_rights": len(all_rights), "stage1_values": args.stage1_values,
+        "instrument_rights": len(all_rights), **rights_drop, "stage1_values": args.stage1_values,
         "values_by_topic": {t: dict(c) for t, c in sorted(values.items())},
         "held_reason": dict(held), "held_reason_by_topic": {t: dict(c) for t, c in sorted(held_by_topic.items())},
         "instruments": {"model": args.model, "run1": dict(s1), "run2": dict(s2)},

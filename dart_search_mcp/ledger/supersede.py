@@ -44,3 +44,20 @@ def supersede(rows: list[dict], audit: dict[str, dict]) -> tuple[list[dict], lis
         else:
             kept.append(r)
     return kept, dropped
+
+
+def drop_superseded_rights(rights: list[dict], dropped: list[dict]) -> tuple[list[dict], dict]:
+    """상품 행(c15 C1) — 옛 접수본의 판정 행이 빠진 (접수번호, 범위)는 상품 행도 모두 뺀다(dart3 10-28).
+    상품 키로 맞추면 정정본에서 회차 번호가 바뀌거나(팅크웨어: 원본은 전년 보고서 RCPS-1, 정정본 RCPS-4) 상품이
+    없을 때 옛 행이 남는다. 정정본 그 범위에 상품 행이 하나도 없어 사라진 행 수는 no_replacement 로 센다."""
+    gone = {(r["rcept_no"], r["fs_scope"]): r.get("superseded_by") for r in dropped}
+    have = {(r["rcept_no"], r["fs_scope"]) for r in rights}
+    kept, n, no_rep = [], 0, 0
+    for r in rights:
+        k = (r["rcept_no"], r["fs_scope"])
+        if k in gone:
+            n += 1
+            no_rep += (gone[k], r["fs_scope"]) not in have
+        else:
+            kept.append(r)
+    return kept, {"rights_dropped_superseded": n, "rights_dropped_no_replacement": no_rep}
